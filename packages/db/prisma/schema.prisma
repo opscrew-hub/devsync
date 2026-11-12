@@ -80,6 +80,8 @@ model Task {
   comments TaskComment[]
   @@index([projectId, status])
   @@index([projectId, assigneeId])
+  outboxEvents OutboxEvent[]
+  @@unique([projectId, id])
   @@unique([projectId, creatorAgentId, createRequestId])
 }
 model TaskRevision {
@@ -157,6 +159,8 @@ model OutboxEvent {
   projectId String
   actorId String?
   actorAgentId String?
+  taskId String?
+  requestId String?
   kind String
   payload Json
   createdAt DateTime @default(now())
@@ -166,5 +170,8 @@ model OutboxEvent {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   actor User? @relation(fields: [actorId], references: [id], onDelete: Restrict)
   actorAgent Agent? @relation(fields: [projectId, actorAgentId], references: [projectId, id], onDelete: Cascade)
+  task Task? @relation(fields: [projectId, taskId], references: [projectId, id], onDelete: Cascade)
+  @@unique([projectId, actorAgentId, requestId])
+  @@index([projectId, taskId, createdAt])
   @@index([processedAt, availableAt, createdAt])
 }

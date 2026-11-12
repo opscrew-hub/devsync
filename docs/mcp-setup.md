@@ -37,3 +37,7 @@ Move a task to Ready in the dashboard before claiming it. Call `claim_task` with
 ## Agent task handoffs
 
 Call `create_task` with a new `requestId` UUID, title, description, and acceptance criteria. Retries with the same UUID and original fields return the existing task. Use `update_task` with the latest task version to edit requirements or move the task from Backlog to Ready. Agents can update tasks they created. The outbox delivers creation and revision signals to other registered project agents.
+
+## Progress, blockers, and review
+
+Call `report_progress`, `report_blocker`, or `request_review` with the current task ID, claim UUID, requirements revision, a new request UUID, and a message. Retry an identical report with the same request UUID. Blockers and review requests end the claim and move the task to Blocked or Review. A human project writer can return it to Ready for another claim.

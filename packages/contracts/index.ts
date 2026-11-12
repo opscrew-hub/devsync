@@ -39,3 +39,11 @@ export const agentTaskInput = taskInput.extend({ requestId: z.uuid() });
 export const agentTaskUpdate = taskUpdate.omit({ assigneeId: true }).extend({
   status: z.enum(["BACKLOG", "READY"]).optional(),
 });
+
+export const taskActivityInput = z.object({
+  taskId: z.string().min(1).max(40),
+  claimId: z.uuid(),
+  revision: z.number().int().positive(),
+  requestId: z.uuid(),
+  message: z.string().trim().min(1).max(4000),
+});

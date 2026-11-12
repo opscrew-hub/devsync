@@ -28,4 +28,6 @@ Human task creation and edits write transactional outbox records. A standalone P
 
 Agents can create and update their own tasks through MCP. Task creation is idempotent. Requirements revisions and task events retain the agent identity and reach project peers through the outbox.
 
-Remaining work includes agent progress and blocker reporting, review requests, audit events, realtime updates, and live client interoperability testing.
+Claim holders can report progress and blockers and request review through MCP. Reports appear in the task timeline and are delivered to project peers.
+
+Remaining work includes review decisions, audit events, realtime updates, and live client interoperability testing.

@@ -6,7 +6,8 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
   skip: process.env.DEVSYNC_TEST_DB !== "1",
 }, async () => {
   const { db } = await import("@devsync/db");
-  const { createProject, createTask, updateTask } = await import("@devsync/core");
+  const { createProject, createTask, getTask, updateTask } = await import("@devsync/core");
+  const { listTaskActivity } = await import("@devsync/core/task-activity");
   const { processTaskOutboxEvent } = await import("@devsync/core/task-outbox");
   const { registerAgent, publishSignal, pendingSignals } = await import("@devsync/core/agent-signals");
   const { POST } = await import("./app/api/mcp/route.ts");
@@ -33,7 +34,7 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
     const tools = await call(token, "tools/list", {});
     assert.equal(tools.status, 200);
     assert.deepEqual((await tools.json()).result.tools.map((tool: { name: string }) => tool.name), [
-      "get_project_state", "get_pending_signals", "acknowledge_signal", "claim_task", "renew_task_claim", "release_task", "publish_signal", "create_task", "update_task",
+      "get_project_state", "get_pending_signals", "acknowledge_signal", "claim_task", "renew_task_claim", "release_task", "publish_signal", "create_task", "update_task", "report_progress", "report_blocker", "request_review",
     ]);
     const inbox = await call(token, "tools/call", { name: "get_pending_signals", arguments: {} });
     assert.equal(inbox.status, 200);
@@ -81,6 +82,34 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
     while ((await processTaskOutboxEvent(project.id)).status === "delivered") { /* drain project events */ }
     const handoff = (await pendingSignals(token)).filter(item => item.senderAgentId === claude.agent.id);
     assert.deepEqual(handoff.map(item => item.kind).sort(), ["requirements.changed", "task.created"]);
+    const claim = { taskId: edited.id, claimId: randomUUID() };
+    await mcpTask(token, "claim_task", claim);
+    const progress = { ...claim, revision: edited.revision, requestId: randomUUID(), message: "Tests underway." };
+    assert.equal((await mcpTask(claude.token, "report_progress", progress)).isError, true);
+    assert.equal((await mcpTask(token, "report_progress", { ...progress, revision: 1 })).isError, true);
+    const report = await mcpTask(token, "report_progress", progress);
+    assert.equal(report.isError, undefined);
+    assert.deepEqual(await mcpTask(token, "report_progress", progress), report);
+    const blocker = { ...progress, requestId: randomUUID(), message: "Waiting for a fixture." };
+    const blocked = await mcpTask(token, "report_blocker", blocker);
+    assert.equal(blocked.isError, undefined);
+    assert.deepEqual(await mcpTask(token, "report_blocker", blocker), blocked);
+    let current = await getTask(userId, project.id, edited.id);
+    assert.equal(current.status, "BLOCKED");
+    assert.equal(current.claimId, null);
+    assert.equal((await mcpTask(token, "request_review", { ...progress, requestId: randomUUID() })).isError, true);
+    current = { ...current, ...await updateTask(userId, project.id, edited.id, { version: current.version, status: "READY" }) };
+    const reclaimed = { taskId: current.id, claimId: randomUUID() };
+    await mcpTask(token, "claim_task", reclaimed);
+    const review = await mcpTask(token, "request_review", {
+      ...reclaimed, revision: current.revision, requestId: randomUUID(), message: "Ready for review.",
+    });
+    assert.equal(review.isError, undefined);
+    assert.equal((await getTask(userId, project.id, edited.id)).status, "REVIEW");
+    assert.equal((await listTaskActivity(userId, project.id, edited.id)).length, 3);
+    while ((await processTaskOutboxEvent(project.id)).status === "delivered") { /* drain project events */ }
+    const reviewSignal = (await pendingSignals(claude.token)).find(item => item.kind === "review.requested");
+    assert.equal(reviewSignal?.senderAgentId, agent.id);
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId } } } });
     await db.user.deleteMany({ where: { id: userId } });

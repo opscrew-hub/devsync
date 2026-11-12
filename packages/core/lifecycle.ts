@@ -5,8 +5,8 @@ export const transitions: Record<Status, readonly Status[]> = {
   READY: ["BACKLOG", "IN_PROGRESS", "CANCELLED"],
   CLAIMED: ["IN_PROGRESS", "READY", "CANCELLED"],
   IN_PROGRESS: ["BLOCKED", "REVIEW", "CANCELLED"],
-  BLOCKED: ["IN_PROGRESS", "CANCELLED"],
-  REVIEW: ["IN_PROGRESS", "DONE", "CANCELLED"],
+  BLOCKED: ["READY", "IN_PROGRESS", "CANCELLED"],
+  REVIEW: ["READY", "IN_PROGRESS", "DONE", "CANCELLED"],
   DONE: [],
   CANCELLED: [],
 };
