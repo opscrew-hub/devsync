@@ -6,7 +6,7 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
   skip: process.env.DEVSYNC_TEST_DB !== "1",
 }, async () => {
   const { db } = await import("@devsync/db");
-  const { createProject } = await import("@devsync/core");
+  const { createProject, createTask, updateTask } = await import("@devsync/core");
   const { registerAgent, publishSignal, pendingSignals } = await import("@devsync/core/agent-signals");
   const { POST } = await import("./app/api/mcp/route.ts");
   const userId = randomUUID();
@@ -32,7 +32,7 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
     const tools = await call(token, "tools/list", {});
     assert.equal(tools.status, 200);
     assert.deepEqual((await tools.json()).result.tools.map((tool: { name: string }) => tool.name), [
-      "get_project_state", "get_pending_signals", "acknowledge_signal",
+      "get_project_state", "get_pending_signals", "acknowledge_signal", "claim_task", "renew_task_claim", "release_task",
     ]);
     const inbox = await call(token, "tools/call", { name: "get_pending_signals", arguments: {} });
     assert.equal(inbox.status, 200);
@@ -41,6 +41,13 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
     assert.equal(ack.status, 200);
     assert.deepEqual(JSON.parse((await ack.json()).result.content[0].text), { id: signal.id, acknowledged: true });
     assert.deepEqual(await pendingSignals(token), []);
+    const task = await createTask(userId, project.id, { title: "Claim via MCP", description: "", acceptanceCriteria: "" });
+    await updateTask(userId, project.id, task.id, { status: "READY", version: task.version });
+    const argumentsForClaim = { taskId: task.id, claimId: randomUUID() };
+    const claimed = await call(token, "tools/call", { name: "claim_task", arguments: argumentsForClaim });
+    assert.equal(JSON.parse((await claimed.json()).result.content[0].text).status, "CLAIMED");
+    const released = await call(token, "tools/call", { name: "release_task", arguments: argumentsForClaim });
+    assert.equal(JSON.parse((await released.json()).result.content[0].text).status, "READY");
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId } } } });
     await db.user.deleteMany({ where: { id: userId } });

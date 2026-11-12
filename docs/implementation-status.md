@@ -20,4 +20,6 @@ Add dependencies, labels, priority, and status and assignment events in the task
 
 Project owners can register agents and revoke or rotate scoped credentials. Human project writers can send messages to an agent inbox. Unacknowledged messages persist through disconnections and credential rotation. The MCP endpoint exposes project state, inbox reads, and acknowledgements.
 
-Remaining work includes task claiming and leases, agent task mutations, agent-to-agent messages, audit events, the outbox and delivery worker, realtime updates, and live client interoperability testing.
+Agents can claim Ready tasks, renew their leases, release claims, and recover expired leases through MCP.
+
+Remaining work includes agent task mutations, agent-to-agent messages, audit events, the outbox and delivery worker, realtime updates, and live client interoperability testing.

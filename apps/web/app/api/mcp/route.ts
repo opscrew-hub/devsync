@@ -1,6 +1,7 @@
 import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { DomainError } from "@devsync/core";
 import { authenticateAgent, acknowledgeSignal, pendingSignals, agentProjectState } from "@devsync/core/agent-signals";
+import { claimTask, renewTaskClaim, releaseTaskClaim } from "@devsync/core/task-claims";
 import { z } from "zod";
 
 export async function POST(request: Request) {
@@ -42,6 +43,20 @@ export async function POST(request: Request) {
     description: "Acknowledge an inbox signal once it has been processed.",
     inputSchema: z.object({ id: z.string().min(1).max(40) }),
   }, ({ id }) => result(() => acknowledgeSignal(token, id)));
+
+  const claimInput = z.object({ taskId: z.string().min(1).max(40), claimId: z.uuid() });
+  server.registerTool("claim_task", {
+    description: "Claim a ready task or recover an expired claim for 15 minutes. Generate a new UUID for each claim attempt and reuse it only when retrying the same request.",
+    inputSchema: claimInput,
+  }, ({ taskId, claimId }) => result(() => claimTask(token, taskId, claimId)));
+  server.registerTool("renew_task_claim", {
+    description: "Renew your current claim before it expires. The result includes the latest requirements revision.",
+    inputSchema: claimInput,
+  }, ({ taskId, claimId }) => result(() => renewTaskClaim(token, taskId, claimId)));
+  server.registerTool("release_task", {
+    description: "Release your current claim and return the task to Ready.",
+    inputSchema: claimInput,
+  }, ({ taskId, claimId }) => result(() => releaseTaskClaim(token, taskId, claimId)));
 
   await server.connect(transport);
   try {
