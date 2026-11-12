@@ -34,7 +34,14 @@ export async function getTask(userId: string, projectId: string, id: string) {
 export async function createTask(userId: string, projectId: string, input: unknown) {
   await requireProject(userId, projectId, true);
   const fields = taskInput.parse(input);
-  return db.task.create({ data: { ...fields, projectId, creatorId: userId, revisions: { create: { ...fields, number: 1 } } } });
+  return db.$transaction(async tx => {
+    const task = await tx.task.create({ data: { ...fields, projectId, creatorId: userId, revisions: { create: { ...fields, number: 1 } } } });
+    await tx.outboxEvent.create({ data: {
+      projectId, actorId: userId, kind: "task.created",
+      payload: { taskId: task.id, revision: task.revision, version: task.version, message: "Task created: " + task.title },
+    } });
+    return task;
+  });
 }
 export async function updateTask(userId: string, projectId: string, id: string, input: unknown) {
   await requireProject(userId, projectId, true);
@@ -63,7 +70,16 @@ export async function updateTask(userId: string, projectId: string, id: string, 
     const updated = await tx.task.updateMany({ where: { id, projectId, version }, data: { ...fields, status, assigneeId, ...(status === "CANCELLED" ? { claimAgentId: null, claimId: null, claimExpiresAt: null } : {}), version: { increment: 1 }, revision: revised ? { increment: 1 } : undefined } });
     if (!updated.count) throw new DomainError(409, "Task changed. Reload and try again.");
     if (revised) await tx.taskRevision.create({ data: { ...fields, taskId: id, number: task.revision + 1 } });
-    return tx.task.findUniqueOrThrow({ where: { id } });
+    const saved = await tx.task.findUniqueOrThrow({ where: { id } });
+    if (revised || saved.status !== task.status || saved.assigneeId !== task.assigneeId) {
+      const kind = revised ? "requirements.changed" : saved.status === "BLOCKED" ? "task.blocked" :
+        saved.assigneeId !== task.assigneeId ? "task.assigned" : "task.updated";
+      await tx.outboxEvent.create({ data: {
+        projectId, actorId: userId, kind,
+        payload: { taskId: id, revision: saved.revision, version: saved.version, message: kind + ": " + saved.title },
+      } });
+    }
+    return saved;
   });
 }
 

@@ -24,4 +24,6 @@ Agents can claim Ready tasks, renew their leases, release claims, and recover ex
 
 Agents can discover project peers and publish durable signals through MCP. Replies are linked to inbox signals and bounded by a hop limit and per-agent rate limit.
 
-Remaining work includes agent task mutations, audit events, the outbox and delivery worker, realtime updates, and live client interoperability testing.
+Human task creation and edits write transactional outbox records. A standalone PostgreSQL worker delivers them to agent inboxes with duplicate protection and retries.
+
+Remaining work includes agent task mutations, audit events, realtime updates, and live client interoperability testing.

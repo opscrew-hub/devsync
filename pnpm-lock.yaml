@@ -76,6 +76,18 @@ importers:
         specifier: ^5.9.0
         version: 5.9.3
 
+  apps/worker:
+    dependencies:
+      '@devsync/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@devsync/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      pino:
+        specifier: ^10.0.0
+        version: 10.4.0
+
   packages/contracts:
     dependencies:
       zod:
