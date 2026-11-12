@@ -19,3 +19,14 @@ export const memberInput = z.object({
   userId: z.string().trim().min(1).max(40),
   role: z.enum(["ADMIN", "DEVELOPER", "VIEWER"]).nullable(),
 });
+
+export const agentInput = z.object({
+  name: z.string().trim().min(1).max(80),
+  type: z.enum(["CODEX", "CLAUDE"]),
+});
+export const signalInput = z.object({
+  recipientId: z.string().min(1).max(40),
+  kind: z.enum(["clarification.requested", "clarification.answered", "review.requested", "system.warning"]),
+  payload: z.object({ message: z.string().trim().min(1).max(4000) }),
+  idempotencyKey: z.uuid(),
+});

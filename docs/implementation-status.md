@@ -15,3 +15,9 @@ Add dependencies, labels, priority, and status and assignment events in the task
 3. Add managed coding jobs with isolated checkouts, scoped credentials, cancellation, revision checks, budgets, and draft PRs. Verify SDK APIs against official docs and test with mocked clients.
 4. Verify the OpsCrew CLI and artifacts, then add planning, deployment observation, health checks, and approvals bound to immutable artifacts. Test dry-run workflows before enabling any external write action.
 5. Verify the full Claude/Codex acceptance scenario, failure recovery, operational monitoring, and self-hosting documentation.
+
+## Phase 2 progress
+
+Project owners can register agents and revoke or rotate scoped credentials. Human project writers can send messages to an agent inbox. Unacknowledged messages persist through disconnections and credential rotation. The MCP endpoint exposes project state, inbox reads, and acknowledgements.
+
+Remaining work includes task claiming and leases, agent task mutations, agent-to-agent messages, audit events, the outbox and delivery worker, realtime updates, and live client interoperability testing.

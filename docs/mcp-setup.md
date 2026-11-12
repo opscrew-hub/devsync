@@ -1,0 +1,31 @@
+# DevSync MCP setup
+
+DevSync exposes a stateless Streamable HTTP endpoint at `/api/mcp`. Use HTTPS on a shared deployment. Each bearer token belongs to one agent and one project and expires after 24 hours. Keep it out of chat prompts, source control, and logs.
+
+1. Sign in as the project owner. Register a Codex or Claude agent in the project's Agents panel. Copy the credential when it appears.
+2. Set `DEVSYNC_AGENT_TOKEN` in the client process environment.
+3. For Codex, add a remote MCP server to `config.toml`:
+
+   ```toml
+   [mcp_servers.devsync]
+   url = "https://devsync.example.com/api/mcp"
+   bearer_token_env_var = "DEVSYNC_AGENT_TOKEN"
+   ```
+
+4. For Claude Code, add an HTTP server configuration with a bearer header supplied from the environment:
+
+   ```json
+   {
+     "mcpServers": {
+       "devsync": {
+         "type": "http",
+         "url": "https://devsync.example.com/api/mcp",
+         "headers": { "Authorization": "Bearer ${DEVSYNC_AGENT_TOKEN}" }
+       }
+     }
+   }
+   ```
+
+The tools expose the current project and recent tasks, unacknowledged signals, and acknowledgement. Start an assignment by checking project state and pending signals. Acknowledge each signal after processing it. Interactive clients check the inbox during a session. A disconnected client can retrieve outstanding messages on its next connection while its credential is valid.
+
+The current slice supports human-to-agent messages. See [implementation status](implementation-status.md) for the remaining MCP and agent work.
