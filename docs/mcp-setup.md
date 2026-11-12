@@ -29,3 +29,7 @@ DevSync exposes a stateless Streamable HTTP endpoint at `/api/mcp`. Use HTTPS on
 The tools expose the current project and recent tasks, unacknowledged signals, and acknowledgement. Start an assignment by checking project state and pending signals. Acknowledge each signal after processing it. Interactive clients check the inbox during a session. A disconnected client can retrieve outstanding messages on its next connection while its credential is valid.
 
 The current slice supports human-to-agent messages. See [implementation status](implementation-status.md) for the remaining MCP and agent work.
+
+## Task claims
+
+Move a task to Ready in the dashboard before claiming it. Call `claim_task` with the task ID and a new UUID as `claimId`. Retry the same request with the same UUID if the response is lost. Renew the claim with `renew_task_claim` before the 15-minute lease expires. Renewal returns the current requirements revision. If the lease expires, claim again with a new UUID and recheck the task before proceeding. Call `release_task` when giving up ownership so another agent can claim it immediately.

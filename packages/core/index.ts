@@ -42,6 +42,9 @@ export async function updateTask(userId: string, projectId: string, id: string, 
   const task = await db.task.findUnique({ where: { id, projectId } });
   if (!task) throw new DomainError(404, "Task not found.");
   if (version !== task.version) throw new DomainError(409, "Task changed. Reload and try again.");
+  if (task.status === "CLAIMED" && status && status !== "CLAIMED" && status !== "CANCELLED") {
+    throw new DomainError(409, "Release the agent claim before changing the task status.");
+  }
   if (status && status !== task.status && !transitions[task.status].includes(status)) {
     throw new DomainError(409, "Invalid status transition.");
   }
@@ -57,7 +60,7 @@ export async function updateTask(userId: string, projectId: string, id: string, 
         if (!assignee || assignee.role === "VIEWER") throw new DomainError(400, "Choose a project member with write access.");
       }
     }
-    const updated = await tx.task.updateMany({ where: { id, projectId, version }, data: { ...fields, status, assigneeId, version: { increment: 1 }, revision: revised ? { increment: 1 } : undefined } });
+    const updated = await tx.task.updateMany({ where: { id, projectId, version }, data: { ...fields, status, assigneeId, ...(status === "CANCELLED" ? { claimAgentId: null, claimId: null, claimExpiresAt: null } : {}), version: { increment: 1 }, revision: revised ? { increment: 1 } : undefined } });
     if (!updated.count) throw new DomainError(409, "Task changed. Reload and try again.");
     if (revised) await tx.taskRevision.create({ data: { ...fields, taskId: id, number: task.revision + 1 } });
     return tx.task.findUniqueOrThrow({ where: { id } });

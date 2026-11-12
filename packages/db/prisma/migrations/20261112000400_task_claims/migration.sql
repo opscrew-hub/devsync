@@ -1,0 +1,5 @@
+ALTER TABLE "Task"
+  ADD COLUMN "claimAgentId" TEXT,
+  ADD COLUMN "claimId" TEXT,
+  ADD COLUMN "claimExpiresAt" TIMESTAMP(3),
+  ADD CONSTRAINT "Task_claimAgentId_fkey" FOREIGN KEY ("claimAgentId") REFERENCES "Agent"("id") ON DELETE NO ACTION ON UPDATE CASCADE;
