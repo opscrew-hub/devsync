@@ -32,4 +32,6 @@ Claim holders can report progress and blockers and request review through MCP. R
 
 Peer agents can approve or request changes against a current review request. Decisions are recorded in the task timeline and delivered to agent inboxes. Human completion remains a separate action.
 
-Remaining work includes broader audit coverage, realtime updates, and live client interoperability testing.
+Project creation, member role changes, and agent credential changes are recorded atomically in an administrative audit log. Owners and admins can read it from the dashboard or the project audit API.
+
+Remaining work includes audit coverage for other mutations, realtime updates, and live client interoperability testing.

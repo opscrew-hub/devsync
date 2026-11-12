@@ -20,7 +20,14 @@ export function listProjects(userId: string) {
   return db.project.findMany({ where: { members: { some: { userId } } }, orderBy: { createdAt: "desc" } });
 }
 export function createProject(userId: string, input: unknown) {
-  return db.project.create({ data: { ...projectInput.parse(input), members: { create: { userId, role: "OWNER" } } } });
+  const fields = projectInput.parse(input);
+  return db.$transaction(async tx => {
+    const project = await tx.project.create({ data: { ...fields, members: { create: { userId, role: "OWNER" } } } });
+    await tx.auditLog.create({ data: {
+      projectId: project.id, actorId: userId, action: "project.created", targetId: project.id, details: {},
+    } });
+    return project;
+  });
 }
 export async function listTasks(userId: string, projectId: string) {
   await requireProject(userId, projectId);
@@ -176,6 +183,25 @@ export async function changeProjectMember(actorId: string, projectId: string, in
       if (!user) throw new DomainError(404, "Account not found. Ask the member to sign in first.");
       await tx.projectMember.upsert({ where: { projectId_userId: key }, create: { ...key, role }, update: { role } });
     }
+    if ((target?.role ?? null) !== role) {
+      await tx.auditLog.create({ data: {
+        projectId, actorId, action: "member.access_changed", targetId: userId,
+        details: { previousRole: target?.role ?? null, role },
+      } });
+    }
     return { userId, role };
+  });
+}
+
+export async function listProjectAudit(userId: string, projectId: string) {
+  const member = await requireProject(userId, projectId);
+  if (member.role !== "OWNER" && member.role !== "ADMIN") {
+    throw new DomainError(403, "Project administrator access required.");
+  }
+  return db.auditLog.findMany({
+    where: { projectId },
+    include: { actor: { select: { name: true } } },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: 100,
   });
 }

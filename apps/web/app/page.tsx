@@ -1,9 +1,10 @@
 import { auth, signIn, signOut } from "@/auth";
-import { listProjectMembers, listProjects, listTasks } from "@devsync/core";
+import { listProjectAudit, listProjectMembers, listProjects, listTasks } from "@devsync/core";
 import { GitBranch, Github, LayoutGrid } from "lucide-react";
 import { listAgents, listSignals } from "@devsync/core/agent-signals";
 import { AgentPanel } from "./agent-panel";
 import { MemberForm } from "./member-form";
+import { ProjectAudit } from "./project-audit";
 import { Workspace } from "./workspace";
 import Link from "next/link";
 export default async function Page({ searchParams }: { searchParams: Promise<{ project?: string }> }) {
@@ -23,6 +24,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ p
     ? await Promise.all([listTasks(session.userId, active.id), listProjectMembers(session.userId, active.id), listAgents(session.userId, active.id), listSignals(session.userId, active.id)])
     : [[], [], [], []];
   const role = members.find(member => member.userId === session.userId)?.role;
+  const audit = active && (role === "OWNER" || role === "ADMIN") ? await listProjectAudit(session.userId, active.id) : null;
   return <div className="shell">
     <aside><div className="brand"><span className="mark"><GitBranch size={17}/></span>DevSync</div>
       <div className="nav-heading"><LayoutGrid size={15}/> Projects</div>
@@ -41,6 +43,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ p
         agents={agents}
         signals={signals.map(signal => ({ id: signal.id, kind: signal.kind, recipientId: signal.recipientId, acknowledged: !!signal.acknowledgedAt, sender: signal.sender?.name ?? signal.senderAgent?.name ?? "Unknown sender", message: typeof signal.payload === "object" && signal.payload && "message" in signal.payload && typeof signal.payload.message === "string" ? signal.payload.message : "" }))}
       />}
+      {audit && <ProjectAudit entries={audit}/>}
     </main></div>
   </div>;
 }
