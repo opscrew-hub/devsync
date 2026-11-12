@@ -161,6 +161,7 @@ model OutboxEvent {
   actorAgentId String?
   taskId String?
   requestId String?
+  reviewRequestId String? @unique
   kind String
   payload Json
   createdAt DateTime @default(now())
@@ -171,6 +172,8 @@ model OutboxEvent {
   actor User? @relation(fields: [actorId], references: [id], onDelete: Restrict)
   actorAgent Agent? @relation(fields: [projectId, actorAgentId], references: [projectId, id], onDelete: Cascade)
   task Task? @relation(fields: [projectId, taskId], references: [projectId, id], onDelete: Cascade)
+  reviewRequest OutboxEvent? @relation("ReviewDecision", fields: [reviewRequestId], references: [id], onDelete: Cascade)
+  reviewDecision OutboxEvent? @relation("ReviewDecision")
   @@unique([projectId, actorAgentId, requestId])
   @@index([projectId, taskId, createdAt])
   @@index([processedAt, availableAt, createdAt])

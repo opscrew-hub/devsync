@@ -34,7 +34,7 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
     const tools = await call(token, "tools/list", {});
     assert.equal(tools.status, 200);
     assert.deepEqual((await tools.json()).result.tools.map((tool: { name: string }) => tool.name), [
-      "get_project_state", "get_pending_signals", "acknowledge_signal", "claim_task", "renew_task_claim", "release_task", "publish_signal", "create_task", "update_task", "report_progress", "report_blocker", "request_review",
+      "get_project_state", "get_pending_signals", "acknowledge_signal", "claim_task", "renew_task_claim", "release_task", "publish_signal", "create_task", "update_task", "report_progress", "report_blocker", "request_review", "submit_review",
     ]);
     const inbox = await call(token, "tools/call", { name: "get_pending_signals", arguments: {} });
     assert.equal(inbox.status, 200);
@@ -110,6 +110,33 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
     while ((await processTaskOutboxEvent(project.id)).status === "delivered") { /* drain project events */ }
     const reviewSignal = (await pendingSignals(claude.token)).find(item => item.kind === "review.requested");
     assert.equal(reviewSignal?.senderAgentId, agent.id);
+    const request = JSON.parse(review.content[0].text);
+    assert.equal((reviewSignal?.payload as { reviewRequestId?: string }).reviewRequestId, request.id);
+    const reviewInput = {
+      taskId: current.id, reviewRequestId: request.id, revision: current.revision,
+      requestId: randomUUID(), decision: "CHANGES_REQUESTED", message: "Add regression coverage.",
+    };
+    assert.equal((await mcpTask(token, "submit_review", reviewInput)).isError, true);
+    assert.equal((await mcpTask(outsider.token, "submit_review", reviewInput)).isError, true);
+    assert.equal((await mcpTask(claude.token, "submit_review", { ...reviewInput, revision: 1 })).isError, true);
+    const decision = await mcpTask(claude.token, "submit_review", reviewInput);
+    assert.equal(decision.isError, undefined);
+    assert.deepEqual(await mcpTask(claude.token, "submit_review", reviewInput), decision);
+    assert.equal((await getTask(userId, project.id, current.id)).status, "READY");
+    const secondClaim = { taskId: current.id, claimId: randomUUID() };
+    assert.equal((await mcpTask(token, "claim_task", secondClaim)).isError, undefined);
+    const second = await mcpTask(token, "request_review", {
+      ...secondClaim, revision: current.revision, requestId: randomUUID(), message: "Regression coverage added.",
+    });
+    assert.equal(second.isError, undefined);
+    const approvalInput = {
+      ...reviewInput, reviewRequestId: JSON.parse(second.content[0].text).id, requestId: randomUUID(),
+      decision: "APPROVED", message: "Coverage verified.",
+    };
+    assert.equal((await mcpTask(claude.token, "submit_review", approvalInput)).isError, undefined);
+    assert.equal((await mcpTask(claude.token, "submit_review", { ...approvalInput, requestId: randomUUID() })).isError, true);
+    assert.equal((await getTask(userId, project.id, current.id)).status, "REVIEW");
+    assert.ok((await listTaskActivity(userId, project.id, current.id)).some(entry => entry.label === "Review approved"));
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId } } } });
     await db.user.deleteMany({ where: { id: userId } });
