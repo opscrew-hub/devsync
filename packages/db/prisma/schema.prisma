@@ -200,3 +200,15 @@ model ProjectRealtime {
   version BigInt @default(0)
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
+
+model GithubEvent {
+  deliveryId String @id
+  event String
+  installationId BigInt
+  repositoryId BigInt
+  payload Json
+  receivedAt DateTime @default(now())
+  processedAt DateTime?
+  @@index([processedAt, receivedAt])
+  @@index([installationId, repositoryId, receivedAt])
+}
