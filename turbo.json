@@ -14,7 +14,7 @@
       ],
       "env": [
         "DATABASE_URL",
-        "AUTH_*"
+        "AUTH_*", "GITHUB_WEBHOOK_*"
       ]
     },
     "lint": {},

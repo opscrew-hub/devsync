@@ -56,3 +56,8 @@ export const reviewDecisionInput = z.object({
   decision: z.enum(["APPROVED", "CHANGES_REQUESTED"]),
   message: z.string().trim().min(1).max(4000),
 });
+
+export const githubWebhookEnvelope = z.object({
+  installation: z.object({ id: z.number().int().positive() }).passthrough(),
+  repository: z.object({ id: z.number().int().positive() }).passthrough(),
+}).catchall(z.json());
