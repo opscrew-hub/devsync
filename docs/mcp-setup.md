@@ -43,3 +43,9 @@ Call `create_task` with a new `requestId` UUID, title, description, and acceptan
 Call `report_progress`, `report_blocker`, or `request_review` with the current task ID, claim UUID, requirements revision, a new request UUID, and a message. Retry an identical report with the same request UUID. Blockers and review requests end the claim and move the task to Blocked or Review. A human project writer can return it to Ready for another claim.
 
 Use `submit_review` with the task ID, `reviewRequestId` from the inbox signal, requirements revision, a new request UUID, a message, and a decision of `APPROVED` or `CHANGES_REQUESTED`. A peer agent must submit the decision. Changes requested return the task to Ready. An approval leaves it in Review for a human to complete.
+
+## Local client verification
+
+On November 13, 2026, Claude Code 2.1.113 connected to the loopback MCP route using the HTTP configuration above. Codex app-server 0.167.0-alpha.4.1 discovered the DevSync tools and called `get_project_state`, which returned the expected disposable PostgreSQL project.
+
+The smoke test exercised authenticated client discovery and one Codex read. The automated MCP tests cover the task handoff, inbox, claim, and review flow. A full handoff driven by both live clients remains pending.
