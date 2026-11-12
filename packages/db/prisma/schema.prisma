@@ -32,6 +32,7 @@ model User {
   assignedTasks Task[] @relation("TaskAssignee")
   signals Signal[]
   outboxEvents OutboxEvent[]
+  auditLogs AuditLog[]
   comments TaskComment[]
 }
 model Project {
@@ -43,6 +44,7 @@ model Project {
   tasks Task[]
   agents Agent[]
   outboxEvents OutboxEvent[]
+  auditLogs AuditLog[]
 }
 model ProjectMember {
   projectId String
@@ -177,4 +179,17 @@ model OutboxEvent {
   @@unique([projectId, actorAgentId, requestId])
   @@index([projectId, taskId, createdAt])
   @@index([processedAt, availableAt, createdAt])
+}
+
+model AuditLog {
+  id String @id @default(cuid())
+  projectId String
+  actorId String
+  action String
+  targetId String
+  details Json
+  createdAt DateTime @default(now())
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  @@index([projectId, createdAt, id])
 }

@@ -6,9 +6,10 @@ test("agent inbox persists through credential rotation and scopes acknowledgemen
   skip: process.env.DEVSYNC_TEST_DB !== "1",
 }, async () => {
   const { db } = await import("@devsync/db");
-  const { createProject, DomainError } = await import("./index.ts");
+  const { changeProjectMember, createProject, DomainError, listProjectAudit } = await import("./index.ts");
   const { registerAgent, publishSignal, publishAgentSignal, pendingSignals, acknowledgeSignal, rotateAgentCredential, revokeAgent, agentProjectState } = await import("./agent-signals.ts");
   const userId = randomUUID();
+  const adminId = randomUUID();
   const status = (code: number) => (error: unknown) => error instanceof DomainError && error.status === code;
   try {
     await db.user.create({ data: { id: userId, name: "Owner" } });
@@ -57,10 +58,27 @@ test("agent inbox persists through credential rotation and scopes acknowledgemen
       ...reply, idempotencyKey: randomUUID(), replyToId: parent.id,
     }), status(409));
     await revokeAgent(userId, project.id, codex.agent.id);
+    await revokeAgent(userId, project.id, codex.agent.id);
+    await db.user.create({ data: { id: adminId, name: "Audit reader" } });
+    await assert.rejects(listProjectAudit(adminId, project.id), status(404));
+    await changeProjectMember(userId, project.id, { userId: adminId, role: "DEVELOPER" });
+    await assert.rejects(listProjectAudit(adminId, project.id), status(403));
+    await changeProjectMember(userId, project.id, { userId: adminId, role: "ADMIN" });
+    await changeProjectMember(userId, project.id, { userId: adminId, role: "ADMIN" });
+    const audit = await listProjectAudit(adminId, project.id);
+    assert.deepEqual(audit.map(entry => entry.action).sort(), [
+      "agent.credential_revoked", "agent.credential_rotated", "agent.registered", "agent.registered",
+      "member.access_changed", "member.access_changed", "project.created",
+    ]);
+    assert.ok(audit.every(entry => entry.actorId === userId && entry.projectId === project.id));
+    assert.ok(audit.some(entry => entry.targetId === adminId &&
+      JSON.stringify(entry.details).includes('"previousRole":"DEVELOPER"')));
+    assert.ok(!JSON.stringify(audit).includes(rotated.token));
+    assert.ok(!JSON.stringify(audit).includes("credentialHash"));
     await assert.rejects(pendingSignals(rotated.token), status(401));
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId } } } });
-    await db.user.deleteMany({ where: { id: userId } });
+    await db.user.deleteMany({ where: { id: { in: [userId, adminId] } } });
     await db.$disconnect();
   }
 });

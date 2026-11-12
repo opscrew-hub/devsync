@@ -11,9 +11,15 @@ export async function registerAgent(userId: string, projectId: string, input: un
   if (member.role !== "OWNER") throw new DomainError(403, "Only project owners can register agents.");
   const fields = agentInput.parse(input);
   const token = randomBytes(32).toString("base64url");
-  const agent = await db.agent.create({
-    data: { ...fields, projectId, credentialHash: digest(token), expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
-    select: agentFields,
+  const agent = await db.$transaction(async tx => {
+    const registered = await tx.agent.create({
+      data: { ...fields, projectId, credentialHash: digest(token), expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
+      select: agentFields,
+    });
+    await tx.auditLog.create({ data: {
+      projectId, actorId: userId, action: "agent.registered", targetId: registered.id, details: fields,
+    } });
+    return registered;
   });
   return { agent, token };
 }
@@ -32,7 +38,16 @@ export async function listAgents(userId: string, projectId: string) {
 export async function revokeAgent(userId: string, projectId: string, agentId: string) {
   const member = await requireProject(userId, projectId);
   if (member.role !== "OWNER") throw new DomainError(403, "Only project owners can revoke agents.");
-  await db.agent.updateMany({ where: { id: agentId, projectId, revokedAt: null }, data: { revokedAt: new Date() } });
+  await db.$transaction(async tx => {
+    const [revoked] = await tx.agent.updateManyAndReturn({
+      where: { id: agentId, projectId, revokedAt: null },
+      data: { revokedAt: new Date() },
+      select: { name: true, type: true },
+    });
+    if (revoked) await tx.auditLog.create({ data: {
+      projectId, actorId: userId, action: "agent.credential_revoked", targetId: agentId, details: revoked,
+    } });
+  });
 }
 
 export async function publishSignal(userId: string, projectId: string, input: unknown) {
@@ -105,16 +120,22 @@ export async function rotateAgentCredential(userId: string, projectId: string, a
   const member = await requireProject(userId, projectId);
   if (member.role !== "OWNER") throw new DomainError(403, "Only project owners can rotate credentials.");
   const token = randomBytes(32).toString("base64url");
-  const updated = await db.agent.updateMany({
-    where: { id: agentId, projectId },
-    data: {
-      credentialHash: digest(token),
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      revokedAt: null,
-      lastHeartbeat: null,
-    },
+  await db.$transaction(async tx => {
+    const [updated] = await tx.agent.updateManyAndReturn({
+      where: { id: agentId, projectId },
+      data: {
+        credentialHash: digest(token),
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        revokedAt: null,
+        lastHeartbeat: null,
+      },
+      select: { name: true, type: true },
+    });
+    if (!updated) throw new DomainError(404, "Agent not found.");
+    await tx.auditLog.create({ data: {
+      projectId, actorId: userId, action: "agent.credential_rotated", targetId: agentId, details: updated,
+    } });
   });
-  if (!updated.count) throw new DomainError(404, "Agent not found.");
   return { token };
 }
 
