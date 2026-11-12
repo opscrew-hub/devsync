@@ -1,6 +1,7 @@
 import { auth, signIn, signOut } from "@/auth";
-import { listProjects, listTasks } from "@devsync/core";
+import { listProjectMembers, listProjects, listTasks } from "@devsync/core";
 import { GitBranch, Github, LayoutGrid } from "lucide-react";
+import { MemberForm } from "./member-form";
 import { Workspace } from "./workspace";
 import Link from "next/link";
 export default async function Page({ searchParams }: { searchParams: Promise<{ project?: string }> }) {
@@ -16,15 +17,23 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ p
   const projects = await listProjects(session.userId);
   const requested = (await searchParams).project;
   const active = projects.find(project => project.id === requested) ?? projects[0];
-  const tasks = active ? await listTasks(session.userId, active.id) : [];
+  const [tasks, members] = active
+    ? await Promise.all([listTasks(session.userId, active.id), listProjectMembers(session.userId, active.id)])
+    : [[], []];
+  const role = members.find(member => member.userId === session.userId)?.role;
   return <div className="shell">
     <aside><div className="brand"><span className="mark"><GitBranch size={17}/></span>DevSync</div>
       <div className="nav-heading"><LayoutGrid size={15}/> Projects</div>
       <nav aria-label="Projects">{projects.map(project => <Link aria-current={active?.id === project.id ? "page" : undefined} key={project.id} href={`/?project=${project.id}`}>{project.name}</Link>)}</nav>
     </aside>
     <div className="main"><header><span>Workspace <span className="slash">/</span> {active?.name ?? "Projects"}</span>
-      <form action={async () => { "use server"; await signOut({ redirectTo: "/" }); }}><button>Sign out</button></form>
+      <div><details><summary>Account</summary><p>DevSync account ID <code>{session.userId}</code></p></details><form action={async () => { "use server"; await signOut({ redirectTo: "/" }); }}><button>Sign out</button></form></div>
     </header>
-    <main className="content"><Workspace key={active?.id ?? "empty"} project={active} tasks={tasks}/></main></div>
+    <main className="content"><Workspace key={active?.id ?? "empty"} project={active} tasks={tasks} members={members} canEdit={role !== undefined && role !== "VIEWER"}/>
+      {active && <section className="project-members">
+        <h2>Project members</h2>
+        <ul className="panel list">{members.map(member => <li key={member.userId}>{member.user.name} <span className="badge">{member.role.toLowerCase()}</span> <code>{member.userId}</code></li>)}</ul>
+        {role === "OWNER" && <MemberForm projectId={active.id}/>}
+      </section>}</main></div>
   </div>;
 }

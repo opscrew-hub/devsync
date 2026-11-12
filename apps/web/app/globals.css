@@ -59,3 +59,5 @@ label { display:grid; gap:5px; }
 .timeline li { padding:14px; display:grid; gap:6px; }
 .timeline time { color:var(--muted); font-size:12px; }
 .timeline summary { cursor:pointer; }
+.project-members { margin-top:28px; display:grid; gap:8px; }
+.project-members li { display:flex; gap:10px; flex-wrap:wrap; padding:6px; }
