@@ -1,6 +1,7 @@
 import { auth } from "@/auth";
 import { DomainError, getTask, requireProject } from "@devsync/core";
 import { listTaskActivity } from "@devsync/core/task-activity";
+import { ProjectRealtime } from "@/app/project-realtime";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { CommentForm } from "./comment-form";
@@ -24,6 +25,7 @@ export default async function TaskPage({ params, searchParams }: Props) {
     ...task.comments.map(comment => ({ kind: "comment" as const, date: comment.createdAt, comment })),
   ].sort((left, right) => right.date.getTime() - left.date.getTime());
   return <main className="content task-detail">
+    <ProjectRealtime projectId={project}/>
     <Link href={`/?project=${project}`} className="detail-link">← {membership.project.name}</Link>
     <div className="heading"><h1>{task.title}</h1><span className="badge">{task.status.toLowerCase().replaceAll("_", " ")}</span></div>
     <section className="panel task-summary">

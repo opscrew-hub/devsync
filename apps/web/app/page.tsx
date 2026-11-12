@@ -6,6 +6,7 @@ import { AgentPanel } from "./agent-panel";
 import { MemberForm } from "./member-form";
 import { ProjectAudit } from "./project-audit";
 import { Workspace } from "./workspace";
+import { ProjectRealtime } from "@/app/project-realtime";
 import Link from "next/link";
 export default async function Page({ searchParams }: { searchParams: Promise<{ project?: string }> }) {
   const session = await auth();
@@ -43,6 +44,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ p
         agents={agents}
         signals={signals.map(signal => ({ id: signal.id, kind: signal.kind, recipientId: signal.recipientId, acknowledged: !!signal.acknowledgedAt, sender: signal.sender?.name ?? signal.senderAgent?.name ?? "Unknown sender", message: typeof signal.payload === "object" && signal.payload && "message" in signal.payload && typeof signal.payload.message === "string" ? signal.payload.message : "" }))}
       />}
+      {active && <ProjectRealtime projectId={active.id}/>}
       {audit && <ProjectAudit entries={audit}/>}
     </main></div>
   </div>;

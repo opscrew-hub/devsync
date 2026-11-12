@@ -143,3 +143,65 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
     await db.$disconnect();
   }
 });
+
+test("project stream refreshes on committed writes and closes when access is revoked", {
+  timeout: 5000,
+  skip: process.env.DEVSYNC_TEST_DB !== "1",
+}, async () => {
+  const { db } = await import("@devsync/db");
+  const { changeProjectMember, createProject, createTask, createTaskComment } = await import("@devsync/core");
+  const { registerAgent, publishSignal, acknowledgeSignal } = await import("@devsync/core/agent-signals");
+  const { readProjectRealtimeVersion } = await import("@devsync/core/project-realtime");
+  const { projectEventStream } = await import("./lib/project-event-stream.ts");
+  const ownerId = randomUUID();
+  const viewerId = randomUUID();
+  const abort = new AbortController();
+  try {
+    await db.user.createMany({ data: [{ id: ownerId, name: "Owner" }, { id: viewerId, name: "Viewer" }] });
+    const project = await createProject(ownerId, { name: "Realtime", description: "" });
+    const other = await createProject(ownerId, { name: "Other", description: "" });
+    await changeProjectMember(ownerId, project.id, { userId: viewerId, role: "VIEWER" });
+    const version = () => readProjectRealtimeVersion(viewerId, project.id);
+    assert.equal(await readProjectRealtimeVersion(viewerId, other.id), null);
+    const initial = await version();
+    const response = projectEventStream(version, abort.signal, 10);
+    assert.match(response.headers.get("Content-Type") ?? "", /text\/event-stream/);
+    const reader = response.body!.getReader();
+    const decode = new TextDecoder();
+    const next = async () => decode.decode((await reader.read()).value);
+    assert.match(await next(), /^retry:/);
+    assert.match(await next(), new RegExp("data: " + initial));
+    await createTask(ownerId, other.id, { title: "Unrelated", description: "", acceptanceCriteria: "" });
+    assert.equal(await version(), initial);
+    const task = await createTask(ownerId, project.id, { title: "Realtime task", description: "", acceptanceCriteria: "" });
+    assert.match(await next(), new RegExp("data: " + await version()));
+    const beforeComment = await version();
+    await createTaskComment(ownerId, project.id, task.id, { body: "Update" });
+    assert.notEqual(await version(), beforeComment);
+    const { agent, token } = await registerAgent(ownerId, project.id, { type: "CODEX", name: "Codex" });
+    const delivery = await publishSignal(ownerId, project.id, {
+      recipientId: agent.id, kind: "system.warning", payload: { message: "Update" }, idempotencyKey: randomUUID(),
+    });
+    const beforeAck = await version();
+    await acknowledgeSignal(token, delivery.id);
+    assert.notEqual(await version(), beforeAck);
+    const beforeRollback = await version();
+    await assert.rejects(db.$transaction(async tx => {
+      await tx.task.update({ where: { id: task.id }, data: { title: "Rolled back" } });
+      throw new Error("Abort write");
+    }), /Abort write/);
+    assert.equal(await version(), beforeRollback);
+    await changeProjectMember(ownerId, project.id, { userId: viewerId, role: null });
+    let lastEvent = "";
+    for (let frame = await reader.read(); !frame.done; frame = await reader.read()) {
+      lastEvent = decode.decode(frame.value);
+    }
+    assert.match(lastEvent, /access-revoked/);
+    assert.equal(await version(), null);
+  } finally {
+    abort.abort();
+    await db.project.deleteMany({ where: { members: { some: { userId: ownerId } } } });
+    await db.user.deleteMany({ where: { id: { in: [ownerId, viewerId] } } });
+    await db.$disconnect();
+  }
+});
