@@ -30,3 +30,7 @@ export const signalInput = z.object({
   payload: z.object({ message: z.string().trim().min(1).max(4000) }),
   idempotencyKey: z.uuid(),
 });
+
+export const agentSignalInput = signalInput.extend({
+  replyToId: z.string().min(1).max(40).optional(),
+});

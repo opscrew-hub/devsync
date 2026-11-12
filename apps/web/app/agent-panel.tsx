@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
 
 type Agent = { id: string; name: string; type: string; status: string };
-type Signal = { id: string; kind: string; acknowledged: boolean; recipientId: string };
+type Signal = { id: string; kind: string; acknowledged: boolean; recipientId: string; sender: string; message: string };
 
 export function AgentPanel({ projectId, agents, signals, owner, writer }: {
   projectId: string; agents: Agent[]; signals: Signal[]; owner: boolean; writer: boolean;
@@ -63,8 +63,8 @@ export function AgentPanel({ projectId, agents, signals, owner, writer }: {
       <input value={token} readOnly onFocus={event => event.currentTarget.select()}/></label><button onClick={() => setToken("")}>Hide credential</button></div>}
     <h2>Signals</h2>
     {signals.length ? <ul className="panel list">{signals.map(signal => <li key={signal.id}>
-      <strong>{signal.kind}</strong><span>{agents.find(agent => agent.id === signal.recipientId)?.name}</span>
-      <span className="badge">{signal.acknowledged ? "Acknowledged" : "Pending"}</span>
+      <strong>{signal.kind}</strong><span>{signal.sender} → {agents.find(agent => agent.id === signal.recipientId)?.name}</span>
+      <span className="badge">{signal.acknowledged ? "Acknowledged" : "Pending"}</span><p>{signal.message}</p>
     </li>)}</ul> : <p>No signals sent.</p>}
     {writer && available.length > 0 && <form className="editor panel" onSubmit={event => {
       const key = event.currentTarget.querySelector<HTMLInputElement>("[name=idempotencyKey]");

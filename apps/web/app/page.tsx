@@ -39,7 +39,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ p
       </section>}
       {active && <AgentPanel key={active.id} projectId={active.id} owner={role === "OWNER"} writer={role !== undefined && role !== "VIEWER"}
         agents={agents}
-        signals={signals.map(signal => ({ id: signal.id, kind: signal.kind, recipientId: signal.recipientId, acknowledged: !!signal.acknowledgedAt }))}
+        signals={signals.map(signal => ({ id: signal.id, kind: signal.kind, recipientId: signal.recipientId, acknowledged: !!signal.acknowledgedAt, sender: signal.sender?.name ?? signal.senderAgent?.name ?? "Unknown sender", message: typeof signal.payload === "object" && signal.payload && "message" in signal.payload && typeof signal.payload.message === "string" ? signal.payload.message : "" }))}
       />}
     </main></div>
   </div>;

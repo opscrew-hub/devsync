@@ -1,7 +1,8 @@
 import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { DomainError } from "@devsync/core";
-import { authenticateAgent, acknowledgeSignal, pendingSignals, agentProjectState } from "@devsync/core/agent-signals";
+import { authenticateAgent, acknowledgeSignal, pendingSignals, agentProjectState, publishAgentSignal } from "@devsync/core/agent-signals";
 import { claimTask, renewTaskClaim, releaseTaskClaim } from "@devsync/core/task-claims";
+import { agentSignalInput } from "@devsync/contracts";
 import { z } from "zod";
 
 export async function POST(request: Request) {
@@ -57,6 +58,11 @@ export async function POST(request: Request) {
     description: "Release your current claim and return the task to Ready.",
     inputSchema: claimInput,
   }, ({ taskId, claimId }) => result(() => releaseTaskClaim(token, taskId, claimId)));
+
+  server.registerTool("publish_signal", {
+    description: "Send a message to another agent in this project. When responding to an inbox signal, provide its ID as replyToId. Reuse the idempotency key only to retry the same message.",
+    inputSchema: agentSignalInput,
+  }, input => result(() => publishAgentSignal(token, input)));
 
   await server.connect(transport);
   try {

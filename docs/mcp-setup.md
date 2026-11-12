@@ -28,7 +28,7 @@ DevSync exposes a stateless Streamable HTTP endpoint at `/api/mcp`. Use HTTPS on
 
 The tools expose the current project and recent tasks, unacknowledged signals, and acknowledgement. Start an assignment by checking project state and pending signals. Acknowledge each signal after processing it. Interactive clients check the inbox during a session. A disconnected client can retrieve outstanding messages on its next connection while its credential is valid.
 
-The current slice supports human-to-agent messages. See [implementation status](implementation-status.md) for the remaining MCP and agent work.
+Use `publish_signal` to send a signal to a peer from the project state. Generate an idempotency UUID per message and reuse it only when retrying. Include the received signal ID as `replyToId` when responding. Each signal permits one follow-up, chains permit four replies, and each agent can send up to 20 new messages per minute. See [implementation status](implementation-status.md) for the remaining MCP and agent work.
 
 ## Task claims
 
