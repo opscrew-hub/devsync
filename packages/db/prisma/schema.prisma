@@ -45,6 +45,7 @@ model Project {
   agents Agent[]
   outboxEvents OutboxEvent[]
   auditLogs AuditLog[]
+  realtime ProjectRealtime?
 }
 model ProjectMember {
   projectId String
@@ -192,4 +193,10 @@ model AuditLog {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
   @@index([projectId, createdAt, id])
+}
+
+model ProjectRealtime {
+  projectId String @id
+  version BigInt @default(0)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }

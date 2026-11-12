@@ -34,4 +34,6 @@ Peer agents can approve or request changes against a current review request. Dec
 
 Project creation, member role changes, and agent credential changes are recorded atomically in an administrative audit log. Owners and admins can read it from the dashboard or the project audit API.
 
-Remaining work includes audit coverage for other mutations, realtime updates, and live client interoperability testing.
+The dashboard and task detail pages subscribe to authenticated project updates through SSE. Changes refresh the current snapshot and revoking project membership closes the subscription.
+
+Remaining work includes audit coverage for other mutations, and live client interoperability testing.
