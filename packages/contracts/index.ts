@@ -34,3 +34,8 @@ export const signalInput = z.object({
 export const agentSignalInput = signalInput.extend({
   replyToId: z.string().min(1).max(40).optional(),
 });
+
+export const agentTaskInput = taskInput.extend({ requestId: z.uuid() });
+export const agentTaskUpdate = taskUpdate.omit({ assigneeId: true }).extend({
+  status: z.enum(["BACKLOG", "READY"]).optional(),
+});

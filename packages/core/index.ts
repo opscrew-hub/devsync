@@ -1,5 +1,6 @@
 import { db } from "@devsync/db";
-import { memberInput, projectInput, taskCommentInput, taskInput, taskUpdate } from "@devsync/contracts";
+import { agentTaskInput, agentTaskUpdate, memberInput, projectInput, taskCommentInput, taskInput, taskUpdate } from "@devsync/contracts";
+import { authenticateAgent } from "./agent-signals.ts";
 import { transitions } from "./lifecycle.ts";
 export { transitions };
 export class DomainError extends Error {
@@ -33,21 +34,73 @@ export async function getTask(userId: string, projectId: string, id: string) {
 }
 export async function createTask(userId: string, projectId: string, input: unknown) {
   await requireProject(userId, projectId, true);
-  const fields = taskInput.parse(input);
+  return saveNewTask(projectId, taskInput.parse(input), { userId });
+}
+
+export async function createAgentTask(token: string, input: unknown) {
+  const { id: agentId, projectId } = await authenticateAgent(token);
+  const { requestId, ...fields } = agentTaskInput.parse(input);
+  return saveNewTask(projectId, fields, { agentId, requestId });
+}
+
+async function saveNewTask(
+  projectId: string,
+  fields: ReturnType<typeof taskInput.parse>,
+  actor: { userId: string } | { agentId: string; requestId: string },
+) {
   return db.$transaction(async tx => {
-    const task = await tx.task.create({ data: { ...fields, projectId, creatorId: userId, revisions: { create: { ...fields, number: 1 } } } });
+    if ("agentId" in actor) {
+      await tx.$queryRaw`SELECT "id" FROM "Agent" WHERE "id" = ${actor.agentId} FOR NO KEY UPDATE`;
+      const existing = await tx.task.findUnique({
+        where: { projectId_creatorAgentId_createRequestId: {
+          projectId, creatorAgentId: actor.agentId, createRequestId: actor.requestId,
+        } },
+        include: { revisions: { where: { number: 1 } } },
+      });
+      if (existing) {
+        const { revisions: [original], ...task } = existing;
+        if (!original || original.title !== fields.title || original.description !== fields.description ||
+            original.acceptanceCriteria !== fields.acceptanceCriteria) {
+          throw new DomainError(409, "Request ID already used for another task.");
+        }
+        return task;
+      }
+    }
+    const creator = "userId" in actor
+      ? { creatorId: actor.userId }
+      : { creatorAgentId: actor.agentId, createRequestId: actor.requestId };
+    const task = await tx.task.create({
+      data: { ...fields, ...creator, projectId, revisions: { create: { ...fields, number: 1 } } },
+    });
     await tx.outboxEvent.create({ data: {
-      projectId, actorId: userId, kind: "task.created",
+      projectId, ...eventActor(actor), kind: "task.created",
       payload: { taskId: task.id, revision: task.revision, version: task.version, message: "Task created: " + task.title },
     } });
     return task;
   });
 }
+
+type TaskActor = { userId: string } | { agentId: string };
+
+function eventActor(actor: TaskActor) {
+  return "userId" in actor ? { actorId: actor.userId } : { actorAgentId: actor.agentId };
+}
+
 export async function updateTask(userId: string, projectId: string, id: string, input: unknown) {
   await requireProject(userId, projectId, true);
-  const { version, status, assigneeId, ...patch } = taskUpdate.parse(input);
+  return saveTaskEdit(projectId, id, taskUpdate.parse(input), { userId });
+}
+
+export async function updateAgentTask(token: string, id: string, input: unknown) {
+  const { id: agentId, projectId } = await authenticateAgent(token);
+  return saveTaskEdit(projectId, id, agentTaskUpdate.parse(input), { agentId });
+}
+
+async function saveTaskEdit(projectId: string, id: string, input: ReturnType<typeof taskUpdate.parse>, actor: TaskActor) {
+  const { version, status, assigneeId, ...patch } = input;
   const task = await db.task.findUnique({ where: { id, projectId } });
   if (!task) throw new DomainError(404, "Task not found.");
+  if ("agentId" in actor && task.creatorAgentId !== actor.agentId) throw new DomainError(403, "Agents may edit tasks they created.");
   if (version !== task.version) throw new DomainError(409, "Task changed. Reload and try again.");
   if (task.status === "CLAIMED" && status && status !== "CLAIMED" && status !== "CANCELLED") {
     throw new DomainError(409, "Release the agent claim before changing the task status.");
@@ -58,9 +111,9 @@ export async function updateTask(userId: string, projectId: string, id: string, 
   const fields = { title: patch.title ?? task.title, description: patch.description ?? task.description, acceptanceCriteria: patch.acceptanceCriteria ?? task.acceptanceCriteria };
   const revised = fields.title !== task.title || fields.description !== task.description || fields.acceptanceCriteria !== task.acceptanceCriteria;
   return db.$transaction(async tx => {
-    if (assigneeId !== undefined) {
+    if ("userId" in actor && assigneeId !== undefined) {
       await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${projectId} FOR UPDATE`;
-      const writer = await tx.projectMember.findUnique({ where: { projectId_userId: { projectId, userId } } });
+      const writer = await tx.projectMember.findUnique({ where: { projectId_userId: { projectId, userId: actor.userId } } });
       if (!writer || writer.role === "VIEWER") throw new DomainError(403, "Project write access required.");
       if (assigneeId !== null) {
         const assignee = await tx.projectMember.findUnique({ where: { projectId_userId: { projectId, userId: assigneeId } } });
@@ -75,7 +128,7 @@ export async function updateTask(userId: string, projectId: string, id: string, 
       const kind = revised ? "requirements.changed" : saved.status === "BLOCKED" ? "task.blocked" :
         saved.assigneeId !== task.assigneeId ? "task.assigned" : "task.updated";
       await tx.outboxEvent.create({ data: {
-        projectId, actorId: userId, kind,
+        projectId, ...eventActor(actor), kind,
         payload: { taskId: id, revision: saved.revision, version: saved.version, message: kind + ": " + saved.title },
       } });
     }

@@ -3,11 +3,11 @@ import { db } from "@devsync/db";
 export async function processTaskOutboxEvent(projectId: string | null = null) {
   return db.$transaction(async tx => {
     const [event] = await tx.$queryRaw<{
-      id: string; projectId: string; actorId: string; kind: string;
+      id: string; projectId: string; actorId: string | null; actorAgentId: string | null; kind: string;
       payload: { taskId: string; revision: number; version: number; message: string };
       createdAt: Date; attempts: number;
     }[]>`
-      SELECT "id", "projectId", "actorId", "kind", "payload", "createdAt", "attempts"
+      SELECT "id", "projectId", "actorId", "actorAgentId", "kind", "payload", "createdAt", "attempts"
       FROM "OutboxEvent"
       WHERE "processedAt" IS NULL AND "availableAt" <= timezone('UTC', clock_timestamp())
         AND (${projectId}::text IS NULL OR "projectId" = ${projectId}::text)
@@ -18,13 +18,14 @@ export async function processTaskOutboxEvent(projectId: string | null = null) {
     await tx.$executeRaw`SAVEPOINT signal_delivery`;
     try {
       const recipients = await tx.agent.findMany({
-        where: { projectId: event.projectId, revokedAt: null, createdAt: { lte: event.createdAt } },
+        where: { projectId: event.projectId, id: event.actorAgentId ? { not: event.actorAgentId } : undefined, revokedAt: null, createdAt: { lte: event.createdAt } },
         select: { id: true },
       });
       const deliveries = await tx.signal.createMany({
         data: recipients.map(({ id }) => ({
           projectId: event.projectId,
           senderId: event.actorId,
+          senderAgentId: event.actorAgentId,
           recipientId: id,
           kind: event.kind,
           payload: event.payload,

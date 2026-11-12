@@ -1,8 +1,8 @@
 import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
-import { DomainError } from "@devsync/core";
+import { createAgentTask, DomainError, updateAgentTask } from "@devsync/core";
 import { authenticateAgent, acknowledgeSignal, pendingSignals, agentProjectState, publishAgentSignal } from "@devsync/core/agent-signals";
 import { claimTask, renewTaskClaim, releaseTaskClaim } from "@devsync/core/task-claims";
-import { agentSignalInput } from "@devsync/contracts";
+import { agentSignalInput, agentTaskInput, agentTaskUpdate } from "@devsync/contracts";
 import { z } from "zod";
 
 export async function POST(request: Request) {
@@ -63,6 +63,15 @@ export async function POST(request: Request) {
     description: "Send a message to another agent in this project. When responding to an inbox signal, provide its ID as replyToId. Reuse the idempotency key only to retry the same message.",
     inputSchema: agentSignalInput,
   }, input => result(() => publishAgentSignal(token, input)));
+
+  server.registerTool("create_task", {
+    description: "Create a Backlog task in your project. Supply a new request UUID and reuse it when retrying the same task.",
+    inputSchema: agentTaskInput,
+  }, input => result(() => createAgentTask(token, input)));
+  server.registerTool("update_task", {
+    description: "Edit a task you created. Supply the current task version. Move a Backlog task to Ready to make it claimable.",
+    inputSchema: agentTaskUpdate.extend({ taskId: z.string().min(1).max(40) }),
+  }, ({ taskId, ...input }) => result(() => updateAgentTask(token, taskId, input)));
 
   await server.connect(transport);
   try {

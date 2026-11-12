@@ -7,6 +7,7 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
 }, async () => {
   const { db } = await import("@devsync/db");
   const { createProject, createTask, updateTask } = await import("@devsync/core");
+  const { processTaskOutboxEvent } = await import("@devsync/core/task-outbox");
   const { registerAgent, publishSignal, pendingSignals } = await import("@devsync/core/agent-signals");
   const { POST } = await import("./app/api/mcp/route.ts");
   const userId = randomUUID();
@@ -32,7 +33,7 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
     const tools = await call(token, "tools/list", {});
     assert.equal(tools.status, 200);
     assert.deepEqual((await tools.json()).result.tools.map((tool: { name: string }) => tool.name), [
-      "get_project_state", "get_pending_signals", "acknowledge_signal", "claim_task", "renew_task_claim", "release_task", "publish_signal",
+      "get_project_state", "get_pending_signals", "acknowledge_signal", "claim_task", "renew_task_claim", "release_task", "publish_signal", "create_task", "update_task",
     ]);
     const inbox = await call(token, "tools/call", { name: "get_pending_signals", arguments: {} });
     assert.equal(inbox.status, 200);
@@ -56,6 +57,30 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
     assert.equal(JSON.parse((await claimed.json()).result.content[0].text).status, "CLAIMED");
     const released = await call(token, "tools/call", { name: "release_task", arguments: argumentsForClaim });
     assert.equal(JSON.parse((await released.json()).result.content[0].text).status, "READY");
+
+    const mcpTask = async (credential: string, name: string, args: object) => {
+      const response = await call(credential, "tools/call", { name, arguments: args });
+      assert.equal(response.status, 200);
+      return (await response.json()).result;
+    };
+    const createInput = { requestId: randomUUID(), title: "Agent handoff", description: "", acceptanceCriteria: "Original" };
+    const created = JSON.parse((await mcpTask(claude.token, "create_task", createInput)).content[0].text);
+    assert.equal(created.creatorAgentId, claude.agent.id);
+    const duplicate = JSON.parse((await mcpTask(claude.token, "create_task", createInput)).content[0].text);
+    assert.equal(duplicate.id, created.id);
+    assert.equal((await mcpTask(claude.token, "create_task", { ...createInput, title: "Different" })).isError, true);
+    const change = { taskId: created.id, version: created.version, status: "READY", acceptanceCriteria: "Revised" };
+    assert.equal((await mcpTask(token, "update_task", change)).isError, true);
+    const outside = await createProject(userId, { name: "Outside", description: "" });
+    const outsider = await registerAgent(userId, outside.id, { name: "Outside", type: "CLAUDE" });
+    assert.match((await mcpTask(outsider.token, "update_task", change)).content[0].text, /Task not found/);
+    const edited = JSON.parse((await mcpTask(claude.token, "update_task", change)).content[0].text);
+    assert.equal(edited.revision, 2);
+    assert.equal(edited.status, "READY");
+    assert.equal((await mcpTask(claude.token, "update_task", change)).isError, true);
+    while ((await processTaskOutboxEvent(project.id)).status === "delivered") { /* drain project events */ }
+    const handoff = (await pendingSignals(token)).filter(item => item.senderAgentId === claude.agent.id);
+    assert.deepEqual(handoff.map(item => item.kind).sort(), ["requirements.changed", "task.created"]);
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId } } } });
     await db.user.deleteMany({ where: { id: userId } });

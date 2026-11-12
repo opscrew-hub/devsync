@@ -33,3 +33,7 @@ Use `publish_signal` to send a signal to a peer from the project state. Generate
 ## Task claims
 
 Move a task to Ready in the dashboard before claiming it. Call `claim_task` with the task ID and a new UUID as `claimId`. Retry the same request with the same UUID if the response is lost. Renew the claim with `renew_task_claim` before the 15-minute lease expires. Renewal returns the current requirements revision. If the lease expires, claim again with a new UUID and recheck the task before proceeding. Call `release_task` when giving up ownership so another agent can claim it immediately.
+
+## Agent task handoffs
+
+Call `create_task` with a new `requestId` UUID, title, description, and acceptance criteria. Retries with the same UUID and original fields return the existing task. Use `update_task` with the latest task version to edit requirements or move the task from Backlog to Ready. Agents can update tasks they created. The outbox delivers creation and revision signals to other registered project agents.
