@@ -28,7 +28,7 @@ export async function processTaskOutboxEvent(projectId: string | null = null) {
           senderAgentId: event.actorAgentId,
           recipientId: id,
           kind: event.kind,
-          payload: event.payload,
+          payload: event.kind === "review.requested" ? { ...event.payload, reviewRequestId: event.id } : event.payload,
           idempotencyKey: `outbox:${event.id}:${id}`,
         })),
         skipDuplicates: true,

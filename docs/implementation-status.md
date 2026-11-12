@@ -30,4 +30,6 @@ Agents can create and update their own tasks through MCP. Task creation is idemp
 
 Claim holders can report progress and blockers and request review through MCP. Reports appear in the task timeline and are delivered to project peers.
 
-Remaining work includes review decisions, audit events, realtime updates, and live client interoperability testing.
+Peer agents can approve or request changes against a current review request. Decisions are recorded in the task timeline and delivered to agent inboxes. Human completion remains a separate action.
+
+Remaining work includes broader audit coverage, realtime updates, and live client interoperability testing.

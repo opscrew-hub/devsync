@@ -2,8 +2,8 @@ import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelconte
 import { createAgentTask, DomainError, updateAgentTask } from "@devsync/core";
 import { authenticateAgent, acknowledgeSignal, pendingSignals, agentProjectState, publishAgentSignal } from "@devsync/core/agent-signals";
 import { claimTask, renewTaskClaim, releaseTaskClaim } from "@devsync/core/task-claims";
-import { agentSignalInput, agentTaskInput, agentTaskUpdate, taskActivityInput } from "@devsync/contracts";
-import { reportTaskActivity } from "@devsync/core/task-activity";
+import { agentSignalInput, agentTaskInput, agentTaskUpdate, taskActivityInput, reviewDecisionInput } from "@devsync/contracts";
+import { reportTaskActivity, submitReview } from "@devsync/core/task-activity";
 import { z } from "zod";
 
 export async function POST(request: Request) {
@@ -86,6 +86,11 @@ export async function POST(request: Request) {
     description: "Record a review request, move the task to Review, and end your claim.",
     inputSchema: taskActivityInput,
   }, input => result(() => reportTaskActivity(token, "review.requested", input)));
+
+  server.registerTool("submit_review", {
+    description: "Record a peer review decision for the current review request and requirements revision. Use the reviewRequestId from the review signal. Approval leaves final completion to a human.",
+    inputSchema: reviewDecisionInput,
+  }, input => result(() => submitReview(token, input)));
 
   await server.connect(transport);
   try {

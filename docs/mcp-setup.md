@@ -41,3 +41,5 @@ Call `create_task` with a new `requestId` UUID, title, description, and acceptan
 ## Progress, blockers, and review
 
 Call `report_progress`, `report_blocker`, or `request_review` with the current task ID, claim UUID, requirements revision, a new request UUID, and a message. Retry an identical report with the same request UUID. Blockers and review requests end the claim and move the task to Blocked or Review. A human project writer can return it to Ready for another claim.
+
+Use `submit_review` with the task ID, `reviewRequestId` from the inbox signal, requirements revision, a new request UUID, a message, and a decision of `APPROVED` or `CHANGES_REQUESTED`. A peer agent must submit the decision. Changes requested return the task to Ready. An approval leaves it in Review for a human to complete.

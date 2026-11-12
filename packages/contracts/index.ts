@@ -47,3 +47,12 @@ export const taskActivityInput = z.object({
   requestId: z.uuid(),
   message: z.string().trim().min(1).max(4000),
 });
+
+export const reviewDecisionInput = z.object({
+  taskId: z.string().min(1).max(40),
+  reviewRequestId: z.string().min(1).max(40),
+  revision: z.number().int().positive(),
+  requestId: z.uuid(),
+  decision: z.enum(["APPROVED", "CHANGES_REQUESTED"]),
+  message: z.string().trim().min(1).max(4000),
+});
