@@ -114,7 +114,8 @@ model Agent {
   lastHeartbeat DateTime?
   createdAt DateTime @default(now())
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  signals Signal[]
+  signals Signal[] @relation("SignalRecipient")
+  sentSignals Signal[] @relation("SignalAgentSender")
   claimedTasks Task[]
   @@unique([projectId, id])
 }
@@ -123,14 +124,22 @@ model Signal {
   id String @id @default(cuid())
   projectId String
   recipientId String
-  senderId String
+  senderId String?
+  senderAgentId String?
+  replyToId String? @unique
+  hopCount Int @default(0)
   kind String
   payload Json
   idempotencyKey String
   createdAt DateTime @default(now())
   acknowledgedAt DateTime?
-  recipient Agent @relation(fields: [projectId, recipientId], references: [projectId, id], onDelete: Cascade)
-  sender User @relation(fields: [senderId], references: [id])
+  recipient Agent @relation("SignalRecipient", fields: [projectId, recipientId], references: [projectId, id], onDelete: Cascade)
+  sender User? @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  senderAgent Agent? @relation("SignalAgentSender", fields: [projectId, senderAgentId], references: [projectId, id], onDelete: Cascade)
+  replyTo Signal? @relation("SignalReply", fields: [replyToId], references: [id], onDelete: Cascade)
+  reply Signal? @relation("SignalReply")
   @@unique([projectId, senderId, idempotencyKey])
+  @@unique([projectId, senderAgentId, idempotencyKey])
+  @@index([projectId, senderAgentId, createdAt])
   @@index([projectId, recipientId, acknowledgedAt, createdAt])
 }

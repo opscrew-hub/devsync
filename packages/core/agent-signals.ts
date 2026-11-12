@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { db } from "@devsync/db";
-import { agentInput, signalInput } from "@devsync/contracts";
+import { agentInput, agentSignalInput, signalInput } from "@devsync/contracts";
 import { DomainError, requireProject } from "./index.ts";
 
 const digest = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -55,7 +55,7 @@ export async function publishSignal(userId: string, projectId: string, input: un
 
 export async function listSignals(userId: string, projectId: string) {
   await requireProject(userId, projectId);
-  return db.signal.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 100 });
+  return db.signal.findMany({ where: { projectId }, include: { sender: { select: { name: true } }, senderAgent: { select: { name: true } } }, orderBy: { createdAt: "desc" }, take: 100 });
 }
 
 export async function authenticateAgent(token: string) {
@@ -95,6 +95,7 @@ export async function agentProjectState(token: string) {
       id: true,
       name: true,
       description: true,
+      agents: { where: { revokedAt: null }, select: { id: true, name: true, type: true }, orderBy: { name: "asc" } },
       tasks: { orderBy: [{ updatedAt: "desc" }, { id: "asc" }], take: 100 },
     },
   });
@@ -115,4 +116,46 @@ export async function rotateAgentCredential(userId: string, projectId: string, a
   });
   if (!updated.count) throw new DomainError(404, "Agent not found.");
   return { token };
+}
+
+export async function publishAgentSignal(token: string, input: unknown) {
+  const fields = agentSignalInput.parse(input);
+  const { id: senderAgentId, projectId } = await authenticateAgent(token);
+  if (senderAgentId === fields.recipientId) throw new DomainError(400, "Choose another agent.");
+  return db.$transaction(async tx => {
+    await tx.$queryRaw`SELECT "id" FROM "Agent" WHERE "id" = ${senderAgentId} FOR NO KEY UPDATE`;
+    const key = { projectId, senderAgentId, idempotencyKey: fields.idempotencyKey };
+    const existing = await tx.signal.findUnique({ where: { projectId_senderAgentId_idempotencyKey: key } });
+    if (existing) {
+      if (existing.recipientId !== fields.recipientId || existing.kind !== fields.kind ||
+          existing.replyToId !== (fields.replyToId ?? null) ||
+          typeof existing.payload !== "object" || !existing.payload || !("message" in existing.payload) ||
+          existing.payload.message !== fields.payload.message) {
+        throw new DomainError(409, "Idempotency key already used for another signal.");
+      }
+      return existing;
+    }
+    const recipient = await tx.agent.findUnique({
+      where: { projectId_id: { projectId, id: fields.recipientId } },
+      select: { revokedAt: true },
+    });
+    if (!recipient || recipient.revokedAt) throw new DomainError(404, "Agent not found.");
+    const recentCount = await tx.signal.count({
+      where: { projectId, senderAgentId, createdAt: { gte: new Date(Date.now() - 60000) } },
+    });
+    if (recentCount >= 20) throw new DomainError(429, "Agent signal limit reached. Retry in one minute.");
+
+    let hopCount = 0;
+    if (fields.replyToId) {
+      const parent = await tx.signal.findFirst({
+        where: { id: fields.replyToId, projectId, recipientId: senderAgentId },
+        select: { hopCount: true, reply: { select: { id: true } } },
+      });
+      if (!parent) throw new DomainError(404, "Reply signal not found in your inbox.");
+      if (parent.hopCount >= 4) throw new DomainError(409, "Signal reply limit reached.");
+      if (parent.reply) throw new DomainError(409, "A follow-up already exists for this signal.");
+      hopCount = parent.hopCount + 1;
+    }
+    return tx.signal.create({ data: { ...fields, projectId, senderAgentId, hopCount } });
+  });
 }

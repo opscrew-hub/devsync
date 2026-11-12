@@ -32,7 +32,7 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
     const tools = await call(token, "tools/list", {});
     assert.equal(tools.status, 200);
     assert.deepEqual((await tools.json()).result.tools.map((tool: { name: string }) => tool.name), [
-      "get_project_state", "get_pending_signals", "acknowledge_signal", "claim_task", "renew_task_claim", "release_task",
+      "get_project_state", "get_pending_signals", "acknowledge_signal", "claim_task", "renew_task_claim", "release_task", "publish_signal",
     ]);
     const inbox = await call(token, "tools/call", { name: "get_pending_signals", arguments: {} });
     assert.equal(inbox.status, 200);
@@ -41,6 +41,14 @@ test("MCP routes inbox reads and acknowledgements to the authenticated agent", {
     assert.equal(ack.status, 200);
     assert.deepEqual(JSON.parse((await ack.json()).result.content[0].text), { id: signal.id, acknowledged: true });
     assert.deepEqual(await pendingSignals(token), []);
+    const claude = await registerAgent(userId, project.id, { name: "Claude", type: "CLAUDE" });
+    const sent = await call(token, "tools/call", { name: "publish_signal", arguments: {
+      recipientId: claude.agent.id, kind: "clarification.answered", payload: { message: "Reviewed." },
+      idempotencyKey: randomUUID(), replyToId: signal.id,
+    } });
+    assert.equal(sent.status, 200);
+    assert.equal(JSON.parse((await sent.json()).result.content[0].text).senderAgentId, agent.id);
+    assert.equal((await pendingSignals(claude.token))[0].hopCount, 1);
     const task = await createTask(userId, project.id, { title: "Claim via MCP", description: "", acceptanceCriteria: "" });
     await updateTask(userId, project.id, task.id, { status: "READY", version: task.version });
     const argumentsForClaim = { taskId: task.id, claimId: randomUUID() };
