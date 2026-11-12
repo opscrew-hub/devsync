@@ -34,7 +34,7 @@ test("task outbox commits with edits and delivers once across concurrent workers
     }
     assert.deepEqual(await pendingSignals(lateAgent.token), []);
     await db.$executeRaw`ALTER TABLE "Signal" ADD CONSTRAINT "test_reject_outbox_signal"
-      CHECK ("idempotencyKey" NOT LIKE 'outbox:%') NOT VALID`;
+      CHECK ("idempotencyKey" NOT LIKE 'outbox:%' OR ("payload"->>'message') IS DISTINCT FROM 'Task created: Outbox retry fixture') NOT VALID`;
     try {
       await createTask(owner, project.id, { title: "Outbox retry fixture", description: "", acceptanceCriteria: "" });
       const retry = await processTaskOutboxEvent(project.id);

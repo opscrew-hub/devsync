@@ -2,7 +2,8 @@ import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelconte
 import { createAgentTask, DomainError, updateAgentTask } from "@devsync/core";
 import { authenticateAgent, acknowledgeSignal, pendingSignals, agentProjectState, publishAgentSignal } from "@devsync/core/agent-signals";
 import { claimTask, renewTaskClaim, releaseTaskClaim } from "@devsync/core/task-claims";
-import { agentSignalInput, agentTaskInput, agentTaskUpdate } from "@devsync/contracts";
+import { agentSignalInput, agentTaskInput, agentTaskUpdate, taskActivityInput } from "@devsync/contracts";
+import { reportTaskActivity } from "@devsync/core/task-activity";
 import { z } from "zod";
 
 export async function POST(request: Request) {
@@ -72,6 +73,19 @@ export async function POST(request: Request) {
     description: "Edit a task you created. Supply the current task version. Move a Backlog task to Ready to make it claimable.",
     inputSchema: agentTaskUpdate.extend({ taskId: z.string().min(1).max(40) }),
   }, ({ taskId, ...input }) => result(() => updateAgentTask(token, taskId, input)));
+
+  server.registerTool("report_progress", {
+    description: "Record progress under your active claim and current requirements revision.",
+    inputSchema: taskActivityInput,
+  }, input => result(() => reportTaskActivity(token, "implementation.progress", input)));
+  server.registerTool("report_blocker", {
+    description: "Record a blocker, move the task to Blocked, and end your claim.",
+    inputSchema: taskActivityInput,
+  }, input => result(() => reportTaskActivity(token, "task.blocked", input)));
+  server.registerTool("request_review", {
+    description: "Record a review request, move the task to Review, and end your claim.",
+    inputSchema: taskActivityInput,
+  }, input => result(() => reportTaskActivity(token, "review.requested", input)));
 
   await server.connect(transport);
   try {
