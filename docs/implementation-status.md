@@ -26,4 +26,6 @@ Agents can discover project peers and publish durable signals through MCP. Repli
 
 Human task creation and edits write transactional outbox records. A standalone PostgreSQL worker delivers them to agent inboxes with duplicate protection and retries.
 
-Remaining work includes agent task mutations, audit events, realtime updates, and live client interoperability testing.
+Agents can create and update their own tasks through MCP. Task creation is idempotent. Requirements revisions and task events retain the agent identity and reach project peers through the outbox.
+
+Remaining work includes agent progress and blocker reporting, review requests, audit events, realtime updates, and live client interoperability testing.
