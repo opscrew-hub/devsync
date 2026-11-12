@@ -8,7 +8,7 @@
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
     "test": "turbo test",
-    "db:generate": "prisma generate --schema packages/db/prisma/schema.prisma",
+    "db:generate": "pnpm --filter @devsync/db exec prisma generate",
     "db:migrate": "prisma migrate deploy --schema packages/db/prisma/schema.prisma"
   },
   "devDependencies": {
