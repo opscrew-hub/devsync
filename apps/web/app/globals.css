@@ -45,3 +45,17 @@ label { display:grid; gap:5px; }
 .login-card { width:min(100%,420px); background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:28px; display:grid; gap:16px; }
 .login h1 { font-size:27px; }
 @media (max-width:680px) { .shell { grid-template-columns:1fr; } aside { border-right:0; border-bottom:1px solid var(--line); } .nav-heading { margin-top:16px; } nav { display:flex; flex-wrap:wrap; } .metrics { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+
+.task-row { display:flex; align-items:center; gap:8px; padding:6px; }
+.task-row a { flex:1; min-width:0; padding:5px; }
+.task-row a:hover, .detail-link:hover { text-decoration:underline; }
+.task-row button { padding:4px 8px; }
+.task-detail { max-width:850px; }
+.task-detail .heading { margin-top:16px; }
+.detail-link { color:var(--accent); }
+.task-summary { padding:16px; margin-bottom:24px; display:grid; gap:8px; }
+.task-summary p, .timeline p { white-space:pre-wrap; }
+.timeline { display:grid; gap:8px; margin-top:12px; }
+.timeline li { padding:14px; display:grid; gap:6px; }
+.timeline time { color:var(--muted); font-size:12px; }
+.timeline summary { cursor:pointer; }

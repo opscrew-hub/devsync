@@ -1,9 +1,13 @@
 import { db } from "@devsync/db";
-import { projectInput, taskInput, taskUpdate } from "@devsync/contracts";
-import { transitions } from "./lifecycle";
+import { projectInput, taskCommentInput, taskInput, taskUpdate } from "@devsync/contracts";
+import { transitions } from "./lifecycle.ts";
 export { transitions };
 export class DomainError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
 }
 export async function requireProject(userId: string, projectId: string, write = false) {
   const member = await db.projectMember.findUnique({ where: { projectId_userId: { projectId, userId } }, include: { project: true } });
@@ -23,7 +27,7 @@ export async function listTasks(userId: string, projectId: string) {
 }
 export async function getTask(userId: string, projectId: string, id: string) {
   await requireProject(userId, projectId);
-  const task = await db.task.findUnique({ where: { id, projectId }, include: { revisions: { orderBy: { number: "desc" } } } });
+  const task = await db.task.findUnique({ where: { id, projectId }, include: { revisions: { orderBy: { number: "desc" } }, comments: { include: { author: { select: { name: true } } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }] } } });
   if (!task) throw new DomainError(404, "Task not found.");
   return task;
 }
@@ -35,7 +39,8 @@ export async function createTask(userId: string, projectId: string, input: unkno
 export async function updateTask(userId: string, projectId: string, id: string, input: unknown) {
   await requireProject(userId, projectId, true);
   const { version, status, ...patch } = taskUpdate.parse(input);
-  const task = await getTask(userId, projectId, id);
+  const task = await db.task.findUnique({ where: { id, projectId } });
+  if (!task) throw new DomainError(404, "Task not found.");
   if (version !== task.version) throw new DomainError(409, "Task changed. Reload and try again.");
   if (status && status !== task.status && !transitions[task.status].includes(status)) {
     throw new DomainError(409, "Invalid status transition.");
@@ -48,4 +53,12 @@ export async function updateTask(userId: string, projectId: string, id: string, 
     if (revised) await tx.taskRevision.create({ data: { ...fields, taskId: id, number: task.revision + 1 } });
     return tx.task.findUniqueOrThrow({ where: { id } });
   });
+}
+
+export async function createTaskComment(userId: string, projectId: string, id: string, input: unknown) {
+  const { body } = taskCommentInput.parse(input);
+  await requireProject(userId, projectId, true);
+  const task = await db.task.findUnique({ where: { id, projectId }, select: { id: true } });
+  if (!task) throw new DomainError(404, "Task not found.");
+  return db.taskComment.create({ data: { taskId: id, authorId: userId, body } });
 }

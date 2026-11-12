@@ -13,3 +13,4 @@ export const taskUpdate = taskInput.partial().extend({
   version: z.number().int().positive(),
   status: z.enum(statuses).optional(),
 });
+export const taskCommentInput = z.object({ body: z.string().trim().min(1).max(4000) });

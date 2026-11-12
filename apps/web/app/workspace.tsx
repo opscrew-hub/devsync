@@ -2,6 +2,7 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { statuses } from "@devsync/contracts";
+import Link from "next/link";
 import { Plus } from "lucide-react";
 
 type Task = { id: string; title: string; description: string; acceptanceCriteria: string; status: string; version: number; revision: number };
@@ -37,7 +38,7 @@ export function Workspace({ project, tasks }: { project?: { id: string; name: st
     }
   }
   function open(value: typeof editing) { setError(""); setEditing(value); }
-  const row = (task: Task) => <button key={task.id} className="task" onClick={() => open(task)}><span>{task.title}</span><span className="badge">{display(task.status)}</span></button>;
+  const row = (task: Task) => <div key={task.id} className="task task-row"><Link href={"/tasks/" + task.id + "?project=" + project?.id}>{task.title}</Link><span className="badge">{display(task.status)}</span><button type="button" onClick={() => open(task)} aria-label={"Edit " + task.title}>Edit</button></div>;
   return <>
     <div className="heading"><div><h1>{project?.name ?? "Projects"}</h1>{project?.description && <p>{project.description}</p>}</div><button onClick={() => open("project")}><Plus size={15}/> New project</button></div>
     {editing && <form className="editor panel" key={current?.id ?? String(editing)} onSubmit={save}>

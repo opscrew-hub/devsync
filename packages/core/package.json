@@ -1,1 +1,1 @@
-{"name":"@devsync/core","private":true,"type":"module","exports":"./index.ts","scripts":{"test":"node --disable-warning=ExperimentalWarning --experimental-strip-types --test lifecycle.test.ts"},"dependencies":{"@devsync/db":"workspace:*","@devsync/contracts":"workspace:*"}}
+{"name":"@devsync/core","private":true,"type":"module","exports":"./index.ts","scripts":{"test":"node --disable-warning=ExperimentalWarning --experimental-strip-types --test lifecycle.test.ts task-comments.test.ts"},"dependencies":{"@devsync/db":"workspace:*","@devsync/contracts":"workspace:*"}}

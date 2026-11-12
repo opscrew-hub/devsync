@@ -19,6 +19,6 @@
     },
     "lint": {},
     "typecheck": {},
-    "test": {}
+    "test": { "env": ["DATABASE_URL", "DEVSYNC_TEST_DB"], "cache": false }
   }
 }
