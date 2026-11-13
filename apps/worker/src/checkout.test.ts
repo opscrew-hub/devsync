@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { createCodexExecutor } from "./codex-executor.ts";
 import { withManagedCheckout } from "./managed-run.ts";
 
 test("checkout pins the requested revision and cleans up after adapter failure", async () => {
@@ -31,6 +32,20 @@ test("checkout pins the requested revision and cleans up after adapter failure",
       throw new Error("fixture adapter failed");
     });
     await assert.rejects(execute(run, new AbortController().signal), /fixture adapter failed/);
+    const codex = createCodexExecutor("fixture-key", options => {
+      assert.equal(options.env?.DATABASE_URL, undefined);
+      return { startThread(threadOptions) {
+        assert.equal(threadOptions?.networkAccessEnabled, false);
+        assert.equal(threadOptions?.sandboxMode, "workspace-write");
+        return { async run(prompt, turnOptions) {
+          assert.match(String(prompt), /Fixture/);
+          assert.equal(await readFile(join(threadOptions!.workingDirectory!, "fixture.txt"), "utf8"), "original");
+          assert.equal(turnOptions?.signal?.aborted, false);
+          return { items: [], finalResponse: "", usage: null };
+        } };
+      } };
+    }, async () => ({ repository: source, commit: revision }));
+    await codex(run, new AbortController().signal);
     assert.ok(checkout);
     await assert.rejects(stat(checkout), { code: "ENOENT" });
   } finally {
