@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { generateKeyPairSync } from "node:crypto";
 import { createGithubDraftClient } from "@devsync/core/github-app";
 import { createCodexExecutor } from "./codex-executor.ts";
+import { createClaudeExecutor } from "./claude-executor.ts";
 import { ensureDraftBranch } from "./draft-pr-branch.ts";
 import { planDraftPullRequest, publishDraftPullRequest } from "./draft-pr-plan.ts";
 import { withManagedCheckout } from "./managed-run.ts";
@@ -94,6 +95,28 @@ test("checkout pins the requested revision and cleans up after adapter failure",
       } };
     }, async () => ({ repository: source, commit: revision }));
     await codex(run, new AbortController().signal);
+    let claudeConfig = "";
+    const claude = createClaudeExecutor(process.execPath, "fixture-key",
+      async () => ({ repository: source, commit: revision }),
+      async (file, args, options) => {
+        assert.equal(file, process.execPath);
+        assert.equal(options.env.ANTHROPIC_API_KEY, "fixture-key");
+        assert.equal(options.env.DATABASE_URL, undefined);
+        assert.equal(options.env.GITHUB_APP_PRIVATE_KEY, undefined);
+        assert.equal(args[args.indexOf("--tools") + 1], "Read,Glob,Grep,Edit,Write");
+        assert.match(args.at(-1) ?? "", /Fixture/);
+        claudeConfig = options.env.CLAUDE_CONFIG_DIR!;
+        assert.ok((await stat(claudeConfig)).isDirectory());
+        assert.equal(await readFile(join(options.cwd, "fixture.txt"), "utf8"), "original");
+        await writeFile(join(options.cwd, "fixture.txt"), "claude edit");
+        return { stdout: JSON.stringify({
+          subtype: "success", is_error: false, usage: { input_tokens: 10, output_tokens: 5 },
+        }) };
+      });
+    const claudeResult = await claude(run, new AbortController().signal);
+    assert.deepEqual(claudeResult?.tokenUsage, { inputTokens: 10, outputTokens: 5 });
+    assert.match(claudeResult?.patch ?? "", /[+]claude edit/);
+    await assert.rejects(stat(claudeConfig), { code: "ENOENT" });
     const summarize = withManagedCheckout(async () => ({ repository: source, commit: revision }),
       async (_, { directory }) => {
         await writeFile(join(directory, "fixture.txt"), "edited");
