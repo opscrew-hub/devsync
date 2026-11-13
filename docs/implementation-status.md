@@ -46,13 +46,15 @@ Project owners can link a deployment-authorized repository after GitHub verifies
 
 The worker now processes webhook deliveries for linked repositories. The project dashboard shows recent activity and refreshes through SSE. Branch, PR, and check state projections and agent signals remain pending.
 
-## Phase 4 progress
+## Phase 4 progress: managed coding jobs
 
-Project writers can request a managed run for a Ready task revision. Owners and admins can approve, reject, or cancel requests. Approved runs are stored as queued. Checkout isolation, SDK execution, and draft PR creation remain pending.
+Project writers can request a managed run for a Ready task revision. Owners and admins can approve, reject, or cancel requests. Approval queues the run for a worker.
 
-The PostgreSQL dispatch API reserves approved runs by agent type with a two-minute lease and an opaque reservation token. Expired leases can be reclaimed. The background worker does not consume these reservations until an execution adapter is integrated.
+The PostgreSQL dispatch API reserves approved runs by agent type with a two-minute lease and an opaque reservation token. Expired leases can be reclaimed. The run lifecycle checks the reservation token when starting and finishing a run and supports cancellation and expiry cleanup.
 
-The run lifecycle supports token-checked start and finish, cancellation, and expiry cleanup. These are database operations for a future executor.
+The dedicated Codex worker runs the adapter in a temporary checkout pinned to the resolved commit. Successful results can store the base commit, changed-file summary, and a tracked-file patch. The summary includes untracked files, which must be staged or committed to appear in the patch. A regression test covers committed adapter edits. A PostgreSQL integration test covers the path from approval to patch persistence using a local Git repository and a test adapter.
+
+Remaining work includes draft pull request creation and live verification of the SDK and private GitHub App checkout.
 
 ### Dedicated Codex worker
 
