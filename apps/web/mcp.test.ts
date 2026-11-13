@@ -210,6 +210,7 @@ test("managed runs require an administrator decision for the current task revisi
   const { db } = await import("@devsync/db");
   const { createProject, createTask, updateTask, changeProjectMember } = await import("@devsync/core");
   const { requestRun, decideRun, listRuns, reserveQueuedRun, releaseRunReservation, startReservedRun, finishReservedRun, expireRunningRuns, renewRunningRun } = await import("@devsync/core/runs");
+  const { readProjectRealtimeVersion } = await import("@devsync/core/project-realtime");
   const owner = randomUUID();
   const developer = randomUUID();
   try {
@@ -220,7 +221,9 @@ test("managed runs require an administrator decision for the current task revisi
     const input = { taskId: task.id, agentType: "CODEX" };
     await assert.rejects(requestRun(developer, project.id, input), /Ready/);
     const ready = await updateTask(owner, project.id, task.id, { version: task.version, status: "READY" });
+    const beforeRequest = await readProjectRealtimeVersion(owner, project.id);
     const run = await requestRun(developer, project.id, input);
+    assert.notEqual(await readProjectRealtimeVersion(owner, project.id), beforeRequest);
     await assert.rejects(requestRun(developer, project.id, input), /pending run/);
     await assert.rejects(decideRun(developer, project.id, run.id, { status: "QUEUED" }), /administrator/);
     await updateTask(owner, project.id, task.id, { version: ready.version, acceptanceCriteria: "Revised" });
@@ -246,7 +249,9 @@ test("managed runs require an administrator decision for the current task revisi
     assert.ok(next);
     assert.equal(await startReservedRun(current.id, recovered.dispatchToken), false);
     assert.equal(await startReservedRun(current.id, next.dispatchToken), true);
+    const beforeHeartbeat = await readProjectRealtimeVersion(owner, project.id);
     assert.ok(await renewRunningRun(current.id, next.dispatchToken));
+    assert.equal(await readProjectRealtimeVersion(owner, project.id), beforeHeartbeat);
     assert.equal(await renewRunningRun(current.id, recovered.dispatchToken), null);
     assert.equal(await finishReservedRun(current.id, recovered.dispatchToken, "SUCCEEDED"), false);
     await decideRun(owner, project.id, current.id, { status: "CANCELLED" });
