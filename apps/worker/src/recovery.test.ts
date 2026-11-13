@@ -78,7 +78,9 @@ test("executor consumes an approved run and persists its outcome", {
     await assert.rejects(executeNextRun("CLAUDE", async () => {
       assert.fail("Adapter ran without a linked repository");
     }, new AbortController().signal), /linked repository/);
-    assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: run.id } })).status, "FAILED");
+    const failed = await db.agentRun.findUniqueOrThrow({ where: { id: run.id } });
+    assert.equal(failed.status, "FAILED");
+    assert.equal(failed.failureReason, "EXECUTION_FAILED");
     await db.githubRepository.create({ data: {
       projectId: project.id, installationId: 23456n, repositoryId: 34567n, fullName: "fixture/devsync",
     } });
