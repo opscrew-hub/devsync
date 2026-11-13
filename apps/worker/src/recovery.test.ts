@@ -58,13 +58,24 @@ test("executor consumes an approved run and persists its outcome", {
     await db.task.update({ where: { id: task.id }, data: { status: "READY" } });
     const run = await requestRun(owner, project.id, { taskId: task.id, agentType: "CLAUDE" });
     await decideRun(owner, project.id, run.id, { status: "QUEUED" });
+    await assert.rejects(executeNextRun("CLAUDE", async () => {
+      assert.fail("Adapter ran without a linked repository");
+    }, new AbortController().signal), /linked repository/);
+    assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: run.id } })).status, "FAILED");
+    await db.githubRepository.create({ data: {
+      projectId: project.id, installationId: 23456n, repositoryId: 34567n, fullName: "fixture/devsync",
+    } });
+    const ready = await requestRun(owner, project.id, { taskId: task.id, agentType: "CLAUDE" });
+    await decideRun(owner, project.id, ready.id, { status: "QUEUED" });
     const executed = await executeNextRun("CLAUDE", async (work, signal) => {
-      assert.equal(work.id, run.id);
+      assert.equal(work.id, ready.id);
+      assert.equal(work.repository, "fixture/devsync");
+      assert.equal(work.title, "Executor fixture");
       assert.equal(work.revision, task.revision);
       assert.equal(signal.aborted, false);
     }, new AbortController().signal);
     assert.equal(executed, true);
-    const finished = await db.agentRun.findUniqueOrThrow({ where: { id: run.id } });
+    const finished = await db.agentRun.findUniqueOrThrow({ where: { id: ready.id } });
     assert.equal(finished.status, "SUCCEEDED");
     assert.equal(finished.dispatchToken, null);
   } finally {

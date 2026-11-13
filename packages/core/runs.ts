@@ -137,3 +137,22 @@ export async function renewRunningRun(id: string, token: string) {
   `;
   return lease ?? null;
 }
+
+export async function getRunExecutionContext(id: string, token: string) {
+  const [context] = await db.$queryRaw<{
+    title: string; description: string; acceptanceCriteria: string;
+    repository: string; repositoryId: string; installationId: string;
+  }[]>`
+    SELECT revision."title", revision."description", revision."acceptanceCriteria",
+      repo."fullName" AS "repository", repo."repositoryId"::text AS "repositoryId",
+      repo."installationId"::text AS "installationId"
+    FROM "AgentRun" run
+    JOIN "Task" task ON task."id" = run."taskId" AND task."projectId" = run."projectId"
+    JOIN "TaskRevision" revision ON revision."taskId" = task."id" AND revision."number" = run."revision"
+    JOIN "GithubRepository" repo ON repo."projectId" = run."projectId"
+    WHERE run."id" = ${id} AND run."dispatchToken" = ${token} AND run."status" = 'RUNNING'
+      AND run."dispatchExpiresAt" > timezone('UTC', clock_timestamp())
+      AND task."status" = 'READY' AND task."revision" = run."revision"
+  `;
+  return context ?? null;
+}
