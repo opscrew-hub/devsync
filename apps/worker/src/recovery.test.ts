@@ -102,6 +102,14 @@ test("executor consumes an approved run and persists its outcome", {
     await assert.rejects(getRunPatch(randomUUID(), project.id, ready.id), /not found/);
     assert.equal(finished.baseCommit, "a".repeat(40));
     assert.deepEqual(finished.changes, [{ path: "fixture.txt", status: " M" }]);
+    const timed = await requestRun(owner, project.id, { taskId: task.id, agentType: "CLAUDE" });
+    await decideRun(owner, project.id, timed.id, { status: "QUEUED" });
+    await assert.rejects(executeNextRun("CLAUDE", async (_, signal) => {
+      await setTimeout(10000, undefined, { signal });
+    }, new AbortController().signal, 100), { name: "AbortError" });
+    const timedOut = await db.agentRun.findUniqueOrThrow({ where: { id: timed.id } });
+    assert.equal(timedOut.status, "FAILED");
+    assert.equal(timedOut.failureReason, "TIME_LIMIT");
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId: owner } } } });
     await db.user.deleteMany({ where: { id: owner } });

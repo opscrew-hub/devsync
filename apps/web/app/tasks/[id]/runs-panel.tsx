@@ -6,6 +6,7 @@ import { useState } from "react";
 const formatTime = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Berlin" });
 
 const failureMessages: Record<string, string> = {
+  TIME_LIMIT: "The run exceeded its execution time limit.",
   EXECUTION_FAILED: "The worker could not complete this run. Check the worker logs for details.",
   LEASE_EXPIRED: "The worker lease expired.",
   TASK_CLOSED: "The task was completed or cancelled before dispatch.",

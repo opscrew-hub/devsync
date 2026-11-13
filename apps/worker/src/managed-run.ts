@@ -13,6 +13,7 @@ export async function executeNextRun(
   agentType: "CODEX" | "CLAUDE",
   execute: ManagedExecutor,
   shutdown: AbortSignal,
+  timeoutMs = 15 * 60 * 1000,
 ) {
   if (shutdown.aborted) return false;
   const run = await reserveQueuedRun(agentType);
@@ -24,7 +25,8 @@ export async function executeNextRun(
   }
 
   const stopped = new AbortController();
-  const signal = AbortSignal.any([shutdown, stopped.signal, AbortSignal.timeout(15 * 60 * 1000)]);
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const signal = AbortSignal.any([shutdown, stopped.signal, deadline]);
   const heartbeat = (async () => {
     while (!signal.aborted) {
       await setTimeout(15000, undefined, { signal });
@@ -40,10 +42,10 @@ export async function executeNextRun(
       result = await execute({ id, projectId, taskId, revision, ...context }, signal);
     }
     if (signal.aborted || !await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit, result?.patch)) {
-      await finishReservedRun(id, dispatchToken, "FAILED");
+      await finishReservedRun(id, dispatchToken, "FAILED", undefined, undefined, undefined, signal.aborted && signal.reason === deadline.reason ? "TIME_LIMIT" : "EXECUTION_FAILED");
     }
   } catch (error) {
-    await finishReservedRun(id, dispatchToken, "FAILED");
+    await finishReservedRun(id, dispatchToken, "FAILED", undefined, undefined, undefined, signal.aborted && signal.reason === deadline.reason ? "TIME_LIMIT" : "EXECUTION_FAILED");
     throw error;
   } finally {
     stopped.abort();
