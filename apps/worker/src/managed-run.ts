@@ -17,6 +17,7 @@ export async function executeNextRun(
   log?: Pick<import("pino").Logger, "info">,
   tokenBudget?: number,
   heartbeatMs = 15000,
+  publish?: (run: Parameters<ManagedExecutor>[0], result: NonNullable<Awaited<ReturnType<ManagedExecutor>>>, signal: AbortSignal) => Promise<void>,
 ) {
   if (shutdown.aborted) return false;
   const run = await reserveQueuedRun(agentType);
@@ -45,12 +46,14 @@ export async function executeNextRun(
     return finishReservedRun(id, dispatchToken, "FAILED", undefined, undefined, undefined, reason);
   }
   let result: Awaited<ReturnType<ManagedExecutor>> = undefined;
+  let execution: Parameters<ManagedExecutor>[0] | undefined;
   try {
     if (!signal.aborted) {
       const context = await getRunExecutionContext(id, dispatchToken);
       if (!context) throw new Error("Run requires a current task revision, a valid lease, and a linked repository.");
       signal.throwIfAborted();
-      result = await execute({ id, projectId, taskId, revision, ...context }, signal);
+      execution = { id, projectId, taskId, revision, ...context };
+      result = await execute(execution, signal);
     }
     const usage = result?.tokenUsage;
     if (!signal.aborted && tokenBudget !== undefined &&
@@ -63,11 +66,15 @@ export async function executeNextRun(
     }
     if (!signal.aborted && await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit, result?.patch, undefined, result?.tokenUsage)) {
       outcome = "succeeded";
+      stopped.abort();
+      if (publish && execution && result?.patch && !shutdown.aborted) {
+        await publish(execution, result, AbortSignal.any([shutdown, AbortSignal.timeout(60000)]));
+      }
     } else if (await recordFailure()) {
       outcome = "failed";
     }
   } catch (error) {
-    if (await recordFailure()) outcome = "failed";
+    if (outcome !== "succeeded" && await recordFailure()) outcome = "failed";
     throw error;
   } finally {
     stopped.abort();

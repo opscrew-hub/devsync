@@ -54,7 +54,9 @@ The PostgreSQL dispatch API reserves approved runs by agent type with a two-minu
 
 The dedicated Codex worker runs the adapter in a temporary checkout pinned to the resolved commit. Successful results can store the base commit, changed-file summary, and a tracked-file patch. The summary includes untracked files, which must be staged or committed to appear in the patch. A regression test covers committed adapter edits. A PostgreSQL integration test covers the path from approval to patch persistence using a local Git repository and a test adapter.
 
-Remaining work includes draft pull request creation and live verification of the SDK and private GitHub App checkout.
+Set `DEVSYNC_CODEX_DRAFT_PRS=true` to enable a draft pull request attempt after a successful run saves a patch. The GitHub App needs Contents and Pull requests write permissions on the linked repository. The worker logs the run ID and PR URL on success, or the run ID on publication failure. The successful run and patch remain available after a publication failure.
+
+Remaining work includes durable publication retries, saving the PR link on the run, and live verification of the SDK and private GitHub App checkout.
 
 ### Dedicated Codex worker
 

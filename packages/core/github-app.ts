@@ -138,7 +138,7 @@ export async function createGithubDraftClient(
     ...options, signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
   });
   const { github, token } = await installationClient(
-    run.projectId, installationId, repositoryId, { metadata: "read", pull_requests: "write" }, abortable,
+    run.projectId, installationId, repositoryId, { metadata: "read", contents: "write", pull_requests: "write" }, abortable,
   );
   const metadata = githubSnapshotMetadata.safeParse(await github(`/repositories/${repositoryId}`, token));
   if (!metadata.success || metadata.data.id !== repositoryId) {
@@ -157,6 +157,8 @@ export async function createGithubDraftClient(
   }
   return {
     base: default_branch,
+    repository: `https://github.com/${full_name}.git`,
+    token,
     async findPull(head: string, base: string) {
       const query = new URLSearchParams({ state: "all", head: `${owner}:${head}`, base, per_page: "1" });
       const rows: unknown = await github(`${pulls}?${query}`, token);
