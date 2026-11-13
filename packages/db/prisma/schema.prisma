@@ -260,6 +260,7 @@ model AgentRun {
   startedAt DateTime?
   finishedAt DateTime?
   changes Json?
+  baseCommit String?
   dispatchToken String?
   dispatchExpiresAt DateTime?
   task Task @relation(fields: [projectId, taskId], references: [projectId, id], onDelete: Cascade)

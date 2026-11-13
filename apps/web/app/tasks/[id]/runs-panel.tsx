@@ -5,7 +5,7 @@ import { useState } from "react";
 
 export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
   projectId: string; taskId: string; ready: boolean; writer: boolean; admin: boolean;
-  runs: { id: string; revision: number; agentType: string; status: string; changes: unknown }[];
+  runs: { id: string; revision: number; agentType: string; status: string; changes: unknown; baseCommit: string | null }[];
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -40,6 +40,7 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
     {error && <p role="alert">{error}</p>}
     <ul className="list">{runs.map(run => <li key={run.id}>
       <strong>{run.agentType}</strong> · Revision {run.revision} · {run.status.toLowerCase()}
+      {run.baseCommit && <p>Base commit <code>{run.baseCommit}</code></p>}
       {Array.isArray(run.changes) && <details>
         <summary>{run.changes.length} changed files</summary>
         <ul>{run.changes.map((change, index) => change && typeof change.path === "string" && typeof change.status === "string" &&
