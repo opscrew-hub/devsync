@@ -119,7 +119,13 @@ test("GitHub repository links require owner access and scoped verification", {
       await db.$executeRaw`ALTER TABLE "Signal" ADD CONSTRAINT "test_github_retry" CHECK ("githubDeliveryId" IS NULL) NOT VALID`;
       try {
         assert.equal(await processGithubEvent(), 1);
-        assert.equal((await getGithubDeliveryHealth(owner, project.id)).retrying, 1);
+        const retryHealth = await getGithubDeliveryHealth(owner, project.id);
+        assert.equal(retryHealth.retrying, 1);
+        assert.equal(retryHealth.failures.length, 1);
+        assert.equal(retryHealth.failures[0].deliveryId, deliveryId);
+        assert.equal(retryHealth.failures[0].attempts, 1);
+        assert.equal(retryHealth.failures[0].lastErrorCode, "23514");
+        assert.deepEqual((await getGithubDeliveryHealth(owner, other.id)).failures, []);
         assert.equal(await processGithubEvent(), 0);
       } finally {
         await db.$executeRaw`ALTER TABLE "Signal" DROP CONSTRAINT "test_github_retry"`;
@@ -131,6 +137,7 @@ test("GitHub repository links require owner access and scoped verification", {
       assert.equal(activity.deliveryId, deliveryId);
       const health = await getGithubDeliveryHealth(owner, project.id);
       assert.equal(health.pending, 0);
+      assert.deepEqual(health.failures, []);
       assert.ok(health.lastProcessed);
       assert.equal(activity.subject, "refs/heads/main");
       const signals = await pendingSignals(agent.token);
