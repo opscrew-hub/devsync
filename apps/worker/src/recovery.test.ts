@@ -133,6 +133,20 @@ test("executor consumes an approved run and persists its outcome", {
     assert.equal(stopped.status, "CANCELLED");
     assert.equal(stopped.patch, null);
     assert.equal(stopped.dispatchToken, null);
+    const interrupted = await requestRun(owner, project.id, { taskId: task.id, agentType: "CLAUDE" });
+    await decideRun(owner, project.id, interrupted.id, { status: "QUEUED" });
+    let observedAbort = false;
+    await assert.rejects(executeNextRun("CLAUDE", async (work, signal) => {
+      assert.equal(work.id, interrupted.id);
+      await decideRun(owner, project.id, work.id, { status: "CANCELLED" });
+      try {
+        await setTimeout(1000, undefined, { signal });
+      } finally {
+        observedAbort = signal.aborted;
+      }
+    }, new AbortController().signal, 5000, undefined, undefined, 25), { name: "AbortError" });
+    assert.equal(observedAbort, true);
+    assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: interrupted.id } })).status, "CANCELLED");
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId: owner } } } });
     await db.user.deleteMany({ where: { id: owner } });
