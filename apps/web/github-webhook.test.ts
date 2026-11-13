@@ -52,3 +52,43 @@ test("GitHub webhook intake verifies signatures, scopes repositories, and dedupl
     await db.$disconnect();
   }
 });
+
+test("GitHub repository links require owner access and scoped verification", {
+  skip: process.env.DEVSYNC_TEST_DB !== "1",
+}, async () => {
+  const { generateKeyPairSync } = await import("node:crypto");
+  const { db } = await import("@devsync/db");
+  const { createProject } = await import("@devsync/core");
+  const { linkGithubRepository, getGithubRepository } = await import("@devsync/core/github-app");
+  const owner = randomUUID();
+  try {
+    await db.user.create({ data: { id: owner, name: "Owner" } });
+    const project = await createProject(owner, { name: "GitHub", description: "" });
+    const privateKey = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+    process.env.GITHUB_APP_ID = "123";
+    process.env.GITHUB_APP_PRIVATE_KEY = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+    process.env.GITHUB_PROJECT_REPOSITORIES = `${project.id}:456:789`;
+    const calls: string[] = [];
+    const mock: typeof fetch = async (url, init) => {
+      calls.push(String(url));
+      if (init?.method === "POST") {
+        assert.deepEqual(JSON.parse(String(init.body)), { repository_ids: [789], permissions: { metadata: "read" } });
+        assert.equal(new Headers(init.headers).get("authorization")?.split(".").length, 3);
+        return Response.json({ token: "fixture-token" });
+      }
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer fixture-token");
+      return Response.json({ id: 789, full_name: "fixture/repo" });
+    };
+    await assert.rejects(linkGithubRepository(owner, project.id, { installationId: 456, repositoryId: 790 }, mock), /not authorized/);
+    assert.deepEqual(calls, []);
+    const saved = await linkGithubRepository(owner, project.id, { installationId: 456, repositoryId: 789 }, mock);
+    assert.equal(saved.repositoryId, "789");
+    assert.equal((await getGithubRepository(owner, project.id))?.fullName, "fixture/repo");
+    await assert.rejects(getGithubRepository(randomUUID(), project.id), /not found/);
+    assert.ok(!JSON.stringify(saved).includes("fixture-token"));
+  } finally {
+    await db.project.deleteMany({ where: { members: { some: { userId: owner } } } });
+    await db.user.deleteMany({ where: { id: owner } });
+    await db.$disconnect();
+  }
+});

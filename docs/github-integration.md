@@ -6,6 +6,14 @@ Set `GITHUB_WEBHOOK_REPOSITORIES` to comma-separated installation and repository
 
 Intake supports pushes, pull requests, pull request reviews, check runs, check suites, and workflow runs. Requests have a 2 MiB limit. A new delivery returns HTTP 202 and a duplicate returns HTTP 200. The verified JSON is persisted by delivery ID, installation ID, and repository ID. Limit database access to trusted operators because payloads may contain private repository content.
 
-This slice persists webhook deliveries. Project linking, GitHub App token management, event processing, and dashboard synchronization are pending.
+Event processing and dashboard synchronization are pending.
 
 [GitHub webhook signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
+
+## Link a repository
+
+Set `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` in the web process environment. The private key may be PEM text with escaped newline characters. Install the app on the selected repository. Set `GITHUB_PROJECT_REPOSITORIES` to comma-separated `projectId:installationId:repositoryId` triples so an owner can link only an operator-authorized repository. Keep the webhook allowlist configured separately for intake.
+
+In the project dashboard, sign in as the owner and submit the installation and repository IDs in the GitHub repository panel. DevSync requests a repository-scoped installation token with metadata read access, verifies the repository identity, and records the link. The app key and installation token are excluded from the database.
+
+[GitHub installation token documentation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)

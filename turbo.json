@@ -14,7 +14,7 @@
       ],
       "env": [
         "DATABASE_URL",
-        "AUTH_*", "GITHUB_WEBHOOK_*"
+        "AUTH_*", "GITHUB_WEBHOOK_*", "GITHUB_APP_*", "GITHUB_PROJECT_REPOSITORIES"
       ]
     },
     "lint": {},
