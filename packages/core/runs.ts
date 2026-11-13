@@ -114,3 +114,17 @@ export async function expireRunningRuns() {
     WHERE "status" = 'RUNNING' AND "dispatchExpiresAt" <= timezone('UTC', clock_timestamp())
   `;
 }
+
+export async function renewRunningRun(id: string, token: string) {
+  const [lease] = await db.$queryRaw<{ expiresAt: Date }[]>`
+    UPDATE "AgentRun" run
+    SET "dispatchExpiresAt" = timezone('UTC', clock_timestamp()) + interval '2 minutes'
+    FROM "Task" task
+    WHERE run."id" = ${id} AND run."taskId" = task."id" AND run."projectId" = task."projectId"
+      AND run."status" = 'RUNNING' AND run."dispatchToken" = ${token}
+      AND run."dispatchExpiresAt" > timezone('UTC', clock_timestamp())
+      AND task."status" = 'READY' AND task."revision" = run."revision"
+    RETURNING run."dispatchExpiresAt" AS "expiresAt"
+  `;
+  return lease ?? null;
+}

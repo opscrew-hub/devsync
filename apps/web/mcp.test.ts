@@ -209,7 +209,7 @@ test("project stream refreshes on committed writes and closes when access is rev
 test("managed runs require an administrator decision for the current task revision", { skip: process.env.DEVSYNC_TEST_DB !== "1" }, async () => {
   const { db } = await import("@devsync/db");
   const { createProject, createTask, updateTask, changeProjectMember } = await import("@devsync/core");
-  const { requestRun, decideRun, listRuns, reserveQueuedRun, releaseRunReservation, startReservedRun, finishReservedRun, expireRunningRuns } = await import("@devsync/core/runs");
+  const { requestRun, decideRun, listRuns, reserveQueuedRun, releaseRunReservation, startReservedRun, finishReservedRun, expireRunningRuns, renewRunningRun } = await import("@devsync/core/runs");
   const owner = randomUUID();
   const developer = randomUUID();
   try {
@@ -246,9 +246,12 @@ test("managed runs require an administrator decision for the current task revisi
     assert.ok(next);
     assert.equal(await startReservedRun(current.id, recovered.dispatchToken), false);
     assert.equal(await startReservedRun(current.id, next.dispatchToken), true);
+    assert.ok(await renewRunningRun(current.id, next.dispatchToken));
+    assert.equal(await renewRunningRun(current.id, recovered.dispatchToken), null);
     assert.equal(await finishReservedRun(current.id, recovered.dispatchToken, "SUCCEEDED"), false);
     await decideRun(owner, project.id, current.id, { status: "CANCELLED" });
     assert.equal(await finishReservedRun(current.id, next.dispatchToken, "SUCCEEDED"), false);
+    assert.equal(await renewRunningRun(current.id, next.dispatchToken), null);
     const retry = await requestRun(developer, project.id, input);
     await decideRun(owner, project.id, retry.id, { status: "QUEUED" });
     const reserved = await reserveQueuedRun("CODEX");
@@ -256,6 +259,7 @@ test("managed runs require an administrator decision for the current task revisi
     assert.equal(await startReservedRun(retry.id, reserved.dispatchToken), true);
     await db.agentRun.update({ where: { id: retry.id }, data: { dispatchExpiresAt: new Date(0) } });
     assert.equal(await finishReservedRun(retry.id, reserved.dispatchToken, "SUCCEEDED"), false);
+    assert.equal(await renewRunningRun(retry.id, reserved.dispatchToken), null);
     assert.equal(await expireRunningRuns(), 1);
     assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: retry.id } })).status, "FAILED");
     assert.equal(await reserveQueuedRun("CODEX"), null);
