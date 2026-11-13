@@ -61,3 +61,10 @@ export const githubWebhookEnvelope = z.object({
   installation: z.object({ id: z.number().int().positive() }).passthrough(),
   repository: z.object({ id: z.number().int().positive() }).passthrough(),
 }).catchall(z.json());
+
+export const githubRepositoryInput = z.object({
+  installationId: z.number().int().positive(),
+  repositoryId: z.number().int().positive(),
+});
+export const githubTokenResponse = z.object({ token: z.string().min(1) });
+export const githubRepositoryResponse = z.object({ id: z.number().int().positive(), full_name: z.string().min(1).max(300) });

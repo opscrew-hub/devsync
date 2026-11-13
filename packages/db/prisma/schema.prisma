@@ -46,6 +46,7 @@ model Project {
   outboxEvents OutboxEvent[]
   auditLogs AuditLog[]
   realtime ProjectRealtime?
+  githubRepository GithubRepository?
 }
 model ProjectMember {
   projectId String
@@ -211,4 +212,14 @@ model GithubEvent {
   processedAt DateTime?
   @@index([processedAt, receivedAt])
   @@index([installationId, repositoryId, receivedAt])
+}
+
+model GithubRepository {
+  projectId String @id
+  installationId BigInt
+  repositoryId BigInt
+  fullName String
+  verifiedAt DateTime @default(now())
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  @@unique([installationId, repositoryId])
 }

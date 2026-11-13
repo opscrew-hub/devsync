@@ -8,6 +8,7 @@ type Entry = {
 };
 
 const labels: Record<string, string> = {
+  "github.repository_linked": "GitHub repository linked",
   "project.created": "Project created",
   "member.access_changed": "Project access changed",
   "agent.registered": "Agent registered",
