@@ -1,4 +1,4 @@
-import { listCheckoutChanges, withCheckout } from "./checkout.ts";
+import { captureCheckoutPatch, listCheckoutChanges, withCheckout } from "./checkout.ts";
 import { setTimeout } from "node:timers/promises";
 import { finishReservedRun, getRunExecutionContext, releaseRunReservation, renewRunningRun, reserveQueuedRun, startReservedRun } from "@devsync/core/runs";
 
@@ -7,7 +7,7 @@ type Reservation = NonNullable<Awaited<ReturnType<typeof reserveQueuedRun>>>;
 export type ManagedExecutor = (
   run: Pick<Reservation, "id" | "projectId" | "taskId" | "revision"> & ExecutionContext,
   signal: AbortSignal,
-) => Promise<void | { changes: Awaited<ReturnType<typeof listCheckoutChanges>>; baseCommit: string }>;
+) => Promise<void | { changes: Awaited<ReturnType<typeof listCheckoutChanges>>; baseCommit: string; patch?: string }>;
 
 export async function executeNextRun(
   agentType: "CODEX" | "CLAUDE",
@@ -39,7 +39,7 @@ export async function executeNextRun(
       signal.throwIfAborted();
       result = await execute({ id, projectId, taskId, revision, ...context }, signal);
     }
-    if (signal.aborted || !await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit)) {
+    if (signal.aborted || !await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit, result?.patch)) {
       await finishReservedRun(id, dispatchToken, "FAILED");
     }
   } catch (error) {
@@ -67,7 +67,7 @@ export function withManagedCheckout(
         const changes = await listCheckoutChanges(directory, signal);
         signal.throwIfAborted();
         if (reportChanges) await reportChanges(run.id, changes);
-        return { changes, baseCommit: commit };
+        return { changes, baseCommit: commit, patch: await captureCheckoutPatch(directory, commit, signal) };
       }
     }, cloneToken);
   };
