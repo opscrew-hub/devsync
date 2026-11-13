@@ -170,7 +170,7 @@ export async function getRunExecutionContext(id: string, token: string) {
   return context ?? null;
 }
 
-export async function claimRunDraftPublication() {
+export async function claimRunDraftPublication(agentType?: "CODEX" | "CLAUDE") {
   const [job] = await db.$queryRaw<{
     id: string; projectId: string; revision: number; title: string;
     repositoryId: string; installationId: string; baseCommit: string; patch: string;
@@ -182,6 +182,7 @@ export async function claimRunDraftPublication() {
         AND repo."repositoryId" = run."draftRepositoryId" AND repo."installationId" = run."draftInstallationId"
       JOIN "TaskRevision" revision ON revision."taskId" = run."taskId" AND revision."number" = run."revision"
       WHERE run."status" = 'SUCCEEDED' AND run."draftPullRequestUrl" IS NULL
+        AND (${agentType ?? null}::"AgentType" IS NULL OR run."agentType" = ${agentType ?? null}::"AgentType")
         AND run."draftRetryAt" <= timezone('UTC', clock_timestamp())
       ORDER BY run."draftRetryAt", run."id"
       LIMIT 1 FOR UPDATE OF run SKIP LOCKED

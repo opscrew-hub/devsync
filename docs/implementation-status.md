@@ -60,6 +60,8 @@ The worker queues publication in the same database update that saves the success
 
 ### Dedicated Codex worker
 
+For Claude runs, use `pnpm --filter @devsync/worker start:claude` on a dedicated execution host. Set `DEVSYNC_CLAUDE_BINARY` to the absolute path of the native Claude Code executable and configure `DEVSYNC_CLAUDE_API_KEY`, `DATABASE_URL`, and the same GitHub App settings. Optional settings are `DEVSYNC_CLAUDE_TOKEN_BUDGET` and `DEVSYNC_CLAUDE_DRAFT_PRS=true`. The adapter exposes file reading and editing tools and uses the shared checkout, patch, and publication lifecycle. Live Claude verification remains pending.
+
 Run `pnpm --filter @devsync/worker start:codex` on a dedicated execution host alongside the regular outbox worker. Set `DATABASE_URL`, `DEVSYNC_CODEX_API_KEY`, and the GitHub App settings documented in [GitHub integration](github-integration.md). The Codex worker consumes approved CODEX runs serially. The ordinary worker and Docker preview do not start it. Live SDK and private checkout verification remain pending.
 
 Set `DEVSYNC_CODEX_TOKEN_BUDGET` to a positive integer to check total input and output tokens before accepting a successful result. Over-budget results and results without usage are rejected. The check happens after execution, so it does not cap API spend.
