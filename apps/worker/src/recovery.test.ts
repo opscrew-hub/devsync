@@ -122,6 +122,17 @@ test("executor consumes an approved run and persists its outcome", {
     assert.equal(rejected.failureReason, "TOKEN_BUDGET");
     assert.deepEqual(rejected.tokenUsage, { inputTokens: 90, outputTokens: 20 });
     assert.equal(rejected.patch, null);
+    const cancelled = await requestRun(owner, project.id, { taskId: task.id, agentType: "CLAUDE" });
+    await decideRun(owner, project.id, cancelled.id, { status: "QUEUED" });
+    await executeNextRun("CLAUDE", async work => {
+      assert.equal(work.id, cancelled.id);
+      await decideRun(owner, project.id, work.id, { status: "CANCELLED" });
+      return { changes: [], baseCommit: "a".repeat(40), patch: "late result" };
+    }, new AbortController().signal);
+    const stopped = await db.agentRun.findUniqueOrThrow({ where: { id: cancelled.id } });
+    assert.equal(stopped.status, "CANCELLED");
+    assert.equal(stopped.patch, null);
+    assert.equal(stopped.dispatchToken, null);
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId: owner } } } });
     await db.user.deleteMany({ where: { id: owner } });
