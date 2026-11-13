@@ -4,10 +4,56 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { generateKeyPairSync } from "node:crypto";
+import { createGithubDraftClient } from "@devsync/core/github-app";
 import { createCodexExecutor } from "./codex-executor.ts";
 import { ensureDraftBranch } from "./draft-pr-branch.ts";
 import { planDraftPullRequest, publishDraftPullRequest } from "./draft-pr-plan.ts";
 import { withManagedCheckout } from "./managed-run.ts";
+
+test("GitHub draft client scopes its token and looks up the run branch", async t => {
+  const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  for (const [key, value] of Object.entries({
+    GITHUB_APP_ID: "123",
+    GITHUB_APP_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }),
+    GITHUB_PROJECT_REPOSITORIES: "project:456:789",
+  })) {
+    const previous = process.env[key];
+    t.after(() => {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    });
+    process.env[key] = value;
+  }
+  const request: typeof fetch = async (input, options) => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, "https://api.github.com");
+    if (url.pathname === "/app/installations/456/access_tokens") {
+      assert.deepEqual(JSON.parse(String(options?.body)), {
+        repository_ids: [789],
+        permissions: { metadata: "read", contents: "write", pull_requests: "write" },
+      });
+      return Response.json({ token: "fixture" });
+    }
+    assert.equal(new Headers(options?.headers).get("authorization"), "Bearer fixture");
+    if (url.pathname === "/repositories/789") {
+      return Response.json({ id: 789, full_name: "fixture/devsync", default_branch: "main" });
+    }
+    assert.equal(url.pathname, "/repos/fixture/devsync/pulls");
+    if (options?.method === "POST") {
+      assert.equal(JSON.parse(String(options.body)).draft, true);
+      return Response.json({ number: 1, html_url: "https://github.com/fixture/devsync/pull/1" });
+    }
+    assert.equal(url.searchParams.get("head"), "fixture:devsync/run-fixture");
+    assert.equal(url.searchParams.get("base"), "main");
+    assert.equal(url.searchParams.get("state"), "all");
+    return Response.json([]);
+  };
+  const client = await createGithubDraftClient({ projectId: "project", installationId: "456", repositoryId: "789" },
+    new AbortController().signal, request);
+  assert.equal(await client.findPull("devsync/run-fixture", client.base), null);
+  assert.equal((await client.createPull({ head: "devsync/run-fixture", base: client.base, title: "Fixture", body: "", draft: true })).number, 1);
+});
 
 test("checkout pins the requested revision and cleans up after adapter failure", async () => {
   const source = await mkdtemp(join(tmpdir(), "devsync-source-"));
