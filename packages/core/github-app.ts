@@ -1,6 +1,6 @@
 import { sign } from "node:crypto";
 import { db } from "@devsync/db";
-import { githubSnapshot, githubSnapshotMetadata, githubSnapshotChecks, githubRepositoryInput, githubRepositoryResponse, githubTokenResponse } from "@devsync/contracts";
+import { githubCommitResponse, githubSnapshot, githubSnapshotMetadata, githubSnapshotChecks, githubRepositoryInput, githubRepositoryResponse, githubTokenResponse } from "@devsync/contracts";
 import { DomainError, requireProject } from "./index.ts";
 
 export async function linkGithubRepository(userId: string, projectId: string, input: unknown, request = fetch) {
@@ -95,4 +95,32 @@ export async function refreshGithubSnapshot(userId: string, projectId: string, r
   });
   if (!saved.count) throw new DomainError(409, "Repository changed during refresh.");
   return snapshot.data;
+}
+
+export async function resolveGithubRunSource(
+  run: { projectId: string; installationId: string; repositoryId: string },
+  signal: AbortSignal,
+  request = fetch,
+) {
+  signal.throwIfAborted();
+  const { installationId, repositoryId } = githubRepositoryInput.parse({
+    installationId: Number(run.installationId), repositoryId: Number(run.repositoryId),
+  });
+  const abortable: typeof fetch = (url, options) => request(url, {
+    ...options, signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
+  });
+  const { github, token } = await installationClient(
+    run.projectId, installationId, repositoryId, { metadata: "read", contents: "read" }, abortable,
+  );
+  const metadata = githubSnapshotMetadata.safeParse(await github(`/repositories/${repositoryId}`, token));
+  if (!metadata.success || metadata.data.id !== repositoryId) {
+    throw new DomainError(502, "Invalid GitHub repository response.");
+  }
+  const { full_name, default_branch } = metadata.data;
+  const commit = githubCommitResponse.safeParse(await github(
+    `/repos/${full_name}/commits/${encodeURIComponent(default_branch)}`, token,
+  ));
+  if (!commit.success) throw new DomainError(502, "Invalid GitHub commit response.");
+  signal.throwIfAborted();
+  return { repository: `https://github.com/${full_name}.git`, commit: commit.data.sha, cloneToken: token };
 }

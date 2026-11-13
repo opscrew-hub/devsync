@@ -59,7 +59,7 @@ test("GitHub repository links require owner access and scoped verification", {
   const { generateKeyPairSync } = await import("node:crypto");
   const { db } = await import("@devsync/db");
   const { createProject, createTask, getTask } = await import("@devsync/core");
-  const { linkGithubRepository, getGithubRepository, refreshGithubSnapshot } = await import("@devsync/core/github-app");
+  const { linkGithubRepository, getGithubRepository, refreshGithubSnapshot, resolveGithubRunSource } = await import("@devsync/core/github-app");
   const owner = randomUUID();
   try {
     await db.user.create({ data: { id: owner, name: "Owner" } });
@@ -83,6 +83,20 @@ test("GitHub repository links require owner access and scoped verification", {
     assert.deepEqual(calls, []);
     const saved = await linkGithubRepository(owner, project.id, { installationId: 456, repositoryId: 789 }, mock);
     assert.equal(saved.repositoryId, "789");
+    const sha = "a".repeat(40);
+    const source = await resolveGithubRunSource({
+      projectId: project.id, installationId: "456", repositoryId: "789",
+    }, new AbortController().signal, async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      if (init?.method === "POST") {
+        assert.deepEqual(JSON.parse(String(init.body)), { repository_ids: [789], permissions: { metadata: "read", contents: "read" } });
+        return Response.json({ token: "fixture-token" });
+      }
+      if (path === "/repositories/789") return Response.json({ id: 789, full_name: "fixture/repo", default_branch: "release/current" });
+      assert.equal(path, "/repos/fixture/repo/commits/release%2Fcurrent");
+      return Response.json({ sha });
+    });
+    assert.deepEqual(source, { repository: "https://github.com/fixture/repo.git", commit: sha, cloneToken: "fixture-token" });
     const snapshot = await refreshGithubSnapshot(owner, project.id, async (url, init) => {
       const path = new URL(String(url)).pathname;
       if (init?.method === "POST") {

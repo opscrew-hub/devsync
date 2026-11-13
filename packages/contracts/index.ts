@@ -82,3 +82,4 @@ export const githubSnapshotMetadata = z.object({ id: z.number().int(), full_name
 
 export const runRequestInput = z.object({ taskId: z.string().min(1).max(40), agentType: z.enum(["CODEX", "CLAUDE"]) });
 export const runDecisionInput = z.object({ status: z.enum(["QUEUED", "REJECTED", "CANCELLED"]) });
+export const githubCommitResponse = z.object({ sha: z.string().regex(/^[a-f0-9]{40}$/) });

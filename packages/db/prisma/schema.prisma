@@ -239,6 +239,9 @@ model GithubRepository {
 enum RunStatus {
   REQUESTED
   QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
   REJECTED
   CANCELLED
 }
@@ -254,6 +257,10 @@ model AgentRun {
   status RunStatus @default(REQUESTED)
   createdAt DateTime @default(now())
   decidedAt DateTime?
+  startedAt DateTime?
+  finishedAt DateTime?
+  changes Json?
+  baseCommit String?
   dispatchToken String?
   dispatchExpiresAt DateTime?
   task Task @relation(fields: [projectId, taskId], references: [projectId, id], onDelete: Cascade)

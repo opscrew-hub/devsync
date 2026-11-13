@@ -5,7 +5,7 @@ import { useState } from "react";
 
 export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
   projectId: string; taskId: string; ready: boolean; writer: boolean; admin: boolean;
-  runs: { id: string; revision: number; agentType: string; status: string }[];
+  runs: { id: string; revision: number; agentType: string; status: string; changes: unknown; baseCommit: string | null }[];
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -32,7 +32,7 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
   return <section className="panel task-summary">
     <h2>Managed runs</h2>
     <p>Approved runs are queued. Execution is pending worker integration.</p>
-    {writer && ready && !runs.some(run => ["REQUESTED", "QUEUED"].includes(run.status)) &&
+    {writer && ready && !runs.some(run => ["REQUESTED", "QUEUED", "RUNNING"].includes(run.status)) &&
       <form className="actions" action={data => save({ taskId, agentType: data.get("agentType") })}>
         <label>Agent<select name="agentType"><option>CODEX</option><option>CLAUDE</option></select></label>
         <button disabled={busy}>Request run</button>
@@ -40,11 +40,17 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
     {error && <p role="alert">{error}</p>}
     <ul className="list">{runs.map(run => <li key={run.id}>
       <strong>{run.agentType}</strong> · Revision {run.revision} · {run.status.toLowerCase()}
+      {run.baseCommit && <p>Base commit <code>{run.baseCommit}</code></p>}
+      {Array.isArray(run.changes) && <details>
+        <summary>{run.changes.length} changed files</summary>
+        <ul>{run.changes.map((change, index) => change && typeof change.path === "string" && typeof change.status === "string" &&
+          <li key={index}><code>{change.status} {change.path}</code></li>)}</ul>
+      </details>}
       {admin && run.status === "REQUESTED" && <div className="actions">
         <button disabled={busy} onClick={() => save({ status: "QUEUED" }, run.id)}>Approve</button>
         <button disabled={busy} onClick={() => save({ status: "REJECTED" }, run.id)}>Reject</button>
       </div>}
-      {admin && ["REQUESTED", "QUEUED"].includes(run.status) &&
+      {admin && ["REQUESTED", "QUEUED", "RUNNING"].includes(run.status) &&
         <button disabled={busy} onClick={() => save({ status: "CANCELLED" }, run.id)}>Cancel</button>}
     </li>)}</ul>
   </section>;
