@@ -260,6 +260,7 @@ model AgentRun {
   startedAt DateTime?
   finishedAt DateTime?
   failureReason String?
+  tokenUsage Json?
   changes Json?
   baseCommit String?
   patch String?

@@ -1,13 +1,13 @@
 import { captureCheckoutPatch, listCheckoutChanges, withCheckout } from "./checkout.ts";
 import { setTimeout } from "node:timers/promises";
-import { finishReservedRun, getRunExecutionContext, releaseRunReservation, renewRunningRun, reserveQueuedRun, startReservedRun } from "@devsync/core/runs";
+import { type RunTokenUsage, finishReservedRun, getRunExecutionContext, releaseRunReservation, renewRunningRun, reserveQueuedRun, startReservedRun } from "@devsync/core/runs";
 
 type ExecutionContext = NonNullable<Awaited<ReturnType<typeof getRunExecutionContext>>>;
 type Reservation = NonNullable<Awaited<ReturnType<typeof reserveQueuedRun>>>;
 export type ManagedExecutor = (
   run: Pick<Reservation, "id" | "projectId" | "taskId" | "revision"> & ExecutionContext,
   signal: AbortSignal,
-) => Promise<void | { changes: Awaited<ReturnType<typeof listCheckoutChanges>>; baseCommit: string; patch?: string }>;
+) => Promise<void | { changes: Awaited<ReturnType<typeof listCheckoutChanges>>; baseCommit: string; patch?: string; tokenUsage?: RunTokenUsage }>;
 
 export async function executeNextRun(
   agentType: "CODEX" | "CLAUDE",
@@ -50,7 +50,7 @@ export async function executeNextRun(
       signal.throwIfAborted();
       result = await execute({ id, projectId, taskId, revision, ...context }, signal);
     }
-    if (!signal.aborted && await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit, result?.patch)) {
+    if (!signal.aborted && await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit, result?.patch, undefined, result?.tokenUsage)) {
       outcome = "succeeded";
     } else if (await recordFailure()) {
       outcome = "failed";
@@ -68,20 +68,20 @@ export async function executeNextRun(
 
 export function withManagedCheckout(
   resolveSource: (run: Parameters<ManagedExecutor>[0], signal: AbortSignal) => Promise<{ repository: string; commit: string; cloneToken?: string }>,
-  execute: (run: Parameters<ManagedExecutor>[0], checkout: { directory: string; commit: string }, signal: AbortSignal) => Promise<void>,
+  execute: (run: Parameters<ManagedExecutor>[0], checkout: { directory: string; commit: string }, signal: AbortSignal) => Promise<void | RunTokenUsage>,
   reportChanges?: (runId: string, changes: Awaited<ReturnType<typeof listCheckoutChanges>>) => Promise<void>,
 ): ManagedExecutor {
   return async (run, signal) => {
     signal.throwIfAborted();
     const { repository, commit, cloneToken } = await resolveSource(run, signal);
     return withCheckout(repository, commit, signal, async directory => {
-      await execute(run, { directory, commit }, signal);
+      const tokenUsage = await execute(run, { directory, commit }, signal);
       signal.throwIfAborted();
       {
         const changes = await listCheckoutChanges(directory, signal);
         signal.throwIfAborted();
         if (reportChanges) await reportChanges(run.id, changes);
-        return { changes, baseCommit: commit, patch: await captureCheckoutPatch(directory, commit, signal) };
+        return { changes, baseCommit: commit, tokenUsage: tokenUsage || undefined, patch: await captureCheckoutPatch(directory, commit, signal) };
       }
     }, cloneToken);
   };
