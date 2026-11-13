@@ -54,6 +54,10 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
       <strong>{run.agentType}</strong> · Revision {run.revision} · {run.status.toLowerCase()}
       <dl>
         <div><dt>Run ID</dt><dd><code>{run.id}</code></dd></div>
+        {run.startedAt && run.finishedAt && <div>
+          <dt>Execution time</dt>
+          <dd>{Math.max(0, (run.finishedAt.getTime() - run.startedAt.getTime()) / 1000).toFixed(1)} s</dd>
+        </div>}
         {([["Requested", run.createdAt], ["Started", run.startedAt], ["Finished", run.finishedAt]] as const).map(([label, date]) =>
           date && <div key={label}><dt>{label}</dt><dd><time dateTime={date.toISOString()}>{formatTime.format(date)}</time></dd></div>
         )}
