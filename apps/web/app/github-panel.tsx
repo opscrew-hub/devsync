@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 type Repository = { installationId: string; repositoryId: string; fullName: string; snapshot?: unknown };
 
 export function GithubPanel({ projectId, repository, activity, state, health, owner }: {
-  health: { retrying: number; pending: number; lastReceived: Date | null; lastProcessed: Date | null; oldestPending: Date | null } | null;
+  health: { failures: { deliveryId: string; event: string; attempts: number; retryAt: Date; lastErrorCode: string }[]; retrying: number; pending: number; lastReceived: Date | null; lastProcessed: Date | null; oldestPending: Date | null } | null;
   state: { event: string; key: string; label: string | null; state: string }[];
   projectId: string; repository: Repository | null; activity: { deliveryId: string; event: string; action: string | null; subject: string | null; receivedAt: Date }[]; owner: boolean;
 }) {
@@ -63,6 +63,13 @@ export function GithubPanel({ projectId, repository, activity, state, health, ow
       <p>{health.pending} pending · {health.retrying} scheduled for retry</p>
       <p>Last received {health.lastReceived?.toISOString() ?? "—"}</p>
       <p>Last processed {health.lastProcessed?.toISOString() ?? "—"}</p>
+      {health.failures.length > 0 && <ul className="list" aria-label="Deliveries scheduled for retry">
+        {health.failures.map(failure => <li key={failure.deliveryId}>
+          <strong>{failure.event}</strong> <code>{failure.deliveryId}</code>
+          <span>Error <code>{failure.lastErrorCode}</code> after {failure.attempts} {failure.attempts === 1 ? "attempt" : "attempts"}</span>
+          <span>Next retry <time dateTime={failure.retryAt.toISOString()}>{failure.retryAt.toISOString()}</time></span>
+        </li>)}
+      </ul>}
       {health.oldestPending && <p>Oldest pending {health.oldestPending.toISOString()}</p>}
     </section>}
     {repository && <>

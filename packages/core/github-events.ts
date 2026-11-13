@@ -140,5 +140,13 @@ export async function getGithubDeliveryHealth(userId: string, projectId: string)
     FROM "GithubRepository" repo LEFT JOIN "GithubEvent" event USING ("installationId", "repositoryId")
     WHERE repo."projectId" = ${projectId}
   `;
-  return health;
+  const failures = await db.$queryRaw<{ deliveryId: string; event: string; attempts: number; retryAt: Date; lastErrorCode: string }[]>`
+    SELECT event."deliveryId", event."event", event."attempts", event."retryAt", event."lastErrorCode"
+    FROM "GithubRepository" repo JOIN "GithubEvent" event USING ("installationId", "repositoryId")
+    WHERE repo."projectId" = ${projectId} AND event."processedAt" IS NULL
+      AND event."retryAt" IS NOT NULL AND event."lastErrorCode" IS NOT NULL
+    ORDER BY event."retryAt", event."deliveryId"
+    LIMIT 10
+  `;
+  return { ...health, failures };
 }
