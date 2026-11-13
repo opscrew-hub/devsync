@@ -89,7 +89,7 @@ export function withManagedCheckout(
       const tokenUsage = await execute(run, { directory, commit }, signal);
       signal.throwIfAborted();
       {
-        const changes = await listCheckoutChanges(directory, signal);
+        const changes = await listCheckoutChanges(directory, commit, signal);
         signal.throwIfAborted();
         if (reportChanges) await reportChanges(run.id, changes);
         return { changes, baseCommit: commit, tokenUsage: tokenUsage || undefined, patch: await captureCheckoutPatch(directory, commit, signal) };

@@ -51,14 +51,22 @@ export async function withCheckout<T>(
   }
 }
 
-export async function listCheckoutChanges(directory: string, signal: AbortSignal) {
-  const { stdout } = await exec("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"], {
-    cwd: directory, signal, maxBuffer: 1024 * 1024,
-  });
-  return stdout.split("\0").filter(Boolean).map(entry => ({
-    status: entry.slice(0, 2),
-    path: entry.slice(3),
-  }));
+export async function listCheckoutChanges(directory: string, commit: string, signal: AbortSignal) {
+  if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("A full commit SHA is required.");
+  const options = { cwd: directory, signal, maxBuffer: 1024 * 1024 };
+  const [tracked, untracked] = await Promise.all([
+    exec("git", ["diff", "--name-status", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", commit, "--"], options),
+    exec("git", ["ls-files", "--others", "--exclude-standard", "-z"], options),
+  ]);
+  const fields = tracked.stdout.split("\0");
+  const changes: { status: string; path: string }[] = [];
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    changes.push({ status: " " + fields[i], path: fields[i + 1]! });
+  }
+  for (const path of untracked.stdout.split("\0").filter(Boolean)) {
+    changes.push({ status: "??", path });
+  }
+  return changes;
 }
 
 export async function captureCheckoutPatch(directory: string, commit: string, signal: AbortSignal) {
