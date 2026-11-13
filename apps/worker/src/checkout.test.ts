@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createCodexExecutor } from "./codex-executor.ts";
+import { planDraftPullRequest, publishDraftPullRequest } from "./draft-pr-plan.ts";
 import { withManagedCheckout } from "./managed-run.ts";
 
 test("checkout pins the requested revision and cleans up after adapter failure", async () => {
@@ -63,9 +64,48 @@ test("checkout pins the requested revision and cleans up after adapter failure",
     );
     const summary = await summarize(run, new AbortController().signal);
     assert.match(summary?.patch ?? "", /[+]edited/);
+    assert.ok(summary);
+    const draft = planDraftPullRequest(run, summary);
+    assert.ok(draft);
+    assert.equal(draft.baseCommit, revision);
+    assert.equal(draft.patch, summary.patch);
+    assert.equal(draft.draft, true);
+    assert.equal(planDraftPullRequest(run, summary)?.head, draft.head);
+    assert.notEqual(planDraftPullRequest({ ...run, id: "another-run" }, summary)?.head, draft.head);
+    assert.equal(planDraftPullRequest(run, { baseCommit: revision }), null);
     assert.ok(checkout);
     await assert.rejects(stat(checkout), { code: "ENOENT" });
   } finally {
     await rm(source, { recursive: true, force: true, maxRetries: 3 });
   }
+});
+
+test("draft publication recovers a lost create response and reuses the same pull request", async () => {
+  const plan = planDraftPullRequest({ id: "run", revision: 1, title: "Fixture" },
+    { baseCommit: "a".repeat(40), patch: "fixture patch" });
+  assert.ok(plan);
+  const pull = { number: 1, url: "https://github.com/fixture/repo/pull/1" };
+  let created = false;
+  let branchWrites = 0;
+  const github = {
+    async findPull(head: string, base: string) {
+      assert.equal(head, plan.head);
+      assert.equal(base, "main");
+      return created ? pull : null;
+    },
+    async ensureBranch(input: typeof plan) {
+      assert.deepEqual(input, plan);
+      branchWrites++;
+    },
+    async createPull(input: { draft: boolean }) {
+      assert.equal(input.draft, true);
+      assert.equal(created, false);
+      created = true;
+      throw new Error("response lost");
+    },
+  };
+  const signal = new AbortController().signal;
+  assert.deepEqual(await publishDraftPullRequest(plan, "main", github, signal), pull);
+  assert.deepEqual(await publishDraftPullRequest(plan, "main", github, signal), pull);
+  assert.equal(branchWrites, 1);
 });
