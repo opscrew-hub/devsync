@@ -7,7 +7,7 @@ type Reservation = NonNullable<Awaited<ReturnType<typeof reserveQueuedRun>>>;
 export type ManagedExecutor = (
   run: Pick<Reservation, "id" | "projectId" | "taskId" | "revision"> & ExecutionContext,
   signal: AbortSignal,
-) => Promise<void | Awaited<ReturnType<typeof listCheckoutChanges>>>;
+) => Promise<void | { changes: Awaited<ReturnType<typeof listCheckoutChanges>>; baseCommit: string }>;
 
 export async function executeNextRun(
   agentType: "CODEX" | "CLAUDE",
@@ -31,15 +31,15 @@ export async function executeNextRun(
       if (!signal.aborted && !await renewRunningRun(id, dispatchToken)) stopped.abort();
     }
   })().catch(() => stopped.abort());
-  let changes: void | Awaited<ReturnType<typeof listCheckoutChanges>> = undefined;
+  let result: Awaited<ReturnType<ManagedExecutor>> = undefined;
   try {
     if (!signal.aborted) {
       const context = await getRunExecutionContext(id, dispatchToken);
       if (!context) throw new Error("Run requires a current task revision, a valid lease, and a linked repository.");
       signal.throwIfAborted();
-      changes = await execute({ id, projectId, taskId, revision, ...context }, signal);
+      result = await execute({ id, projectId, taskId, revision, ...context }, signal);
     }
-    if (signal.aborted || !await finishReservedRun(id, dispatchToken, "SUCCEEDED", changes || undefined)) {
+    if (signal.aborted || !await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit)) {
       await finishReservedRun(id, dispatchToken, "FAILED");
     }
   } catch (error) {
@@ -67,7 +67,7 @@ export function withManagedCheckout(
         const changes = await listCheckoutChanges(directory, signal);
         signal.throwIfAborted();
         if (reportChanges) await reportChanges(run.id, changes);
-        return changes;
+        return { changes, baseCommit: commit };
       }
     }, cloneToken);
   };
