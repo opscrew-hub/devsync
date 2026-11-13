@@ -19,9 +19,11 @@ try {
         const expired = await expireRunningRuns();
         if (expired) log.warn({ expired }, "Expired managed runs marked failed");
       } catch (error) {
+        if (process.argv.includes("--recover-once")) throw error;
         log.error({ errorType: error instanceof Error ? error.name : "unknown" }, "Managed run recovery failed");
       }
     }
+    if (process.argv.includes("--recover-once")) break;
     let wait = true;
     try {
       const result = await processTaskOutboxEvent();
