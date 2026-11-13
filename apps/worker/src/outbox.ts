@@ -18,7 +18,7 @@ try {
       try {
         const expired = await expireRunningRuns();
         const stale = await invalidateStaleQueuedRuns();
-        if (stale) log.info({ stale }, "Queued runs with outdated requirements marked failed");
+        if (stale) log.info({ stale }, "Queued runs with outdated requirements or terminal tasks marked failed");
         if (expired) log.warn({ expired }, "Expired managed runs marked failed");
       } catch (error) {
         if (process.argv.includes("--recover-once")) throw error;
