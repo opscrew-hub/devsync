@@ -86,6 +86,30 @@ test("GitHub repository links require owner access and scoped verification", {
     assert.equal((await getGithubRepository(owner, project.id))?.fullName, "fixture/repo");
     await assert.rejects(getGithubRepository(randomUUID(), project.id), /not found/);
     assert.ok(!JSON.stringify(saved).includes("fixture-token"));
+    const { processGithubEvent, listGithubActivity } = await import("@devsync/core/github-events");
+    const { readProjectRealtimeVersion } = await import("@devsync/core/project-realtime");
+    const other = await createProject(owner, { name: "Other GitHub project", description: "" });
+    const deliveryId = randomUUID();
+    const unlinkedId = randomUUID();
+    try {
+      await db.githubEvent.createMany({ data: [
+        { deliveryId, installationId: 456n, repositoryId: 789n, event: "push", payload: { ref: "refs/heads/main" } },
+        { deliveryId: unlinkedId, installationId: 457n, repositoryId: 789n, event: "push", payload: {} },
+      ] });
+      const before = await readProjectRealtimeVersion(owner, project.id);
+      assert.deepEqual(await listGithubActivity(owner, project.id), []);
+      const workers = await Promise.all([processGithubEvent(), processGithubEvent()]);
+      assert.equal(workers.reduce((total, count) => total + count, 0), 1);
+      const [activity] = await listGithubActivity(owner, project.id);
+      assert.equal(activity.deliveryId, deliveryId);
+      assert.equal(activity.subject, "refs/heads/main");
+      assert.deepEqual(await listGithubActivity(owner, other.id), []);
+      await assert.rejects(listGithubActivity(randomUUID(), project.id), /not found/);
+      assert.notEqual(await readProjectRealtimeVersion(owner, project.id), before);
+      assert.equal((await db.githubEvent.findUniqueOrThrow({ where: { deliveryId: unlinkedId } })).processedAt, null);
+    } finally {
+      await db.githubEvent.deleteMany({ where: { deliveryId: { in: [deliveryId, unlinkedId] } } });
+    }
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId: owner } } } });
     await db.user.deleteMany({ where: { id: owner } });

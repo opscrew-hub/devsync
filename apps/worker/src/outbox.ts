@@ -1,6 +1,7 @@
 import { setTimeout } from "node:timers/promises";
 import { db } from "@devsync/db";
 import { processTaskOutboxEvent } from "@devsync/core/task-outbox";
+import { processGithubEvent } from "@devsync/core/github-events";
 import pino from "pino";
 
 const log = pino({ name: "devsync-outbox" });
@@ -10,7 +11,7 @@ process.once("SIGTERM", () => shutdown.abort());
 
 try {
   while (!shutdown.signal.aborted) {
-    let wait = false;
+    let wait = true;
     try {
       const result = await processTaskOutboxEvent();
       wait = result.status === "idle";
@@ -20,6 +21,11 @@ try {
     } catch (error) {
       log.error({ errorType: error instanceof Error ? error.name : "unknown" }, "Outbox poll failed");
       wait = true;
+    }
+    try {
+      if (await processGithubEvent()) wait = false;
+    } catch (error) {
+      log.error({ errorType: error instanceof Error ? error.name : "unknown" }, "GitHub delivery processing failed");
     }
     if (wait && !shutdown.signal.aborted) {
       await setTimeout(1000, undefined, { signal: shutdown.signal }).catch(error => {

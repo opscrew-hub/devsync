@@ -6,7 +6,7 @@ Set `GITHUB_WEBHOOK_REPOSITORIES` to comma-separated installation and repository
 
 Intake supports pushes, pull requests, pull request reviews, check runs, check suites, and workflow runs. Requests have a 2 MiB limit. A new delivery returns HTTP 202 and a duplicate returns HTTP 200. The verified JSON is persisted by delivery ID, installation ID, and repository ID. Limit database access to trusted operators because payloads may contain private repository content.
 
-Event processing and dashboard synchronization are pending.
+Run the DevSync worker alongside the web app. It processes stored deliveries for linked repositories and refreshes the dashboard activity feed. Unlinked deliveries remain pending. Branch, PR, and check state projections and GitHub-derived signals are pending.
 
 [GitHub webhook signature validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries)
 

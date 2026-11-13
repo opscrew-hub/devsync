@@ -43,3 +43,5 @@ Remaining work includes audit coverage for other mutations and an end-to-end han
 Signed GitHub App webhook intake validates the raw request body and a deployment-configured installation/repository allowlist. Accepted deliveries are persisted and deduplicated by delivery ID. See [GitHub webhook intake](github-integration.md) for configuration.
 
 Project owners can link a deployment-authorized repository after GitHub verifies its identity using a repository-scoped installation token. Event processing, GitHub dashboard synchronization, and live App verification remain pending.
+
+The worker now processes webhook deliveries for linked repositories. The project dashboard shows recent activity and refreshes through SSE. Branch, PR, and check state projections and agent signals remain pending.
