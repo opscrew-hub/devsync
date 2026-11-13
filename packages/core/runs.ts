@@ -124,7 +124,7 @@ export async function finishReservedRun(id: string, token: string, outcome: "SUC
 
 export async function expireRunningRuns() {
   return db.$executeRaw`
-    UPDATE "AgentRun" SET "status" = 'FAILED', "finishedAt" = timezone('UTC', clock_timestamp()),
+    UPDATE "AgentRun" SET "status" = 'FAILED', "failureReason" = 'LEASE_EXPIRED', "finishedAt" = timezone('UTC', clock_timestamp()),
       "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
     WHERE "status" = 'RUNNING' AND "dispatchExpiresAt" <= timezone('UTC', clock_timestamp())
   `;
@@ -173,7 +173,7 @@ export async function getRunPatch(userId: string, projectId: string, runId: stri
 export async function invalidateStaleQueuedRuns() {
   return db.$executeRaw`
     UPDATE "AgentRun" run
-    SET "status" = 'FAILED', "finishedAt" = timezone('UTC', clock_timestamp()),
+    SET "status" = 'FAILED', "failureReason" = CASE WHEN task."status" IN ('DONE', 'CANCELLED') THEN 'TASK_CLOSED' ELSE 'REVISION_CHANGED' END, "finishedAt" = timezone('UTC', clock_timestamp()),
         "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
     FROM "Task" task
     WHERE run."taskId" = task."id" AND run."projectId" = task."projectId"

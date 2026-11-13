@@ -40,6 +40,9 @@ test("worker marks expired runs failed on startup", {
           assert.equal(await exited, 0);
           assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: stale.id } })).status, "FAILED");
           assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: terminalRun.id } })).status, "FAILED");
+          assert.equal(current.failureReason, "LEASE_EXPIRED");
+          assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: stale.id } })).failureReason, "REVISION_CHANGED");
+          assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: terminalRun.id } })).failureReason, "TASK_CLOSED");
           assert.ok(current.finishedAt);
           assert.equal(current.dispatchToken, null);
           return;

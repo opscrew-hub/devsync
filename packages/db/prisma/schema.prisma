@@ -259,6 +259,7 @@ model AgentRun {
   decidedAt DateTime?
   startedAt DateTime?
   finishedAt DateTime?
+  failureReason String?
   changes Json?
   baseCommit String?
   patch String?
