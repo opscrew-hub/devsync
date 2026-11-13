@@ -105,3 +105,16 @@ export async function setTaskPullRequest(userId: string, projectId: string, task
     return { pullRequestNumber: number };
   });
 }
+
+export async function getGithubDeliveryHealth(userId: string, projectId: string) {
+  const member = await requireProject(userId, projectId);
+  if (member.role !== "OWNER" && member.role !== "ADMIN") throw new DomainError(403, "Project administrator access required.");
+  const [health] = await db.$queryRaw<{ pending: number; lastReceived: Date | null; lastProcessed: Date | null; oldestPending: Date | null }[]>`
+    SELECT count(event."deliveryId") FILTER (WHERE event."processedAt" IS NULL)::int AS "pending",
+      max(event."receivedAt") AS "lastReceived", max(event."processedAt") AS "lastProcessed",
+      min(event."receivedAt") FILTER (WHERE event."processedAt" IS NULL) AS "oldestPending"
+    FROM "GithubRepository" repo LEFT JOIN "GithubEvent" event USING ("installationId", "repositoryId")
+    WHERE repo."projectId" = ${projectId}
+  `;
+  return health;
+}

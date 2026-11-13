@@ -86,7 +86,7 @@ test("GitHub repository links require owner access and scoped verification", {
     assert.equal((await getGithubRepository(owner, project.id))?.fullName, "fixture/repo");
     await assert.rejects(getGithubRepository(randomUUID(), project.id), /not found/);
     assert.ok(!JSON.stringify(saved).includes("fixture-token"));
-    const { processGithubEvent, listGithubActivity, listGithubState, setTaskPullRequest } = await import("@devsync/core/github-events");
+    const { processGithubEvent, getGithubDeliveryHealth, listGithubActivity, listGithubState, setTaskPullRequest } = await import("@devsync/core/github-events");
     const { readProjectRealtimeVersion } = await import("@devsync/core/project-realtime");
     const other = await createProject(owner, { name: "Other GitHub project", description: "" });
     const { registerAgent, pendingSignals } = await import("@devsync/core/agent-signals");
@@ -101,10 +101,14 @@ test("GitHub repository links require owner access and scoped verification", {
       ] });
       const before = await readProjectRealtimeVersion(owner, project.id);
       assert.deepEqual(await listGithubActivity(owner, project.id), []);
+      assert.equal((await getGithubDeliveryHealth(owner, project.id)).pending, 1);
       const workers = await Promise.all([processGithubEvent(), processGithubEvent()]);
       assert.equal(workers.reduce((total, count) => total + count, 0), 1);
       const [activity] = await listGithubActivity(owner, project.id);
       assert.equal(activity.deliveryId, deliveryId);
+      const health = await getGithubDeliveryHealth(owner, project.id);
+      assert.equal(health.pending, 0);
+      assert.ok(health.lastProcessed);
       assert.equal(activity.subject, "refs/heads/main");
       const signals = await pendingSignals(agent.token);
       assert.equal(signals.length, 1);
