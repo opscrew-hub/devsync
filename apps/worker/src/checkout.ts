@@ -50,3 +50,13 @@ export async function withCheckout<T>(
     await rm(directory, { recursive: true, force: true, maxRetries: 3 });
   }
 }
+
+export async function listCheckoutChanges(directory: string, signal: AbortSignal) {
+  const { stdout } = await exec("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"], {
+    cwd: directory, signal, maxBuffer: 1024 * 1024,
+  });
+  return stdout.split("\0").filter(Boolean).map(entry => ({
+    status: entry.slice(0, 2),
+    path: entry.slice(3),
+  }));
+}
