@@ -225,6 +225,7 @@ model GithubRepository {
   repositoryId BigInt
   fullName String
   verifiedAt DateTime @default(now())
+  snapshot Json?
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   @@unique([installationId, repositoryId])
 }

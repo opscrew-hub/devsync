@@ -59,7 +59,7 @@ test("GitHub repository links require owner access and scoped verification", {
   const { generateKeyPairSync } = await import("node:crypto");
   const { db } = await import("@devsync/db");
   const { createProject, createTask, getTask } = await import("@devsync/core");
-  const { linkGithubRepository, getGithubRepository } = await import("@devsync/core/github-app");
+  const { linkGithubRepository, getGithubRepository, refreshGithubSnapshot } = await import("@devsync/core/github-app");
   const owner = randomUUID();
   try {
     await db.user.create({ data: { id: owner, name: "Owner" } });
@@ -83,6 +83,20 @@ test("GitHub repository links require owner access and scoped verification", {
     assert.deepEqual(calls, []);
     const saved = await linkGithubRepository(owner, project.id, { installationId: 456, repositoryId: 789 }, mock);
     assert.equal(saved.repositoryId, "789");
+    const snapshot = await refreshGithubSnapshot(owner, project.id, async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      if (init?.method === "POST") {
+        assert.deepEqual(JSON.parse(String(init.body)).permissions, { metadata: "read", contents: "read", pull_requests: "read", checks: "read" });
+        return Response.json({ token: "fixture-token" });
+      }
+      if (path === "/repositories/789") return Response.json({ id: 789, full_name: "fixture/repo", default_branch: "main" });
+      if (path.endsWith("/branches")) return Response.json([{ name: "main", commit: { sha: "abc123" } }]);
+      if (path.endsWith("/pulls")) return Response.json([{ number: 1, title: "Before webhooks", state: "open" }]);
+      assert.equal(path, "/repos/fixture/repo/commits/main/check-runs");
+      return Response.json({ check_runs: [{ id: 1, name: "CI", status: "completed", conclusion: "success" }] });
+    });
+    assert.equal(snapshot.pulls[0].title, "Before webhooks");
+    assert.deepEqual((await getGithubRepository(owner, project.id))?.snapshot, snapshot);
     assert.equal((await getGithubRepository(owner, project.id))?.fullName, "fixture/repo");
     await assert.rejects(getGithubRepository(randomUUID(), project.id), /not found/);
     assert.ok(!JSON.stringify(saved).includes("fixture-token"));
