@@ -96,7 +96,7 @@ test("GitHub repository links require owner access and scoped verification", {
       assert.equal(path, "/repos/fixture/repo/commits/release%2Fcurrent");
       return Response.json({ sha });
     });
-    assert.deepEqual(source, { repository: "https://github.com/fixture/repo.git", commit: sha });
+    assert.deepEqual(source, { repository: "https://github.com/fixture/repo.git", commit: sha, cloneToken: "fixture-token" });
     const snapshot = await refreshGithubSnapshot(owner, project.id, async (url, init) => {
       const path = new URL(String(url)).pathname;
       if (init?.method === "POST") {

@@ -52,12 +52,12 @@ export async function executeNextRun(
 }
 
 export function withManagedCheckout(
-  resolveSource: (run: Parameters<ManagedExecutor>[0], signal: AbortSignal) => Promise<{ repository: string; commit: string }>,
+  resolveSource: (run: Parameters<ManagedExecutor>[0], signal: AbortSignal) => Promise<{ repository: string; commit: string; cloneToken?: string }>,
   execute: (run: Parameters<ManagedExecutor>[0], checkout: { directory: string; commit: string }, signal: AbortSignal) => Promise<void>,
 ): ManagedExecutor {
   return async (run, signal) => {
     signal.throwIfAborted();
-    const { repository, commit } = await resolveSource(run, signal);
-    await withCheckout(repository, commit, signal, directory => execute(run, { directory, commit }, signal));
+    const { repository, commit, cloneToken } = await resolveSource(run, signal);
+    await withCheckout(repository, commit, signal, directory => execute(run, { directory, commit }, signal), cloneToken);
   };
 }

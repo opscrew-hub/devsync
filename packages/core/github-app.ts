@@ -122,5 +122,5 @@ export async function resolveGithubRunSource(
   ));
   if (!commit.success) throw new DomainError(502, "Invalid GitHub commit response.");
   signal.throwIfAborted();
-  return { repository: `https://github.com/${full_name}.git`, commit: commit.data.sha };
+  return { repository: `https://github.com/${full_name}.git`, commit: commit.data.sha, cloneToken: token };
 }
