@@ -15,6 +15,7 @@ export async function executeNextRun(
   shutdown: AbortSignal,
   timeoutMs = 15 * 60 * 1000,
   log?: Pick<import("pino").Logger, "info">,
+  tokenBudget?: number,
 ) {
   if (shutdown.aborted) return false;
   const run = await reserveQueuedRun(agentType);
@@ -49,6 +50,15 @@ export async function executeNextRun(
       if (!context) throw new Error("Run requires a current task revision, a valid lease, and a linked repository.");
       signal.throwIfAborted();
       result = await execute({ id, projectId, taskId, revision, ...context }, signal);
+    }
+    const usage = result?.tokenUsage;
+    if (!signal.aborted && tokenBudget !== undefined &&
+        (!usage || usage.inputTokens + usage.outputTokens > tokenBudget)) {
+      const reason = usage ? "TOKEN_BUDGET" : "USAGE_UNAVAILABLE";
+      if (await finishReservedRun(id, dispatchToken, "FAILED", undefined, undefined, undefined, reason, usage)) {
+        outcome = "failed";
+      }
+      return true;
     }
     if (!signal.aborted && await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit, result?.patch, undefined, result?.tokenUsage)) {
       outcome = "succeeded";
