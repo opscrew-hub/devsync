@@ -17,7 +17,7 @@ process.once("SIGTERM", () => shutdown.abort());
 try {
   while (!shutdown.signal.aborted) {
     try {
-      if (await executeNextRun("CODEX", execute, shutdown.signal)) continue;
+      if (await executeNextRun("CODEX", execute, shutdown.signal, undefined, log)) continue;
     } catch (error) {
       log.error({ errorType: error instanceof Error ? error.name : "unknown" }, "Managed Codex run failed");
     }

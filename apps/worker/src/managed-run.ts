@@ -14,6 +14,7 @@ export async function executeNextRun(
   execute: ManagedExecutor,
   shutdown: AbortSignal,
   timeoutMs = 15 * 60 * 1000,
+  log?: Pick<import("pino").Logger, "info">,
 ) {
   if (shutdown.aborted) return false;
   const run = await reserveQueuedRun(agentType);
@@ -24,6 +25,10 @@ export async function executeNextRun(
     return false;
   }
 
+  const started = performance.now();
+  const fields = { runId: id, projectId, taskId, revision, agentType };
+  log?.info(fields, "Managed run started");
+  let outcome = "not_recorded";
   const stopped = new AbortController();
   const deadline = AbortSignal.timeout(timeoutMs);
   const signal = AbortSignal.any([shutdown, stopped.signal, deadline]);
@@ -33,6 +38,10 @@ export async function executeNextRun(
       if (!signal.aborted && !await renewRunningRun(id, dispatchToken)) stopped.abort();
     }
   })().catch(() => stopped.abort());
+  function recordFailure() {
+    const reason = deadline.aborted && signal.reason === deadline.reason ? "TIME_LIMIT" : "EXECUTION_FAILED";
+    return finishReservedRun(id, dispatchToken, "FAILED", undefined, undefined, undefined, reason);
+  }
   let result: Awaited<ReturnType<ManagedExecutor>> = undefined;
   try {
     if (!signal.aborted) {
@@ -41,15 +50,18 @@ export async function executeNextRun(
       signal.throwIfAborted();
       result = await execute({ id, projectId, taskId, revision, ...context }, signal);
     }
-    if (signal.aborted || !await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit, result?.patch)) {
-      await finishReservedRun(id, dispatchToken, "FAILED", undefined, undefined, undefined, signal.aborted && signal.reason === deadline.reason ? "TIME_LIMIT" : "EXECUTION_FAILED");
+    if (!signal.aborted && await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit, result?.patch)) {
+      outcome = "succeeded";
+    } else if (await recordFailure()) {
+      outcome = "failed";
     }
   } catch (error) {
-    await finishReservedRun(id, dispatchToken, "FAILED", undefined, undefined, undefined, signal.aborted && signal.reason === deadline.reason ? "TIME_LIMIT" : "EXECUTION_FAILED");
+    if (await recordFailure()) outcome = "failed";
     throw error;
   } finally {
     stopped.abort();
     await heartbeat;
+    log?.info({ ...fields, outcome, elapsedMs: Math.round(performance.now() - started) }, "Managed run finished");
   }
   return true;
 }
