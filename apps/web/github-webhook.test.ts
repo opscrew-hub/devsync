@@ -143,6 +143,12 @@ test("GitHub repository links require owner access and scoped verification", {
         await assert.rejects(setTaskPullRequest(owner, project.id, task.id, { number: 8 }), /not been observed/);
         assert.deepEqual(await setTaskPullRequest(owner, project.id, task.id, { number: 7 }), { pullRequestNumber: 7 });
         assert.equal((await getTask(owner, project.id, task.id)).pullRequestNumber, 7);
+        const { getTaskPullRequestState } = await import("@devsync/core/task-pr-state");
+        const pull = await getTaskPullRequestState(owner, project.id, task.id);
+        assert.equal(pull?.status, "merged");
+        assert.equal(pull?.title, "Latest");
+        assert.equal(await getTaskPullRequestState(owner, other.id, task.id), null);
+        await assert.rejects(getTaskPullRequestState(randomUUID(), project.id, task.id), /not found/);
         await setTaskPullRequest(owner, project.id, task.id, { number: null });
         assert.equal((await getTask(owner, project.id, task.id)).pullRequestNumber, null);
         await setTaskPullRequest(owner, project.id, task.id, { number: 7 });
