@@ -1,3 +1,4 @@
+import { withCheckout } from "./checkout.ts";
 import { setTimeout } from "node:timers/promises";
 import { finishReservedRun, getRunExecutionContext, releaseRunReservation, renewRunningRun, reserveQueuedRun, startReservedRun } from "@devsync/core/runs";
 
@@ -48,4 +49,15 @@ export async function executeNextRun(
     await heartbeat;
   }
   return true;
+}
+
+export function withManagedCheckout(
+  resolveSource: (run: Parameters<ManagedExecutor>[0], signal: AbortSignal) => Promise<{ repository: string; commit: string }>,
+  execute: (run: Parameters<ManagedExecutor>[0], checkout: { directory: string; commit: string }, signal: AbortSignal) => Promise<void>,
+): ManagedExecutor {
+  return async (run, signal) => {
+    signal.throwIfAborted();
+    const { repository, commit } = await resolveSource(run, signal);
+    await withCheckout(repository, commit, signal, directory => execute(run, { directory, commit }, signal));
+  };
 }
