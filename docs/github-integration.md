@@ -21,3 +21,5 @@ In the project dashboard, sign in as the owner and submit the installation and r
 The dashboard shows up to ten observed branches, pull requests, and check runs per category. Pull request state uses the source update timestamp. Branch and check state follow delivery receipt order. The view is based on processed webhook history and requires GitHub API backfill for a complete inventory.
 
 The worker also delivers branch-update, PR-opened, and PR-merged signals to existing agents in the linked project. A signal includes the GitHub delivery ID and available ref, SHA, or PR number.
+
+Project writers can link a task to an observed pull request from the task detail page. Changes are audited. Replacing the linked repository clears existing task links.

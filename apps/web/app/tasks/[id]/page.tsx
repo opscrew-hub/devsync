@@ -4,6 +4,8 @@ import { listTaskActivity } from "@devsync/core/task-activity";
 import { ProjectRealtime } from "@/app/project-realtime";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
+import { getGithubRepository } from "@devsync/core/github-app";
+import { PullRequestForm } from "./pull-request-form";
 import { CommentForm } from "./comment-form";
 
 type Props = { params: Promise<{ id: string }>; searchParams: Promise<{ project?: string }> };
@@ -15,7 +17,7 @@ export default async function TaskPage({ params, searchParams }: Props) {
   const { project } = await searchParams;
   if (typeof project !== "string") notFound();
   const { id } = await params;
-  const [task, membership, reports] = await Promise.all([getTask(session.userId, project, id), requireProject(session.userId, project), listTaskActivity(session.userId, project, id)]).catch((error: unknown) => {
+  const [task, membership, reports, repository] = await Promise.all([getTask(session.userId, project, id), requireProject(session.userId, project), listTaskActivity(session.userId, project, id), getGithubRepository(session.userId, project)]).catch((error: unknown) => {
     if (error instanceof DomainError && error.status === 404) notFound();
     throw error;
   });
@@ -32,6 +34,11 @@ export default async function TaskPage({ params, searchParams }: Props) {
       <h2>Description</h2><p>{task.description || "No description."}</p>
       <h2>Acceptance criteria</h2><p>{task.acceptanceCriteria || "No acceptance criteria."}</p>
     </section>
+    {repository && /^[\w.-]+\/[\w.-]+$/.test(repository.fullName) && <section className="task-summary panel">
+      <h2>GitHub pull request</h2>
+      {task.pullRequestNumber ? <a className="detail-link" href={`https://github.com/${repository.fullName}/pull/${task.pullRequestNumber}`}>Open pull request #{task.pullRequestNumber}</a> : <p>No pull request linked.</p>}
+      {membership.role !== "VIEWER" && <PullRequestForm key={`${id}:${task.pullRequestNumber}`} projectId={project} taskId={id} current={task.pullRequestNumber}/>}
+    </section>}
     <h2>Activity</h2>
     {membership.role !== "VIEWER" && <CommentForm taskId={id} projectId={project}/>}
     <ol className="timeline">
