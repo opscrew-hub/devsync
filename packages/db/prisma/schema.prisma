@@ -64,6 +64,7 @@ model Task {
   creatorAgentId String?
   createRequestId String?
   assigneeId String?
+  pullRequestNumber Int?
   claimAgentId String?
   claimId String?
   claimExpiresAt DateTime?

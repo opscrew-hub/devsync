@@ -68,3 +68,4 @@ export const githubRepositoryInput = z.object({
 });
 export const githubTokenResponse = z.object({ token: z.string().min(1) });
 export const githubRepositoryResponse = z.object({ id: z.number().int().positive(), full_name: z.string().min(1).max(300) });
+export const taskPullRequestInput = z.object({ number: z.number().int().positive().max(2147483647).nullable() });

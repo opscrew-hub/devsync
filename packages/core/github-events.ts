@@ -1,5 +1,6 @@
 import { db } from "@devsync/db";
-import { requireProject } from "./index.ts";
+import { taskPullRequestInput } from "@devsync/contracts";
+import { DomainError, requireProject } from "./index.ts";
 
 export async function processGithubEvent() {
   return db.$executeRaw`
@@ -72,4 +73,35 @@ export async function listGithubState(userId: string, projectId: string) {
     ) items WHERE position <= 10
     ORDER BY "event", position
   `;
+}
+
+export async function setTaskPullRequest(userId: string, projectId: string, taskId: string, input: unknown) {
+  await requireProject(userId, projectId, true);
+  const { number } = taskPullRequestInput.parse(input);
+  return db.$transaction(async tx => {
+    await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${projectId} FOR UPDATE`;
+    const member = await tx.projectMember.findUnique({ where: { projectId_userId: { projectId, userId } } });
+    if (!member || member.role === "VIEWER") throw new DomainError(403, "Project write access required.");
+    const task = await tx.task.findUnique({ where: { id: taskId, projectId }, select: { pullRequestNumber: true } });
+    if (!task) throw new DomainError(404, "Task not found.");
+    if (number !== null) {
+      const [observed] = await tx.$queryRaw<{ key: string }[]>`
+        SELECT state."key" FROM "GithubRepository" repo
+        JOIN "GithubObservedState" state USING ("installationId", "repositoryId")
+        WHERE repo."projectId" = ${projectId} AND state."event" = 'pull_request' AND state."key" = ${String(number)}
+      `;
+      if (!observed) throw new DomainError(404, "Pull request has not been observed for this project.");
+    }
+    if (task.pullRequestNumber !== number) {
+      await tx.task.update({
+        where: { id: taskId, projectId },
+        data: { pullRequestNumber: number, version: { increment: 1 } },
+      });
+      await tx.auditLog.create({ data: {
+        projectId, actorId: userId, targetId: taskId, action: "task.pull_request_changed",
+        details: { previousNumber: task.pullRequestNumber, number },
+      } });
+    }
+    return { pullRequestNumber: number };
+  });
 }
