@@ -34,3 +34,16 @@ export async function listGithubActivity(userId: string, projectId: string) {
     LIMIT 25
   `;
 }
+
+export async function listGithubState(userId: string, projectId: string) {
+  await requireProject(userId, projectId);
+  return db.$queryRaw<{ event: string; key: string; label: string | null; state: string }[]>`
+    SELECT "event", "key", "label", "state"
+    FROM (
+      SELECT state.*, row_number() OVER (PARTITION BY state."event" ORDER BY state."receivedAt" DESC, state."key") AS position
+      FROM "GithubRepository" repo JOIN "GithubObservedState" state USING ("installationId", "repositoryId")
+      WHERE repo."projectId" = ${projectId} AND state."state" <> 'deleted'
+    ) items WHERE position <= 10
+    ORDER BY "event", position
+  `;
+}

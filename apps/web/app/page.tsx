@@ -4,7 +4,7 @@ import { GitBranch, Github, LayoutGrid } from "lucide-react";
 import { listAgents, listSignals } from "@devsync/core/agent-signals";
 import { AgentPanel } from "./agent-panel";
 import { getGithubRepository } from "@devsync/core/github-app";
-import { listGithubActivity } from "@devsync/core/github-events";
+import { listGithubActivity, listGithubState } from "@devsync/core/github-events";
 import { GithubPanel } from "./github-panel";
 import { MemberForm } from "./member-form";
 import { ProjectAudit } from "./project-audit";
@@ -29,7 +29,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ p
     : [[], [], [], []];
   const role = members.find(member => member.userId === session.userId)?.role;
   const githubRepository = active ? await getGithubRepository(session.userId, active.id) : null;
-  const githubActivity = active && githubRepository ? await listGithubActivity(session.userId, active.id) : [];
+  const [githubActivity, githubState] = active && githubRepository
+    ? await Promise.all([listGithubActivity(session.userId, active.id), listGithubState(session.userId, active.id)]) : [[], []];
   const audit = active && (role === "OWNER" || role === "ADMIN") ? await listProjectAudit(session.userId, active.id) : null;
   return <div className="shell">
     <aside><div className="brand"><span className="mark"><GitBranch size={17}/></span>DevSync</div>
@@ -49,7 +50,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ p
         agents={agents}
         signals={signals.map(signal => ({ id: signal.id, kind: signal.kind, recipientId: signal.recipientId, acknowledged: !!signal.acknowledgedAt, sender: signal.sender?.name ?? signal.senderAgent?.name ?? "Unknown sender", message: typeof signal.payload === "object" && signal.payload && "message" in signal.payload && typeof signal.payload.message === "string" ? signal.payload.message : "" }))}
       />}
-      {active && <GithubPanel key={active.id} projectId={active.id} repository={githubRepository} activity={githubActivity} owner={role === "OWNER"}/>}
+      {active && <GithubPanel key={active.id} projectId={active.id} repository={githubRepository} activity={githubActivity} state={githubState} owner={role === "OWNER"}/>}
       {active && <ProjectRealtime projectId={active.id}/>}
       {audit && <ProjectAudit entries={audit}/>}
     </main></div>

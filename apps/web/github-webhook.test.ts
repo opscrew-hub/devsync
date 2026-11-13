@@ -86,7 +86,7 @@ test("GitHub repository links require owner access and scoped verification", {
     assert.equal((await getGithubRepository(owner, project.id))?.fullName, "fixture/repo");
     await assert.rejects(getGithubRepository(randomUUID(), project.id), /not found/);
     assert.ok(!JSON.stringify(saved).includes("fixture-token"));
-    const { processGithubEvent, listGithubActivity } = await import("@devsync/core/github-events");
+    const { processGithubEvent, listGithubActivity, listGithubState } = await import("@devsync/core/github-events");
     const { readProjectRealtimeVersion } = await import("@devsync/core/project-realtime");
     const other = await createProject(owner, { name: "Other GitHub project", description: "" });
     const deliveryId = randomUUID();
@@ -107,6 +107,30 @@ test("GitHub repository links require owner access and scoped verification", {
       await assert.rejects(listGithubActivity(randomUUID(), project.id), /not found/);
       assert.notEqual(await readProjectRealtimeVersion(owner, project.id), before);
       assert.equal((await db.githubEvent.findUniqueOrThrow({ where: { deliveryId: unlinkedId } })).processedAt, null);
+      const fixtures = [
+        { event: "push", payload: { ref: "refs/heads/main", after: "abc123" } },
+        { event: "push", payload: { ref: "refs/heads/old", after: "def456" } },
+        { event: "push", payload: { ref: "refs/heads/old", deleted: true } },
+        { event: "pull_request", payload: { pull_request: { number: 7, title: "Latest", merged: true, state: "closed", updated_at: "2026-11-13T12:00:00Z" } } },
+        { event: "pull_request", payload: { pull_request: { number: 7, title: "Stale", state: "open", updated_at: "2026-11-13T11:00:00Z" } } },
+        { event: "check_run", payload: { check_run: { id: 99, name: "CI", status: "in_progress" } } },
+        { event: "check_run", payload: { check_run: { id: 99, name: "CI", conclusion: "success" } } },
+      ];
+      const rows = fixtures.map((fixture, index) => ({
+        ...fixture, deliveryId: randomUUID(), installationId: 456n, repositoryId: 789n,
+        receivedAt: new Date(Date.now() + index + 1000), processedAt: new Date(),
+      }));
+      try {
+        await db.githubEvent.createMany({ data: rows });
+        assert.deepEqual(await listGithubState(owner, project.id), [
+          { event: "check_run", key: "99", label: "CI", state: "success" },
+          { event: "pull_request", key: "7", label: "Latest", state: "merged" },
+          { event: "push", key: "main", label: "abc123", state: "active" },
+        ]);
+        assert.deepEqual(await listGithubState(owner, other.id), []);
+      } finally {
+        await db.githubEvent.deleteMany({ where: { deliveryId: { in: rows.map(row => row.deliveryId) } } });
+      }
     } finally {
       await db.githubEvent.deleteMany({ where: { deliveryId: { in: [deliveryId, unlinkedId] } } });
     }

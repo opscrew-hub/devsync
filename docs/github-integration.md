@@ -17,3 +17,5 @@ Set `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` in the web process environment.
 In the project dashboard, sign in as the owner and submit the installation and repository IDs in the GitHub repository panel. DevSync requests a repository-scoped installation token with metadata read access, verifies the repository identity, and records the link. The app key and installation token are excluded from the database.
 
 [GitHub installation token documentation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)
+
+The dashboard shows up to ten observed branches, pull requests, and check runs per category. Pull request state uses the source update timestamp. Branch and check state follow delivery receipt order. The view is based on processed webhook history and requires GitHub API backfill for a complete inventory.

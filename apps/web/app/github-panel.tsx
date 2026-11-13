@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 
 type Repository = { installationId: string; repositoryId: string; fullName: string };
 
-export function GithubPanel({ projectId, repository, activity, owner }: {
+export function GithubPanel({ projectId, repository, activity, state, owner }: {
+  state: { event: string; key: string; label: string | null; state: string }[];
   projectId: string; repository: Repository | null; activity: { deliveryId: string; event: string; action: string | null; subject: string | null; receivedAt: Date }[]; owner: boolean;
 }) {
   const router = useRouter();
@@ -35,7 +36,17 @@ export function GithubPanel({ projectId, repository, activity, owner }: {
   return <section className="project-members">
     <h2>GitHub repository</h2>
     <p>{repository ? `Linked repository: ${repository.fullName}` : "No repository linked."}</p>
-    {repository && <><h3>Recent GitHub activity</h3>
+    {repository && <>
+      {([["push", "Branches"], ["pull_request", "Pull requests"], ["check_run", "Checks"]] as const).map(([event, label]) => {
+        const items = state.filter(item => item.event === event);
+        return <section key={event}><h3>{label}</h3>
+          {items.length ? <ul className="panel list">{items.map(item => <li key={item.key}>
+            <strong>{event === "push" ? item.key : item.label ?? item.key}</strong>
+            <code>{event === "push" ? item.label?.slice(0, 12) : item.state}</code>
+          </li>)}</ul> : <p>No webhook state observed yet.</p>}
+        </section>;
+      })}
+      <h3>Recent GitHub activity</h3>
       {activity.length ? <ol className="timeline">{activity.map(item => <li className="panel" key={item.deliveryId}>
         <strong>{item.event.replaceAll("_", " ")}{item.action && " · " + item.action}</strong>
         {item.subject && <p>{item.subject}</p>}
