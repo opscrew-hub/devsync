@@ -116,6 +116,15 @@ test("GitHub repository links require owner access and scoped verification", {
       const before = await readProjectRealtimeVersion(owner, project.id);
       assert.deepEqual(await listGithubActivity(owner, project.id), []);
       assert.equal((await getGithubDeliveryHealth(owner, project.id)).pending, 1);
+      await db.$executeRaw`ALTER TABLE "Signal" ADD CONSTRAINT "test_github_retry" CHECK ("githubDeliveryId" IS NULL) NOT VALID`;
+      try {
+        assert.equal(await processGithubEvent(), 1);
+        assert.equal((await getGithubDeliveryHealth(owner, project.id)).retrying, 1);
+        assert.equal(await processGithubEvent(), 0);
+      } finally {
+        await db.$executeRaw`ALTER TABLE "Signal" DROP CONSTRAINT "test_github_retry"`;
+      }
+      await db.$executeRaw`UPDATE "GithubEvent" SET "retryAt" = NULL WHERE "deliveryId" = ${deliveryId}`;
       const workers = await Promise.all([processGithubEvent(), processGithubEvent()]);
       assert.equal(workers.reduce((total, count) => total + count, 0), 1);
       const [activity] = await listGithubActivity(owner, project.id);

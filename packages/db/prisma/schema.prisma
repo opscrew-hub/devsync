@@ -214,6 +214,9 @@ model GithubEvent {
   payload Json
   receivedAt DateTime @default(now())
   processedAt DateTime?
+  attempts Int @default(0)
+  retryAt DateTime?
+  lastErrorCode String?
   signals Signal[]
   @@index([processedAt, receivedAt])
   @@index([installationId, repositoryId, receivedAt])

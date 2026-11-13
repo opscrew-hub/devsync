@@ -3,13 +3,22 @@ import { taskPullRequestInput } from "@devsync/contracts";
 import { DomainError, requireProject } from "./index.ts";
 
 export async function processGithubEvent() {
-  return db.$executeRaw`
+  return db.$transaction(async tx => {
+    const [event] = await tx.$queryRaw<{ deliveryId: string; attempts: number }[]>`
+      SELECT event."deliveryId", event."attempts" FROM "GithubEvent" event
+      JOIN "GithubRepository" repo USING ("installationId", "repositoryId")
+      WHERE event."processedAt" IS NULL AND (event."retryAt" IS NULL OR event."retryAt" <= timezone('UTC', clock_timestamp()))
+      ORDER BY event."receivedAt", event."deliveryId"
+      LIMIT 1 FOR UPDATE OF event SKIP LOCKED
+    `;
+    if (!event) return 0;
+    await tx.$executeRaw`SAVEPOINT github_delivery`;
+    try {
+      return await tx.$executeRaw`
     WITH pending AS (
       SELECT event.*, repo."projectId" FROM "GithubEvent" event
       JOIN "GithubRepository" repo USING ("installationId", "repositoryId")
-      WHERE event."processedAt" IS NULL
-      ORDER BY event."receivedAt", event."deliveryId"
-      LIMIT 1 FOR UPDATE OF event SKIP LOCKED
+      WHERE event."deliveryId" = ${event.deliveryId}
     ), classified AS (
       SELECT pending.*, CASE
         WHEN "event" = 'push' AND "payload"->>'ref' LIKE 'refs/heads/%' THEN 'git.branch_updated'
@@ -37,9 +46,24 @@ export async function processGithubEvent() {
         AND agent."createdAt" <= event."receivedAt"
       ON CONFLICT ("githubDeliveryId", "recipientId") DO NOTHING
     )
-    UPDATE "GithubEvent" event SET "processedAt" = timezone('UTC', clock_timestamp())
+    UPDATE "GithubEvent" event SET "processedAt" = timezone('UTC', clock_timestamp()), "retryAt" = NULL, "lastErrorCode" = NULL
     FROM pending WHERE event."deliveryId" = pending."deliveryId"
   `;
+    } catch (error) {
+      await tx.$executeRaw`ROLLBACK TO SAVEPOINT github_delivery`;
+      const code = error && typeof error === "object" && "meta" in error &&
+        error.meta && typeof error.meta === "object" && "code" in error.meta &&
+        typeof error.meta.code === "string" && /^[A-Z0-9]{5}$/.test(error.meta.code)
+        ? error.meta.code : "PROCESSING_FAILED";
+      const delay = Math.min(300, 2 ** Math.min(event.attempts + 1, 9));
+      await tx.$executeRaw`
+        UPDATE "GithubEvent" SET "attempts" = "attempts" + 1, "lastErrorCode" = ${code},
+          "retryAt" = timezone('UTC', clock_timestamp()) + make_interval(secs => ${delay}::double precision)
+        WHERE "deliveryId" = ${event.deliveryId}
+      `;
+      return 1;
+    }
+  });
 }
 
 export async function listGithubActivity(userId: string, projectId: string) {
@@ -109,8 +133,8 @@ export async function setTaskPullRequest(userId: string, projectId: string, task
 export async function getGithubDeliveryHealth(userId: string, projectId: string) {
   const member = await requireProject(userId, projectId);
   if (member.role !== "OWNER" && member.role !== "ADMIN") throw new DomainError(403, "Project administrator access required.");
-  const [health] = await db.$queryRaw<{ pending: number; lastReceived: Date | null; lastProcessed: Date | null; oldestPending: Date | null }[]>`
-    SELECT count(event."deliveryId") FILTER (WHERE event."processedAt" IS NULL)::int AS "pending",
+  const [health] = await db.$queryRaw<{ pending: number; lastReceived: Date | null; lastProcessed: Date | null; oldestPending: Date | null; retrying: number }[]>`
+    SELECT count(event."retryAt")::int AS "retrying", count(event."deliveryId") FILTER (WHERE event."processedAt" IS NULL)::int AS "pending",
       max(event."receivedAt") AS "lastReceived", max(event."processedAt") AS "lastProcessed",
       min(event."receivedAt") FILTER (WHERE event."processedAt" IS NULL) AS "oldestPending"
     FROM "GithubRepository" repo LEFT JOIN "GithubEvent" event USING ("installationId", "repositoryId")
