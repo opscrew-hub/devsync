@@ -7,7 +7,7 @@ type Reservation = NonNullable<Awaited<ReturnType<typeof reserveQueuedRun>>>;
 export type ManagedExecutor = (
   run: Pick<Reservation, "id" | "projectId" | "taskId" | "revision"> & ExecutionContext,
   signal: AbortSignal,
-) => Promise<void>;
+) => Promise<void | Awaited<ReturnType<typeof listCheckoutChanges>>>;
 
 export async function executeNextRun(
   agentType: "CODEX" | "CLAUDE",
@@ -31,14 +31,15 @@ export async function executeNextRun(
       if (!signal.aborted && !await renewRunningRun(id, dispatchToken)) stopped.abort();
     }
   })().catch(() => stopped.abort());
+  let changes: void | Awaited<ReturnType<typeof listCheckoutChanges>> = undefined;
   try {
     if (!signal.aborted) {
       const context = await getRunExecutionContext(id, dispatchToken);
       if (!context) throw new Error("Run requires a current task revision, a valid lease, and a linked repository.");
       signal.throwIfAborted();
-      await execute({ id, projectId, taskId, revision, ...context }, signal);
+      changes = await execute({ id, projectId, taskId, revision, ...context }, signal);
     }
-    if (signal.aborted || !await finishReservedRun(id, dispatchToken, "SUCCEEDED")) {
+    if (signal.aborted || !await finishReservedRun(id, dispatchToken, "SUCCEEDED", changes || undefined)) {
       await finishReservedRun(id, dispatchToken, "FAILED");
     }
   } catch (error) {
@@ -59,13 +60,14 @@ export function withManagedCheckout(
   return async (run, signal) => {
     signal.throwIfAborted();
     const { repository, commit, cloneToken } = await resolveSource(run, signal);
-    await withCheckout(repository, commit, signal, async directory => {
+    return withCheckout(repository, commit, signal, async directory => {
       await execute(run, { directory, commit }, signal);
       signal.throwIfAborted();
-      if (reportChanges) {
+      {
         const changes = await listCheckoutChanges(directory, signal);
         signal.throwIfAborted();
-        await reportChanges(run.id, changes);
+        if (reportChanges) await reportChanges(run.id, changes);
+        return changes;
       }
     }, cloneToken);
   };
