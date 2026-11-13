@@ -73,11 +73,13 @@ test("executor consumes an approved run and persists its outcome", {
       assert.equal(work.title, "Executor fixture");
       assert.equal(work.revision, task.revision);
       assert.equal(signal.aborted, false);
+      return [{ path: "fixture.txt", status: " M" }];
     }, new AbortController().signal);
     assert.equal(executed, true);
     const finished = await db.agentRun.findUniqueOrThrow({ where: { id: ready.id } });
     assert.equal(finished.status, "SUCCEEDED");
     assert.equal(finished.dispatchToken, null);
+    assert.deepEqual(finished.changes, [{ path: "fixture.txt", status: " M" }]);
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId: owner } } } });
     await db.user.deleteMany({ where: { id: owner } });

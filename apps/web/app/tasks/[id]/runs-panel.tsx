@@ -5,7 +5,7 @@ import { useState } from "react";
 
 export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
   projectId: string; taskId: string; ready: boolean; writer: boolean; admin: boolean;
-  runs: { id: string; revision: number; agentType: string; status: string }[];
+  runs: { id: string; revision: number; agentType: string; status: string; changes: unknown }[];
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -40,6 +40,11 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
     {error && <p role="alert">{error}</p>}
     <ul className="list">{runs.map(run => <li key={run.id}>
       <strong>{run.agentType}</strong> · Revision {run.revision} · {run.status.toLowerCase()}
+      {Array.isArray(run.changes) && <details>
+        <summary>{run.changes.length} changed files</summary>
+        <ul>{run.changes.map((change, index) => change && typeof change.path === "string" && typeof change.status === "string" &&
+          <li key={index}><code>{change.status} {change.path}</code></li>)}</ul>
+      </details>}
       {admin && run.status === "REQUESTED" && <div className="actions">
         <button disabled={busy} onClick={() => save({ status: "QUEUED" }, run.id)}>Approve</button>
         <button disabled={busy} onClick={() => save({ status: "REJECTED" }, run.id)}>Reject</button>
