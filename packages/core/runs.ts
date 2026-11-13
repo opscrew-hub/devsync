@@ -15,7 +15,7 @@ export async function listRuns(userId: string, projectId: string, taskId?: strin
     select: { id: true },
   });
   const available = new Set(artifacts.map(artifact => artifact.id));
-  return runs.map(run => ({ ...run, hasPatch: available.has(run.id) }));
+  return runs.map(run => ({ ...run, hasPatch: available.has(run.id), tokenUsage: parseUsage(run.tokenUsage) }));
 }
 
 export async function requestRun(userId: string, projectId: string, input: unknown) {
@@ -103,7 +103,9 @@ export async function startReservedRun(id: string, token: string) {
   });
 }
 
-export async function finishReservedRun(id: string, token: string, outcome: "SUCCEEDED" | "FAILED", changes?: { path: string; status: string }[], baseCommit?: string, patch?: string, failureReason: "EXECUTION_FAILED" | "TIME_LIMIT" = "EXECUTION_FAILED") {
+export type RunTokenUsage = { inputTokens: number; outputTokens: number };
+
+export async function finishReservedRun(id: string, token: string, outcome: "SUCCEEDED" | "FAILED", changes?: { path: string; status: string }[], baseCommit?: string, patch?: string, failureReason: "EXECUTION_FAILED" | "TIME_LIMIT" = "EXECUTION_FAILED", tokenUsage?: RunTokenUsage) {
   return db.$transaction(async tx => {
     const run = await tx.agentRun.findUnique({ where: { id }, select: { taskId: true, projectId: true } });
     if (!run) return false;
@@ -111,6 +113,7 @@ export async function finishReservedRun(id: string, token: string, outcome: "SUC
     const count = await tx.$executeRaw`
       UPDATE "AgentRun" run
       SET "status" = ${outcome}::"RunStatus", "finishedAt" = timezone('UTC', clock_timestamp()),
+        "tokenUsage" = ${outcome === "SUCCEEDED" && tokenUsage ? JSON.stringify(tokenUsage) : null}::jsonb,
         "failureReason" = CASE WHEN ${outcome} = 'FAILED' THEN ${failureReason} ELSE NULL END,
         "patch" = ${outcome === "SUCCEEDED" ? patch ?? null : null}, "baseCommit" = ${outcome === "SUCCEEDED" ? baseCommit ?? null : null}, "changes" = ${outcome === "SUCCEEDED" && changes ? JSON.stringify(changes) : null}::jsonb, "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
       FROM "Task" task
@@ -181,4 +184,11 @@ export async function invalidateStaleQueuedRuns() {
       AND run."status" = 'QUEUED'
       AND (run."revision" <> task."revision" OR task."status" IN ('DONE', 'CANCELLED'))
   `;
+}
+
+function parseUsage(value: unknown): RunTokenUsage | null {
+  if (!value || typeof value !== "object") return null;
+  const { inputTokens, outputTokens } = value as Partial<RunTokenUsage>;
+  if (typeof inputTokens !== "number" || typeof outputTokens !== "number") return null;
+  return { inputTokens, outputTokens };
 }

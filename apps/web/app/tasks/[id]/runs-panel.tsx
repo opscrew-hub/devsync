@@ -15,7 +15,7 @@ const failureMessages: Record<string, string> = {
 
 export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
   projectId: string; taskId: string; ready: boolean; writer: boolean; admin: boolean;
-  runs: { id: string; revision: number; agentType: string; status: string; failureReason: string | null; changes: unknown; hasPatch: boolean; baseCommit: string | null; createdAt: Date; startedAt: Date | null; finishedAt: Date | null }[];
+  runs: { id: string; revision: number; agentType: string; status: string; failureReason: string | null; changes: unknown; tokenUsage: { inputTokens: number; outputTokens: number } | null; hasPatch: boolean; baseCommit: string | null; createdAt: Date; startedAt: Date | null; finishedAt: Date | null }[];
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -56,6 +56,7 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
         )}
       </dl>
       {run.failureReason && failureMessages[run.failureReason] && <p>{failureMessages[run.failureReason]}</p>}
+      {run.tokenUsage && <p>{run.tokenUsage.inputTokens} input tokens · {run.tokenUsage.outputTokens} output tokens</p>}
       {run.baseCommit && <p>Base commit <code>{run.baseCommit}</code></p>}
       {run.hasPatch && <a className="detail-link" href={`/api/v1/runs/${encodeURIComponent(run.id)}/patch?projectId=${encodeURIComponent(projectId)}&download=1`}>Download patch</a>}
       {Array.isArray(run.changes) && <details>

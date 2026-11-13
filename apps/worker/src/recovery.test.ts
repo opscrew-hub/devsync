@@ -92,7 +92,7 @@ test("executor consumes an approved run and persists its outcome", {
       assert.equal(work.title, "Executor fixture");
       assert.equal(work.revision, task.revision);
       assert.equal(signal.aborted, false);
-      return { changes: [{ path: "fixture.txt", status: " M" }], baseCommit: "a".repeat(40), patch: "fixture patch" };
+      return { changes: [{ path: "fixture.txt", status: " M" }], baseCommit: "a".repeat(40), patch: "fixture patch", tokenUsage: { inputTokens: 120, outputTokens: 30 } };
     }, new AbortController().signal);
     assert.equal(executed, true);
     const finished = await db.agentRun.findUniqueOrThrow({ where: { id: ready.id } });
@@ -100,6 +100,7 @@ test("executor consumes an approved run and persists its outcome", {
     assert.equal(finished.dispatchToken, null);
     assert.deepEqual(await getRunPatch(owner, project.id, ready.id), { patch: "fixture patch" });
     await assert.rejects(getRunPatch(randomUUID(), project.id, ready.id), /not found/);
+    assert.deepEqual(finished.tokenUsage, { inputTokens: 120, outputTokens: 30 });
     assert.equal(finished.baseCommit, "a".repeat(40));
     assert.deepEqual(finished.changes, [{ path: "fixture.txt", status: " M" }]);
     const timed = await requestRun(owner, project.id, { taskId: task.id, agentType: "CLAUDE" });
