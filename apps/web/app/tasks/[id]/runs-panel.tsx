@@ -3,9 +3,11 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+const formatTime = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Berlin" });
+
 export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
   projectId: string; taskId: string; ready: boolean; writer: boolean; admin: boolean;
-  runs: { id: string; revision: number; agentType: string; status: string; changes: unknown; baseCommit: string | null }[];
+  runs: { id: string; revision: number; agentType: string; status: string; changes: unknown; baseCommit: string | null; createdAt: Date; startedAt: Date | null; finishedAt: Date | null }[];
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -40,6 +42,11 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
     {error && <p role="alert">{error}</p>}
     <ul className="list">{runs.map(run => <li key={run.id}>
       <strong>{run.agentType}</strong> · Revision {run.revision} · {run.status.toLowerCase()}
+      <dl>
+        {([["Requested", run.createdAt], ["Started", run.startedAt], ["Finished", run.finishedAt]] as const).map(([label, date]) =>
+          date && <div key={label}><dt>{label}</dt><dd><time dateTime={date.toISOString()}>{formatTime.format(date)}</time></dd></div>
+        )}
+      </dl>
       {run.baseCommit && <p>Base commit <code>{run.baseCommit}</code></p>}
       {Array.isArray(run.changes) && <details>
         <summary>{run.changes.length} changed files</summary>
