@@ -68,3 +68,17 @@ export const githubRepositoryInput = z.object({
 });
 export const githubTokenResponse = z.object({ token: z.string().min(1) });
 export const githubRepositoryResponse = z.object({ id: z.number().int().positive(), full_name: z.string().min(1).max(300) });
+export const taskPullRequestInput = z.object({ number: z.number().int().positive().max(2147483647).nullable() });
+const branches = z.array(z.object({ name: z.string(), commit: z.object({ sha: z.string() }) }));
+const pulls = z.array(z.object({ number: z.number().int(), title: z.string(), state: z.string() }));
+export const githubSnapshotChecks = z.object({ check_runs: z.array(z.object({ id: z.number().int(), name: z.string(), status: z.string(), conclusion: z.string().nullable() })) });
+export const githubSnapshot = z.object({
+  fetchedAt: z.string(),
+  branches, pulls, checks: githubSnapshotChecks.shape.check_runs,
+});
+
+
+export const githubSnapshotMetadata = z.object({ id: z.number().int(), full_name: z.string().regex(/^[\w.-]+\/[\w.-]+$/), default_branch: z.string().min(1) });
+
+export const runRequestInput = z.object({ taskId: z.string().min(1).max(40), agentType: z.enum(["CODEX", "CLAUDE"]) });
+export const runDecisionInput = z.object({ status: z.enum(["QUEUED", "REJECTED", "CANCELLED"]) });

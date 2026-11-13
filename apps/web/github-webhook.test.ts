@@ -58,8 +58,8 @@ test("GitHub repository links require owner access and scoped verification", {
 }, async () => {
   const { generateKeyPairSync } = await import("node:crypto");
   const { db } = await import("@devsync/db");
-  const { createProject } = await import("@devsync/core");
-  const { linkGithubRepository, getGithubRepository } = await import("@devsync/core/github-app");
+  const { createProject, createTask, getTask } = await import("@devsync/core");
+  const { linkGithubRepository, getGithubRepository, refreshGithubSnapshot } = await import("@devsync/core/github-app");
   const owner = randomUUID();
   try {
     await db.user.create({ data: { id: owner, name: "Owner" } });
@@ -83,12 +83,29 @@ test("GitHub repository links require owner access and scoped verification", {
     assert.deepEqual(calls, []);
     const saved = await linkGithubRepository(owner, project.id, { installationId: 456, repositoryId: 789 }, mock);
     assert.equal(saved.repositoryId, "789");
+    const snapshot = await refreshGithubSnapshot(owner, project.id, async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      if (init?.method === "POST") {
+        assert.deepEqual(JSON.parse(String(init.body)).permissions, { metadata: "read", contents: "read", pull_requests: "read", checks: "read" });
+        return Response.json({ token: "fixture-token" });
+      }
+      if (path === "/repositories/789") return Response.json({ id: 789, full_name: "fixture/repo", default_branch: "main" });
+      if (path.endsWith("/branches")) return Response.json([{ name: "main", commit: { sha: "abc123" } }]);
+      if (path.endsWith("/pulls")) return Response.json([{ number: 1, title: "Before webhooks", state: "open" }]);
+      assert.equal(path, "/repos/fixture/repo/commits/main/check-runs");
+      return Response.json({ check_runs: [{ id: 1, name: "CI", status: "completed", conclusion: "success" }] });
+    });
+    assert.equal(snapshot.pulls[0].title, "Before webhooks");
+    assert.deepEqual((await getGithubRepository(owner, project.id))?.snapshot, snapshot);
     assert.equal((await getGithubRepository(owner, project.id))?.fullName, "fixture/repo");
     await assert.rejects(getGithubRepository(randomUUID(), project.id), /not found/);
     assert.ok(!JSON.stringify(saved).includes("fixture-token"));
-    const { processGithubEvent, listGithubActivity, listGithubState } = await import("@devsync/core/github-events");
+    const { processGithubEvent, getGithubDeliveryHealth, listGithubActivity, listGithubState, setTaskPullRequest } = await import("@devsync/core/github-events");
     const { readProjectRealtimeVersion } = await import("@devsync/core/project-realtime");
     const other = await createProject(owner, { name: "Other GitHub project", description: "" });
+    const { registerAgent, pendingSignals } = await import("@devsync/core/agent-signals");
+    const agent = await registerAgent(owner, project.id, { type: "CODEX", name: "GitHub watcher" });
+    const outsider = await registerAgent(owner, other.id, { type: "CODEX", name: "Other watcher" });
     const deliveryId = randomUUID();
     const unlinkedId = randomUUID();
     try {
@@ -98,11 +115,37 @@ test("GitHub repository links require owner access and scoped verification", {
       ] });
       const before = await readProjectRealtimeVersion(owner, project.id);
       assert.deepEqual(await listGithubActivity(owner, project.id), []);
+      assert.equal((await getGithubDeliveryHealth(owner, project.id)).pending, 1);
+      await db.$executeRaw`ALTER TABLE "Signal" ADD CONSTRAINT "test_github_retry" CHECK ("githubDeliveryId" IS NULL) NOT VALID`;
+      try {
+        assert.equal(await processGithubEvent(), 1);
+        const retryHealth = await getGithubDeliveryHealth(owner, project.id);
+        assert.equal(retryHealth.retrying, 1);
+        assert.equal(retryHealth.failures.length, 1);
+        assert.equal(retryHealth.failures[0].deliveryId, deliveryId);
+        assert.equal(retryHealth.failures[0].attempts, 1);
+        assert.equal(retryHealth.failures[0].lastErrorCode, "23514");
+        assert.deepEqual((await getGithubDeliveryHealth(owner, other.id)).failures, []);
+        assert.equal(await processGithubEvent(), 0);
+      } finally {
+        await db.$executeRaw`ALTER TABLE "Signal" DROP CONSTRAINT "test_github_retry"`;
+      }
+      await db.$executeRaw`UPDATE "GithubEvent" SET "retryAt" = NULL WHERE "deliveryId" = ${deliveryId}`;
       const workers = await Promise.all([processGithubEvent(), processGithubEvent()]);
       assert.equal(workers.reduce((total, count) => total + count, 0), 1);
       const [activity] = await listGithubActivity(owner, project.id);
       assert.equal(activity.deliveryId, deliveryId);
+      const health = await getGithubDeliveryHealth(owner, project.id);
+      assert.equal(health.pending, 0);
+      assert.deepEqual(health.failures, []);
+      assert.ok(health.lastProcessed);
       assert.equal(activity.subject, "refs/heads/main");
+      const signals = await pendingSignals(agent.token);
+      assert.equal(signals.length, 1);
+      assert.equal(signals[0].kind, "git.branch_updated");
+      assert.equal(signals[0].githubDeliveryId, deliveryId);
+      assert.deepEqual(await pendingSignals(outsider.token), []);
+      assert.equal(await processGithubEvent(), 0);
       assert.deepEqual(await listGithubActivity(owner, other.id), []);
       await assert.rejects(listGithubActivity(randomUUID(), project.id), /not found/);
       assert.notEqual(await readProjectRealtimeVersion(owner, project.id), before);
@@ -128,6 +171,23 @@ test("GitHub repository links require owner access and scoped verification", {
           { event: "push", key: "main", label: "abc123", state: "active" },
         ]);
         assert.deepEqual(await listGithubState(owner, other.id), []);
+        const task = await createTask(owner, project.id, { title: "Link a PR", description: "", acceptanceCriteria: "" });
+        const unrelated = await createTask(owner, other.id, { title: "Other", description: "", acceptanceCriteria: "" });
+        await assert.rejects(setTaskPullRequest(owner, project.id, unrelated.id, { number: 7 }), /Task not found/);
+        await assert.rejects(setTaskPullRequest(owner, project.id, task.id, { number: 8 }), /not been observed/);
+        assert.deepEqual(await setTaskPullRequest(owner, project.id, task.id, { number: 7 }), { pullRequestNumber: 7 });
+        assert.equal((await getTask(owner, project.id, task.id)).pullRequestNumber, 7);
+        const { getTaskPullRequestState } = await import("@devsync/core/task-pr-state");
+        const pull = await getTaskPullRequestState(owner, project.id, task.id);
+        assert.equal(pull?.status, "merged");
+        assert.equal(pull?.title, "Latest");
+        assert.equal(await getTaskPullRequestState(owner, other.id, task.id), null);
+        await assert.rejects(getTaskPullRequestState(randomUUID(), project.id, task.id), /not found/);
+        await setTaskPullRequest(owner, project.id, task.id, { number: null });
+        assert.equal((await getTask(owner, project.id, task.id)).pullRequestNumber, null);
+        await setTaskPullRequest(owner, project.id, task.id, { number: 7 });
+        await db.githubRepository.update({ where: { projectId: project.id }, data: { repositoryId: 790n } });
+        assert.equal((await getTask(owner, project.id, task.id)).pullRequestNumber, null);
       } finally {
         await db.githubEvent.deleteMany({ where: { deliveryId: { in: rows.map(row => row.deliveryId) } } });
       }

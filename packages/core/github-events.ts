@@ -1,18 +1,69 @@
 import { db } from "@devsync/db";
-import { requireProject } from "./index.ts";
+import { taskPullRequestInput } from "@devsync/contracts";
+import { DomainError, requireProject } from "./index.ts";
 
 export async function processGithubEvent() {
-  return db.$executeRaw`
-    WITH pending AS (
-      SELECT event."deliveryId" FROM "GithubEvent" event
+  return db.$transaction(async tx => {
+    const [event] = await tx.$queryRaw<{ deliveryId: string; attempts: number }[]>`
+      SELECT event."deliveryId", event."attempts" FROM "GithubEvent" event
       JOIN "GithubRepository" repo USING ("installationId", "repositoryId")
-      WHERE event."processedAt" IS NULL
+      WHERE event."processedAt" IS NULL AND (event."retryAt" IS NULL OR event."retryAt" <= timezone('UTC', clock_timestamp()))
       ORDER BY event."receivedAt", event."deliveryId"
       LIMIT 1 FOR UPDATE OF event SKIP LOCKED
+    `;
+    if (!event) return 0;
+    await tx.$executeRaw`SAVEPOINT github_delivery`;
+    try {
+      return await tx.$executeRaw`
+    WITH pending AS (
+      SELECT event.*, repo."projectId" FROM "GithubEvent" event
+      JOIN "GithubRepository" repo USING ("installationId", "repositoryId")
+      WHERE event."deliveryId" = ${event.deliveryId}
+    ), classified AS (
+      SELECT pending.*, CASE
+        WHEN "event" = 'push' AND "payload"->>'ref' LIKE 'refs/heads/%' THEN 'git.branch_updated'
+        WHEN "event" = 'pull_request' AND "payload"->>'action' = 'opened' THEN 'git.pr_opened'
+        WHEN "event" = 'pull_request' AND "payload"->>'action' = 'closed'
+          AND "payload"#>>'{pull_request,merged}' = 'true' THEN 'git.pr_merged'
+      END AS kind FROM pending
+    ), delivered AS (
+      INSERT INTO "Signal" ("id", "projectId", "recipientId", "githubDeliveryId", "kind", "payload", "idempotencyKey")
+      SELECT gen_random_uuid()::text, event."projectId", agent."id", event."deliveryId", event.kind,
+        jsonb_strip_nulls(jsonb_build_object(
+          'message', CASE event.kind
+            WHEN 'git.branch_updated' THEN 'GitHub branch updated'
+            WHEN 'git.pr_opened' THEN 'GitHub pull request opened'
+            WHEN 'git.pr_merged' THEN 'GitHub pull request merged'
+          END,
+          'ref', left(event."payload"->>'ref', 512),
+          'sha', left(COALESCE(event."payload"->>'after', event."payload"#>>'{pull_request,head,sha}'), 64),
+          'pullRequestNumber', event."payload"#>'{pull_request,number}',
+          'repositoryId', event."repositoryId"::text,
+          'deliveryId', event."deliveryId"
+        )), 'github:' || event."deliveryId"
+      FROM classified event JOIN "Agent" agent ON agent."projectId" = event."projectId"
+      WHERE event.kind IS NOT NULL AND agent."revokedAt" IS NULL
+        AND agent."createdAt" <= event."receivedAt"
+      ON CONFLICT ("githubDeliveryId", "recipientId") DO NOTHING
     )
-    UPDATE "GithubEvent" event SET "processedAt" = timezone('UTC', clock_timestamp())
+    UPDATE "GithubEvent" event SET "processedAt" = timezone('UTC', clock_timestamp()), "retryAt" = NULL, "lastErrorCode" = NULL
     FROM pending WHERE event."deliveryId" = pending."deliveryId"
   `;
+    } catch (error) {
+      await tx.$executeRaw`ROLLBACK TO SAVEPOINT github_delivery`;
+      const code = error && typeof error === "object" && "meta" in error &&
+        error.meta && typeof error.meta === "object" && "code" in error.meta &&
+        typeof error.meta.code === "string" && /^[A-Z0-9]{5}$/.test(error.meta.code)
+        ? error.meta.code : "PROCESSING_FAILED";
+      const delay = Math.min(300, 2 ** Math.min(event.attempts + 1, 9));
+      await tx.$executeRaw`
+        UPDATE "GithubEvent" SET "attempts" = "attempts" + 1, "lastErrorCode" = ${code},
+          "retryAt" = timezone('UTC', clock_timestamp()) + make_interval(secs => ${delay}::double precision)
+        WHERE "deliveryId" = ${event.deliveryId}
+      `;
+      return 1;
+    }
+  });
 }
 
 export async function listGithubActivity(userId: string, projectId: string) {
@@ -46,4 +97,56 @@ export async function listGithubState(userId: string, projectId: string) {
     ) items WHERE position <= 10
     ORDER BY "event", position
   `;
+}
+
+export async function setTaskPullRequest(userId: string, projectId: string, taskId: string, input: unknown) {
+  await requireProject(userId, projectId, true);
+  const { number } = taskPullRequestInput.parse(input);
+  return db.$transaction(async tx => {
+    await tx.$queryRaw`SELECT "id" FROM "Project" WHERE "id" = ${projectId} FOR UPDATE`;
+    const member = await tx.projectMember.findUnique({ where: { projectId_userId: { projectId, userId } } });
+    if (!member || member.role === "VIEWER") throw new DomainError(403, "Project write access required.");
+    const task = await tx.task.findUnique({ where: { id: taskId, projectId }, select: { pullRequestNumber: true } });
+    if (!task) throw new DomainError(404, "Task not found.");
+    if (number !== null) {
+      const [observed] = await tx.$queryRaw<{ key: string }[]>`
+        SELECT state."key" FROM "GithubRepository" repo
+        JOIN "GithubObservedState" state USING ("installationId", "repositoryId")
+        WHERE repo."projectId" = ${projectId} AND state."event" = 'pull_request' AND state."key" = ${String(number)}
+      `;
+      if (!observed) throw new DomainError(404, "Pull request has not been observed for this project.");
+    }
+    if (task.pullRequestNumber !== number) {
+      await tx.task.update({
+        where: { id: taskId, projectId },
+        data: { pullRequestNumber: number, version: { increment: 1 } },
+      });
+      await tx.auditLog.create({ data: {
+        projectId, actorId: userId, targetId: taskId, action: "task.pull_request_changed",
+        details: { previousNumber: task.pullRequestNumber, number },
+      } });
+    }
+    return { pullRequestNumber: number };
+  });
+}
+
+export async function getGithubDeliveryHealth(userId: string, projectId: string) {
+  const member = await requireProject(userId, projectId);
+  if (member.role !== "OWNER" && member.role !== "ADMIN") throw new DomainError(403, "Project administrator access required.");
+  const [health] = await db.$queryRaw<{ pending: number; lastReceived: Date | null; lastProcessed: Date | null; oldestPending: Date | null; retrying: number }[]>`
+    SELECT count(event."retryAt")::int AS "retrying", count(event."deliveryId") FILTER (WHERE event."processedAt" IS NULL)::int AS "pending",
+      max(event."receivedAt") AS "lastReceived", max(event."processedAt") AS "lastProcessed",
+      min(event."receivedAt") FILTER (WHERE event."processedAt" IS NULL) AS "oldestPending"
+    FROM "GithubRepository" repo LEFT JOIN "GithubEvent" event USING ("installationId", "repositoryId")
+    WHERE repo."projectId" = ${projectId}
+  `;
+  const failures = await db.$queryRaw<{ deliveryId: string; event: string; attempts: number; retryAt: Date; lastErrorCode: string }[]>`
+    SELECT event."deliveryId", event."event", event."attempts", event."retryAt", event."lastErrorCode"
+    FROM "GithubRepository" repo JOIN "GithubEvent" event USING ("installationId", "repositoryId")
+    WHERE repo."projectId" = ${projectId} AND event."processedAt" IS NULL
+      AND event."retryAt" IS NOT NULL AND event."lastErrorCode" IS NOT NULL
+    ORDER BY event."retryAt", event."deliveryId"
+    LIMIT 10
+  `;
+  return { ...health, failures };
 }

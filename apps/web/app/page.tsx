@@ -4,7 +4,7 @@ import { GitBranch, Github, LayoutGrid } from "lucide-react";
 import { listAgents, listSignals } from "@devsync/core/agent-signals";
 import { AgentPanel } from "./agent-panel";
 import { getGithubRepository } from "@devsync/core/github-app";
-import { listGithubActivity, listGithubState } from "@devsync/core/github-events";
+import { getGithubDeliveryHealth, listGithubActivity, listGithubState } from "@devsync/core/github-events";
 import { GithubPanel } from "./github-panel";
 import { MemberForm } from "./member-form";
 import { ProjectAudit } from "./project-audit";
@@ -31,6 +31,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ p
   const githubRepository = active ? await getGithubRepository(session.userId, active.id) : null;
   const [githubActivity, githubState] = active && githubRepository
     ? await Promise.all([listGithubActivity(session.userId, active.id), listGithubState(session.userId, active.id)]) : [[], []];
+  const githubHealth = active && githubRepository && (role === "OWNER" || role === "ADMIN")
+    ? await getGithubDeliveryHealth(session.userId, active.id) : null;
   const audit = active && (role === "OWNER" || role === "ADMIN") ? await listProjectAudit(session.userId, active.id) : null;
   return <div className="shell">
     <aside><div className="brand"><span className="mark"><GitBranch size={17}/></span>DevSync</div>
@@ -48,9 +50,9 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ p
       </section>}
       {active && <AgentPanel key={active.id} projectId={active.id} owner={role === "OWNER"} writer={role !== undefined && role !== "VIEWER"}
         agents={agents}
-        signals={signals.map(signal => ({ id: signal.id, kind: signal.kind, recipientId: signal.recipientId, acknowledged: !!signal.acknowledgedAt, sender: signal.sender?.name ?? signal.senderAgent?.name ?? "Unknown sender", message: typeof signal.payload === "object" && signal.payload && "message" in signal.payload && typeof signal.payload.message === "string" ? signal.payload.message : "" }))}
+        signals={signals.map(signal => ({ id: signal.id, kind: signal.kind, recipientId: signal.recipientId, acknowledged: !!signal.acknowledgedAt, sender: signal.sender?.name ?? signal.senderAgent?.name ?? (signal.githubDeliveryId ? "GitHub" : "Unknown sender"), message: typeof signal.payload === "object" && signal.payload && "message" in signal.payload && typeof signal.payload.message === "string" ? signal.payload.message : "" }))}
       />}
-      {active && <GithubPanel key={active.id} projectId={active.id} repository={githubRepository} activity={githubActivity} state={githubState} owner={role === "OWNER"}/>}
+      {active && <GithubPanel key={active.id} projectId={active.id} repository={githubRepository} activity={githubActivity} state={githubState} health={githubHealth} owner={role === "OWNER"}/>}
       {active && <ProjectRealtime projectId={active.id}/>}
       {audit && <ProjectAudit entries={audit}/>}
     </main></div>
