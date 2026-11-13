@@ -5,11 +5,17 @@ import { DomainError, requireProject } from "./index.ts";
 
 export async function listRuns(userId: string, projectId: string, taskId?: string) {
   await requireProject(userId, projectId);
-  return db.agentRun.findMany({
+  const runs = await db.agentRun.findMany({
     where: { projectId, taskId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 50,
     omit: { dispatchToken: true, patch: true },
     include: { task: { select: { title: true } } },
   });
+  const artifacts = await db.agentRun.findMany({
+    where: { projectId, id: { in: runs.map(run => run.id) }, status: "SUCCEEDED", patch: { not: null } },
+    select: { id: true },
+  });
+  const available = new Set(artifacts.map(artifact => artifact.id));
+  return runs.map(run => ({ ...run, hasPatch: available.has(run.id) }));
 }
 
 export async function requestRun(userId: string, projectId: string, input: unknown) {

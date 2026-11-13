@@ -7,7 +7,7 @@ const formatTime = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyl
 
 export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
   projectId: string; taskId: string; ready: boolean; writer: boolean; admin: boolean;
-  runs: { id: string; revision: number; agentType: string; status: string; changes: unknown; baseCommit: string | null; createdAt: Date; startedAt: Date | null; finishedAt: Date | null }[];
+  runs: { id: string; revision: number; agentType: string; status: string; changes: unknown; hasPatch: boolean; baseCommit: string | null; createdAt: Date; startedAt: Date | null; finishedAt: Date | null }[];
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -48,6 +48,7 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
         )}
       </dl>
       {run.baseCommit && <p>Base commit <code>{run.baseCommit}</code></p>}
+      {run.hasPatch && <a className="detail-link" href={`/api/v1/runs/${encodeURIComponent(run.id)}/patch?projectId=${encodeURIComponent(projectId)}&download=1`}>Download patch</a>}
       {Array.isArray(run.changes) && <details>
         <summary>{run.changes.length} changed files</summary>
         <ul>{run.changes.map((change, index) => change && typeof change.path === "string" && typeof change.status === "string" &&
