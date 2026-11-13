@@ -209,7 +209,7 @@ test("project stream refreshes on committed writes and closes when access is rev
 test("managed runs require an administrator decision for the current task revision", { skip: process.env.DEVSYNC_TEST_DB !== "1" }, async () => {
   const { db } = await import("@devsync/db");
   const { createProject, createTask, updateTask, changeProjectMember } = await import("@devsync/core");
-  const { requestRun, decideRun, listRuns } = await import("@devsync/core/runs");
+  const { requestRun, decideRun, listRuns, reserveQueuedRun, releaseRunReservation } = await import("@devsync/core/runs");
   const owner = randomUUID();
   const developer = randomUUID();
   try {
@@ -228,7 +228,22 @@ test("managed runs require an administrator decision for the current task revisi
     await decideRun(owner, project.id, run.id, { status: "CANCELLED" });
     const current = await requestRun(developer, project.id, input);
     await decideRun(owner, project.id, current.id, { status: "QUEUED" });
-    assert.equal((await listRuns(owner, project.id, task.id)).find(item => item.id === current.id)?.status, "QUEUED");
+    const queued = (await listRuns(owner, project.id, task.id)).find(item => item.id === current.id);
+    assert.equal(queued?.status, "QUEUED");
+    assert.ok(!Object.hasOwn(queued!, "dispatchToken"));
+    assert.equal(await reserveQueuedRun("CLAUDE"), null);
+    const reservations = await Promise.all([reserveQueuedRun("CODEX"), reserveQueuedRun("CODEX")]);
+    const active = reservations.filter(item => item !== null);
+    assert.equal(active.length, 1);
+    assert.equal(active[0].id, current.id);
+    await db.agentRun.update({ where: { id: current.id }, data: { dispatchExpiresAt: new Date(0) } });
+    const recovered = await reserveQueuedRun("CODEX");
+    assert.ok(recovered);
+    assert.notEqual(recovered.dispatchToken, active[0].dispatchToken);
+    assert.equal(await releaseRunReservation(current.id, active[0].dispatchToken), false);
+    assert.equal(await releaseRunReservation(current.id, recovered.dispatchToken), true);
+    await decideRun(owner, project.id, current.id, { status: "CANCELLED" });
+    assert.equal(await reserveQueuedRun("CODEX"), null);
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId: owner } } } });
     await db.user.deleteMany({ where: { id: { in: [owner, developer] } } });

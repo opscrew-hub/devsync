@@ -254,6 +254,8 @@ model AgentRun {
   status RunStatus @default(REQUESTED)
   createdAt DateTime @default(now())
   decidedAt DateTime?
+  dispatchToken String?
+  dispatchExpiresAt DateTime?
   task Task @relation(fields: [projectId, taskId], references: [projectId, id], onDelete: Cascade)
   requestedBy User @relation("RequestedRuns", fields: [requestedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   decidedBy User? @relation("DecidedRuns", fields: [decidedById], references: [id], onDelete: SetNull, onUpdate: NoAction)
