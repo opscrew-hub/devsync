@@ -265,10 +265,14 @@ model AgentRun {
   baseCommit String?
   patch String?
   draftPullRequestUrl String?
+  draftRepositoryId BigInt?
+  draftInstallationId BigInt?
+  draftRetryAt DateTime?
   dispatchToken String?
   dispatchExpiresAt DateTime?
   task Task @relation(fields: [projectId, taskId], references: [projectId, id], onDelete: Cascade)
   requestedBy User @relation("RequestedRuns", fields: [requestedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
   decidedBy User? @relation("DecidedRuns", fields: [decidedById], references: [id], onDelete: SetNull, onUpdate: NoAction)
   @@index([projectId, createdAt])
+  @@index([draftRetryAt])
 }

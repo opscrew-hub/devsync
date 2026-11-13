@@ -1,7 +1,7 @@
 import { setTimeout } from "node:timers/promises";
 import { db } from "@devsync/db";
 import { createGithubDraftClient } from "@devsync/core/github-app";
-import { recordRunDraftPullRequest } from "@devsync/core/runs";
+import { claimRunDraftPublication, recordRunDraftPullRequest } from "@devsync/core/runs";
 import pino from "pino";
 import { createCodexExecutor } from "./codex-executor.ts";
 import { executeNextRun } from "./managed-run.ts";
@@ -18,11 +18,15 @@ if (tokenBudget !== undefined && (!Number.isSafeInteger(tokenBudget) || tokenBud
   throw new Error("DEVSYNC_CODEX_TOKEN_BUDGET must be a positive integer.");
 }
 const log = pino({ name: "devsync-managed-codex" });
-const publish: Parameters<typeof executeNextRun>[7] = process.env.DEVSYNC_CODEX_DRAFT_PRS === "true"
-  ? async (run, result, signal) => {
-    const plan = planDraftPullRequest(run, result);
-    if (!plan) return;
+const draftEnabled = process.env.DEVSYNC_CODEX_DRAFT_PRS === "true";
+async function publishNextDraft(shutdown: AbortSignal) {
+    if (shutdown.aborted) return false;
+    const run = await claimRunDraftPublication();
+    if (!run) return false;
+    const signal = AbortSignal.any([shutdown, AbortSignal.timeout(60000)]);
     try {
+      const plan = planDraftPullRequest(run, run);
+      if (!plan) throw new Error("Managed draft has no patch.");
       const github = await createGithubDraftClient(run, signal);
       const pull = await publishDraftPullRequest(plan, github.base, {
         ...github,
@@ -30,14 +34,14 @@ const publish: Parameters<typeof executeNextRun>[7] = process.env.DEVSYNC_CODEX_
       }, signal);
       if (!await recordRunDraftPullRequest(run, plan.baseCommit, pull.url)) {
         log.warn({ runId: run.id, pullRequestUrl: pull.url }, "Managed draft pull request link could not be saved");
-        return;
+        return true;
       }
       log.info({ runId: run.id, pullRequestUrl: pull.url }, "Managed draft pull request published");
     } catch (error) {
       log.error({ runId: run.id, errorType: error instanceof Error ? error.name : "unknown" }, "Managed draft pull request publication failed");
     }
-  }
-  : undefined;
+    return true;
+}
 const execute = createCodexExecutor(apiKey);
 const shutdown = new AbortController();
 process.once("SIGINT", () => shutdown.abort());
@@ -46,7 +50,8 @@ process.once("SIGTERM", () => shutdown.abort());
 try {
   while (!shutdown.signal.aborted) {
     try {
-      if (await executeNextRun("CODEX", execute, shutdown.signal, undefined, log, tokenBudget, undefined, publish)) continue;
+      const published = draftEnabled && await publishNextDraft(shutdown.signal);
+      if (await executeNextRun("CODEX", execute, shutdown.signal, undefined, log, tokenBudget, undefined, draftEnabled) || published) continue;
     } catch (error) {
       log.error({ errorType: error instanceof Error ? error.name : "unknown" }, "Managed Codex run failed");
     }

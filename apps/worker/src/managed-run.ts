@@ -17,7 +17,7 @@ export async function executeNextRun(
   log?: Pick<import("pino").Logger, "info">,
   tokenBudget?: number,
   heartbeatMs = 15000,
-  publish?: (run: Parameters<ManagedExecutor>[0], result: NonNullable<Awaited<ReturnType<ManagedExecutor>>>, signal: AbortSignal) => Promise<void>,
+  queueDraftPublication = false,
 ) {
   if (shutdown.aborted) return false;
   const run = await reserveQueuedRun(agentType);
@@ -64,12 +64,10 @@ export async function executeNextRun(
       }
       return true;
     }
-    if (!signal.aborted && await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit, result?.patch, undefined, result?.tokenUsage)) {
+    const draft = queueDraftPublication && result?.patch ? execution : undefined;
+    if (!signal.aborted && await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit, result?.patch, undefined, result?.tokenUsage, draft)) {
       outcome = "succeeded";
       stopped.abort();
-      if (publish && execution && result?.patch && !shutdown.aborted) {
-        await publish(execution, result, AbortSignal.any([shutdown, AbortSignal.timeout(60000)]));
-      }
     } else if (await recordFailure()) {
       outcome = "failed";
     }
