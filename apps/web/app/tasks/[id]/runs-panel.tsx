@@ -3,9 +3,21 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+const formatTime = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Berlin" });
+
+const failureMessages: Record<string, string> = {
+  TOKEN_BUDGET: "Reported token usage exceeded the configured budget.",
+  USAGE_UNAVAILABLE: "The worker could not verify the run against its token budget.",
+  TIME_LIMIT: "The run exceeded its execution time limit.",
+  EXECUTION_FAILED: "The worker could not complete this run. Check the worker logs for details.",
+  LEASE_EXPIRED: "The worker lease expired.",
+  TASK_CLOSED: "The task was completed or cancelled before dispatch.",
+  REVISION_CHANGED: "The task requirements changed before dispatch.",
+};
+
 export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
   projectId: string; taskId: string; ready: boolean; writer: boolean; admin: boolean;
-  runs: { id: string; revision: number; agentType: string; status: string; changes: unknown; baseCommit: string | null }[];
+  runs: { id: string; revision: number; agentType: string; status: string; failureReason: string | null; changes: unknown; tokenUsage: { inputTokens: number; outputTokens: number } | null; hasPatch: boolean; baseCommit: string | null; createdAt: Date; startedAt: Date | null; finishedAt: Date | null }[];
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -40,7 +52,20 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
     {error && <p role="alert">{error}</p>}
     <ul className="list">{runs.map(run => <li key={run.id}>
       <strong>{run.agentType}</strong> · Revision {run.revision} · {run.status.toLowerCase()}
+      <dl>
+        <div><dt>Run ID</dt><dd><code>{run.id}</code></dd></div>
+        {run.startedAt && run.finishedAt && <div>
+          <dt>Execution time</dt>
+          <dd>{Math.max(0, (run.finishedAt.getTime() - run.startedAt.getTime()) / 1000).toFixed(1)} s</dd>
+        </div>}
+        {([["Requested", run.createdAt], ["Started", run.startedAt], ["Finished", run.finishedAt]] as const).map(([label, date]) =>
+          date && <div key={label}><dt>{label}</dt><dd><time dateTime={date.toISOString()}>{formatTime.format(date)}</time></dd></div>
+        )}
+      </dl>
+      {run.failureReason && failureMessages[run.failureReason] && <p>{failureMessages[run.failureReason]}</p>}
+      {run.tokenUsage && <p>{run.tokenUsage.inputTokens} input tokens · {run.tokenUsage.outputTokens} output tokens</p>}
       {run.baseCommit && <p>Base commit <code>{run.baseCommit}</code></p>}
+      {run.hasPatch && <a className="detail-link" href={`/api/v1/runs/${encodeURIComponent(run.id)}/patch?projectId=${encodeURIComponent(projectId)}&download=1`}>Download patch</a>}
       {Array.isArray(run.changes) && <details>
         <summary>{run.changes.length} changed files</summary>
         <ul>{run.changes.map((change, index) => change && typeof change.path === "string" && typeof change.status === "string" &&

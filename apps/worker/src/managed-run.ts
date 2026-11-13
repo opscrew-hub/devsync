@@ -1,18 +1,22 @@
-import { listCheckoutChanges, withCheckout } from "./checkout.ts";
+import { captureCheckoutPatch, listCheckoutChanges, withCheckout } from "./checkout.ts";
 import { setTimeout } from "node:timers/promises";
-import { finishReservedRun, getRunExecutionContext, releaseRunReservation, renewRunningRun, reserveQueuedRun, startReservedRun } from "@devsync/core/runs";
+import { type RunTokenUsage, finishReservedRun, getRunExecutionContext, releaseRunReservation, renewRunningRun, reserveQueuedRun, startReservedRun } from "@devsync/core/runs";
 
 type ExecutionContext = NonNullable<Awaited<ReturnType<typeof getRunExecutionContext>>>;
 type Reservation = NonNullable<Awaited<ReturnType<typeof reserveQueuedRun>>>;
 export type ManagedExecutor = (
   run: Pick<Reservation, "id" | "projectId" | "taskId" | "revision"> & ExecutionContext,
   signal: AbortSignal,
-) => Promise<void | { changes: Awaited<ReturnType<typeof listCheckoutChanges>>; baseCommit: string }>;
+) => Promise<void | { changes: Awaited<ReturnType<typeof listCheckoutChanges>>; baseCommit: string; patch?: string; tokenUsage?: RunTokenUsage }>;
 
 export async function executeNextRun(
   agentType: "CODEX" | "CLAUDE",
   execute: ManagedExecutor,
   shutdown: AbortSignal,
+  timeoutMs = 15 * 60 * 1000,
+  log?: Pick<import("pino").Logger, "info">,
+  tokenBudget?: number,
+  heartbeatMs = 15000,
 ) {
   if (shutdown.aborted) return false;
   const run = await reserveQueuedRun(agentType);
@@ -23,14 +27,23 @@ export async function executeNextRun(
     return false;
   }
 
+  const started = performance.now();
+  const fields = { runId: id, projectId, taskId, revision, agentType };
+  log?.info(fields, "Managed run started");
+  let outcome = "not_recorded";
   const stopped = new AbortController();
-  const signal = AbortSignal.any([shutdown, stopped.signal, AbortSignal.timeout(15 * 60 * 1000)]);
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const signal = AbortSignal.any([shutdown, stopped.signal, deadline]);
   const heartbeat = (async () => {
     while (!signal.aborted) {
-      await setTimeout(15000, undefined, { signal });
+      await setTimeout(heartbeatMs, undefined, { signal });
       if (!signal.aborted && !await renewRunningRun(id, dispatchToken)) stopped.abort();
     }
   })().catch(() => stopped.abort());
+  function recordFailure() {
+    const reason = deadline.aborted && signal.reason === deadline.reason ? "TIME_LIMIT" : "EXECUTION_FAILED";
+    return finishReservedRun(id, dispatchToken, "FAILED", undefined, undefined, undefined, reason);
+  }
   let result: Awaited<ReturnType<ManagedExecutor>> = undefined;
   try {
     if (!signal.aborted) {
@@ -39,35 +52,47 @@ export async function executeNextRun(
       signal.throwIfAborted();
       result = await execute({ id, projectId, taskId, revision, ...context }, signal);
     }
-    if (signal.aborted || !await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit)) {
-      await finishReservedRun(id, dispatchToken, "FAILED");
+    const usage = result?.tokenUsage;
+    if (!signal.aborted && tokenBudget !== undefined &&
+        (!usage || usage.inputTokens + usage.outputTokens > tokenBudget)) {
+      const reason = usage ? "TOKEN_BUDGET" : "USAGE_UNAVAILABLE";
+      if (await finishReservedRun(id, dispatchToken, "FAILED", undefined, undefined, undefined, reason, usage)) {
+        outcome = "failed";
+      }
+      return true;
+    }
+    if (!signal.aborted && await finishReservedRun(id, dispatchToken, "SUCCEEDED", result?.changes, result?.baseCommit, result?.patch, undefined, result?.tokenUsage)) {
+      outcome = "succeeded";
+    } else if (await recordFailure()) {
+      outcome = "failed";
     }
   } catch (error) {
-    await finishReservedRun(id, dispatchToken, "FAILED");
+    if (await recordFailure()) outcome = "failed";
     throw error;
   } finally {
     stopped.abort();
     await heartbeat;
+    log?.info({ ...fields, outcome, elapsedMs: Math.round(performance.now() - started) }, "Managed run finished");
   }
   return true;
 }
 
 export function withManagedCheckout(
   resolveSource: (run: Parameters<ManagedExecutor>[0], signal: AbortSignal) => Promise<{ repository: string; commit: string; cloneToken?: string }>,
-  execute: (run: Parameters<ManagedExecutor>[0], checkout: { directory: string; commit: string }, signal: AbortSignal) => Promise<void>,
+  execute: (run: Parameters<ManagedExecutor>[0], checkout: { directory: string; commit: string }, signal: AbortSignal) => Promise<void | RunTokenUsage>,
   reportChanges?: (runId: string, changes: Awaited<ReturnType<typeof listCheckoutChanges>>) => Promise<void>,
 ): ManagedExecutor {
   return async (run, signal) => {
     signal.throwIfAborted();
     const { repository, commit, cloneToken } = await resolveSource(run, signal);
     return withCheckout(repository, commit, signal, async directory => {
-      await execute(run, { directory, commit }, signal);
+      const tokenUsage = await execute(run, { directory, commit }, signal);
       signal.throwIfAborted();
       {
-        const changes = await listCheckoutChanges(directory, signal);
+        const changes = await listCheckoutChanges(directory, commit, signal);
         signal.throwIfAborted();
         if (reportChanges) await reportChanges(run.id, changes);
-        return { changes, baseCommit: commit };
+        return { changes, baseCommit: commit, tokenUsage: tokenUsage || undefined, patch: await captureCheckoutPatch(directory, commit, signal) };
       }
     }, cloneToken);
   };

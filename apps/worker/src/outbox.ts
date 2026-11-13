@@ -2,7 +2,7 @@ import { setTimeout } from "node:timers/promises";
 import { db } from "@devsync/db";
 import { processTaskOutboxEvent } from "@devsync/core/task-outbox";
 import { processGithubEvent } from "@devsync/core/github-events";
-import { expireRunningRuns } from "@devsync/core/runs";
+import { expireRunningRuns, invalidateStaleQueuedRuns } from "@devsync/core/runs";
 import pino from "pino";
 
 const log = pino({ name: "devsync-outbox" });
@@ -17,6 +17,8 @@ try {
       nextRecoveryAt = Date.now() + 30000;
       try {
         const expired = await expireRunningRuns();
+        const stale = await invalidateStaleQueuedRuns();
+        if (stale) log.info({ stale }, "Queued runs with outdated requirements or terminal tasks marked failed");
         if (expired) log.warn({ expired }, "Expired managed runs marked failed");
       } catch (error) {
         if (process.argv.includes("--recover-once")) throw error;

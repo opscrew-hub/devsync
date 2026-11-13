@@ -5,11 +5,17 @@ import { DomainError, requireProject } from "./index.ts";
 
 export async function listRuns(userId: string, projectId: string, taskId?: string) {
   await requireProject(userId, projectId);
-  return db.agentRun.findMany({
+  const runs = await db.agentRun.findMany({
     where: { projectId, taskId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 50,
-    omit: { dispatchToken: true },
+    omit: { dispatchToken: true, patch: true },
     include: { task: { select: { title: true } } },
   });
+  const artifacts = await db.agentRun.findMany({
+    where: { projectId, id: { in: runs.map(run => run.id) }, status: "SUCCEEDED", patch: { not: null } },
+    select: { id: true },
+  });
+  const available = new Set(artifacts.map(artifact => artifact.id));
+  return runs.map(run => ({ ...run, hasPatch: available.has(run.id), tokenUsage: parseUsage(run.tokenUsage) }));
 }
 
 export async function requestRun(userId: string, projectId: string, input: unknown) {
@@ -23,7 +29,7 @@ export async function requestRun(userId: string, projectId: string, input: unkno
     if (task.status !== "READY") throw new DomainError(409, "Move the task to Ready before requesting a run.");
     const existing = await tx.agentRun.findFirst({ where: { taskId, status: { in: ["REQUESTED", "QUEUED", "RUNNING"] } } });
     if (existing) throw new DomainError(409, "This task already has a pending run.");
-    return tx.agentRun.create({ data: { taskId, projectId, agentType, revision: task.revision, requestedById: userId }, omit: { dispatchToken: true } });
+    return tx.agentRun.create({ data: { taskId, projectId, agentType, revision: task.revision, requestedById: userId }, omit: { dispatchToken: true, patch: true } });
   });
 }
 
@@ -97,7 +103,9 @@ export async function startReservedRun(id: string, token: string) {
   });
 }
 
-export async function finishReservedRun(id: string, token: string, outcome: "SUCCEEDED" | "FAILED", changes?: { path: string; status: string }[], baseCommit?: string) {
+export type RunTokenUsage = { inputTokens: number; outputTokens: number };
+
+export async function finishReservedRun(id: string, token: string, outcome: "SUCCEEDED" | "FAILED", changes?: { path: string; status: string }[], baseCommit?: string, patch?: string, failureReason: "EXECUTION_FAILED" | "TIME_LIMIT" | "TOKEN_BUDGET" | "USAGE_UNAVAILABLE" = "EXECUTION_FAILED", tokenUsage?: RunTokenUsage) {
   return db.$transaction(async tx => {
     const run = await tx.agentRun.findUnique({ where: { id }, select: { taskId: true, projectId: true } });
     if (!run) return false;
@@ -105,7 +113,9 @@ export async function finishReservedRun(id: string, token: string, outcome: "SUC
     const count = await tx.$executeRaw`
       UPDATE "AgentRun" run
       SET "status" = ${outcome}::"RunStatus", "finishedAt" = timezone('UTC', clock_timestamp()),
-        "baseCommit" = ${outcome === "SUCCEEDED" ? baseCommit ?? null : null}, "changes" = ${outcome === "SUCCEEDED" && changes ? JSON.stringify(changes) : null}::jsonb, "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
+        "tokenUsage" = ${tokenUsage ? JSON.stringify(tokenUsage) : null}::jsonb,
+        "failureReason" = CASE WHEN ${outcome} = 'FAILED' THEN ${failureReason} ELSE NULL END,
+        "patch" = ${outcome === "SUCCEEDED" ? patch ?? null : null}, "baseCommit" = ${outcome === "SUCCEEDED" ? baseCommit ?? null : null}, "changes" = ${outcome === "SUCCEEDED" && changes ? JSON.stringify(changes) : null}::jsonb, "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
       FROM "Task" task
       WHERE run."id" = ${id} AND task."id" = run."taskId" AND task."projectId" = run."projectId"
         AND run."status" = 'RUNNING' AND run."dispatchToken" = ${token}
@@ -118,7 +128,7 @@ export async function finishReservedRun(id: string, token: string, outcome: "SUC
 
 export async function expireRunningRuns() {
   return db.$executeRaw`
-    UPDATE "AgentRun" SET "status" = 'FAILED', "finishedAt" = timezone('UTC', clock_timestamp()),
+    UPDATE "AgentRun" SET "status" = 'FAILED', "failureReason" = 'LEASE_EXPIRED', "finishedAt" = timezone('UTC', clock_timestamp()),
       "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
     WHERE "status" = 'RUNNING' AND "dispatchExpiresAt" <= timezone('UTC', clock_timestamp())
   `;
@@ -155,4 +165,30 @@ export async function getRunExecutionContext(id: string, token: string) {
       AND task."status" = 'READY' AND task."revision" = run."revision"
   `;
   return context ?? null;
+}
+
+export async function getRunPatch(userId: string, projectId: string, runId: string) {
+  await requireProject(userId, projectId);
+  const run = await db.agentRun.findUnique({ where: { id: runId, projectId }, select: { patch: true, status: true } });
+  if (!run?.patch || run.status !== "SUCCEEDED") throw new DomainError(404, "Run patch not found.");
+  return { patch: run.patch };
+}
+
+export async function invalidateStaleQueuedRuns() {
+  return db.$executeRaw`
+    UPDATE "AgentRun" run
+    SET "status" = 'FAILED', "failureReason" = CASE WHEN task."status" IN ('DONE', 'CANCELLED') THEN 'TASK_CLOSED' ELSE 'REVISION_CHANGED' END, "finishedAt" = timezone('UTC', clock_timestamp()),
+        "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
+    FROM "Task" task
+    WHERE run."taskId" = task."id" AND run."projectId" = task."projectId"
+      AND run."status" = 'QUEUED'
+      AND (run."revision" <> task."revision" OR task."status" IN ('DONE', 'CANCELLED'))
+  `;
+}
+
+function parseUsage(value: unknown): RunTokenUsage | null {
+  if (!value || typeof value !== "object") return null;
+  const { inputTokens, outputTokens } = value as Partial<RunTokenUsage>;
+  if (typeof inputTokens !== "number" || typeof outputTokens !== "number") return null;
+  return { inputTokens, outputTokens };
 }
