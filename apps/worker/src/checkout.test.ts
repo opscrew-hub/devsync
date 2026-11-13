@@ -46,6 +46,20 @@ test("checkout pins the requested revision and cleans up after adapter failure",
       } };
     }, async () => ({ repository: source, commit: revision }));
     await codex(run, new AbortController().signal);
+    const summarize = withManagedCheckout(async () => ({ repository: source, commit: revision }),
+      async (_, { directory }) => {
+        await writeFile(join(directory, "fixture.txt"), "edited");
+        await writeFile(join(directory, "new file.txt"), "new");
+      },
+      async (id, changes) => {
+        assert.equal(id, run.id);
+        assert.deepEqual(changes, [
+          { status: " M", path: "fixture.txt" },
+          { status: "??", path: "new file.txt" },
+        ]);
+      },
+    );
+    await summarize(run, new AbortController().signal);
     assert.ok(checkout);
     await assert.rejects(stat(checkout), { code: "ENOENT" });
   } finally {

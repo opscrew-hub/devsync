@@ -1,4 +1,4 @@
-import { withCheckout } from "./checkout.ts";
+import { listCheckoutChanges, withCheckout } from "./checkout.ts";
 import { setTimeout } from "node:timers/promises";
 import { finishReservedRun, getRunExecutionContext, releaseRunReservation, renewRunningRun, reserveQueuedRun, startReservedRun } from "@devsync/core/runs";
 
@@ -54,10 +54,19 @@ export async function executeNextRun(
 export function withManagedCheckout(
   resolveSource: (run: Parameters<ManagedExecutor>[0], signal: AbortSignal) => Promise<{ repository: string; commit: string; cloneToken?: string }>,
   execute: (run: Parameters<ManagedExecutor>[0], checkout: { directory: string; commit: string }, signal: AbortSignal) => Promise<void>,
+  reportChanges?: (runId: string, changes: Awaited<ReturnType<typeof listCheckoutChanges>>) => Promise<void>,
 ): ManagedExecutor {
   return async (run, signal) => {
     signal.throwIfAborted();
     const { repository, commit, cloneToken } = await resolveSource(run, signal);
-    await withCheckout(repository, commit, signal, directory => execute(run, { directory, commit }, signal), cloneToken);
+    await withCheckout(repository, commit, signal, async directory => {
+      await execute(run, { directory, commit }, signal);
+      signal.throwIfAborted();
+      if (reportChanges) {
+        const changes = await listCheckoutChanges(directory, signal);
+        signal.throwIfAborted();
+        await reportChanges(run.id, changes);
+      }
+    }, cloneToken);
   };
 }
