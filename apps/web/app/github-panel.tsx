@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 type Repository = { installationId: string; repositoryId: string; fullName: string; snapshot?: unknown };
 
 export function GithubPanel({ projectId, repository, activity, state, health, owner }: {
-  health: { pending: number; lastReceived: Date | null; lastProcessed: Date | null; oldestPending: Date | null } | null;
+  health: { retrying: number; pending: number; lastReceived: Date | null; lastProcessed: Date | null; oldestPending: Date | null } | null;
   state: { event: string; key: string; label: string | null; state: string }[];
   projectId: string; repository: Repository | null; activity: { deliveryId: string; event: string; action: string | null; subject: string | null; receivedAt: Date }[]; owner: boolean;
 }) {
@@ -60,7 +60,7 @@ export function GithubPanel({ projectId, repository, activity, state, health, ow
     </section>}
     {health && <section className="panel task-summary">
       <h3>Webhook delivery</h3>
-      <p>{health.pending} pending</p>
+      <p>{health.pending} pending · {health.retrying} scheduled for retry</p>
       <p>Last received {health.lastReceived?.toISOString() ?? "—"}</p>
       <p>Last processed {health.lastProcessed?.toISOString() ?? "—"}</p>
       {health.oldestPending && <p>Oldest pending {health.oldestPending.toISOString()}</p>}
