@@ -105,7 +105,7 @@ export async function startReservedRun(id: string, token: string) {
 
 export type RunTokenUsage = { inputTokens: number; outputTokens: number };
 
-export async function finishReservedRun(id: string, token: string, outcome: "SUCCEEDED" | "FAILED", changes?: { path: string; status: string }[], baseCommit?: string, patch?: string, failureReason: "EXECUTION_FAILED" | "TIME_LIMIT" = "EXECUTION_FAILED", tokenUsage?: RunTokenUsage) {
+export async function finishReservedRun(id: string, token: string, outcome: "SUCCEEDED" | "FAILED", changes?: { path: string; status: string }[], baseCommit?: string, patch?: string, failureReason: "EXECUTION_FAILED" | "TIME_LIMIT" | "TOKEN_BUDGET" | "USAGE_UNAVAILABLE" = "EXECUTION_FAILED", tokenUsage?: RunTokenUsage) {
   return db.$transaction(async tx => {
     const run = await tx.agentRun.findUnique({ where: { id }, select: { taskId: true, projectId: true } });
     if (!run) return false;
@@ -113,7 +113,7 @@ export async function finishReservedRun(id: string, token: string, outcome: "SUC
     const count = await tx.$executeRaw`
       UPDATE "AgentRun" run
       SET "status" = ${outcome}::"RunStatus", "finishedAt" = timezone('UTC', clock_timestamp()),
-        "tokenUsage" = ${outcome === "SUCCEEDED" && tokenUsage ? JSON.stringify(tokenUsage) : null}::jsonb,
+        "tokenUsage" = ${tokenUsage ? JSON.stringify(tokenUsage) : null}::jsonb,
         "failureReason" = CASE WHEN ${outcome} = 'FAILED' THEN ${failureReason} ELSE NULL END,
         "patch" = ${outcome === "SUCCEEDED" ? patch ?? null : null}, "baseCommit" = ${outcome === "SUCCEEDED" ? baseCommit ?? null : null}, "changes" = ${outcome === "SUCCEEDED" && changes ? JSON.stringify(changes) : null}::jsonb, "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
       FROM "Task" task

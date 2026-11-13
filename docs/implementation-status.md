@@ -57,3 +57,5 @@ The run lifecycle supports token-checked start and finish, cancellation, and exp
 ### Dedicated Codex worker
 
 Run `pnpm --filter @devsync/worker start:codex` on a dedicated execution host alongside the regular outbox worker. Set `DATABASE_URL`, `DEVSYNC_CODEX_API_KEY`, and the GitHub App settings documented in [GitHub integration](github-integration.md). The Codex worker consumes approved CODEX runs serially. The ordinary worker and Docker preview do not start it. Live SDK and private checkout verification remain pending.
+
+Set `DEVSYNC_CODEX_TOKEN_BUDGET` to a positive integer to check total input and output tokens before accepting a successful result. Over-budget results and results without usage are rejected. The check happens after execution, so it does not cap API spend.

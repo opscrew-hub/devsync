@@ -111,6 +111,17 @@ test("executor consumes an approved run and persists its outcome", {
     const timedOut = await db.agentRun.findUniqueOrThrow({ where: { id: timed.id } });
     assert.equal(timedOut.status, "FAILED");
     assert.equal(timedOut.failureReason, "TIME_LIMIT");
+    const overBudget = await requestRun(owner, project.id, { taskId: task.id, agentType: "CLAUDE" });
+    await decideRun(owner, project.id, overBudget.id, { status: "QUEUED" });
+    await executeNextRun("CLAUDE", async () => ({
+      changes: [], baseCommit: "a".repeat(40), patch: "do not retain",
+      tokenUsage: { inputTokens: 90, outputTokens: 20 },
+    }), new AbortController().signal, undefined, undefined, 100);
+    const rejected = await db.agentRun.findUniqueOrThrow({ where: { id: overBudget.id } });
+    assert.equal(rejected.status, "FAILED");
+    assert.equal(rejected.failureReason, "TOKEN_BUDGET");
+    assert.deepEqual(rejected.tokenUsage, { inputTokens: 90, outputTokens: 20 });
+    assert.equal(rejected.patch, null);
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId: owner } } } });
     await db.user.deleteMany({ where: { id: owner } });
