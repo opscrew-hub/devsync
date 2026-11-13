@@ -49,6 +49,8 @@ test("checkout pins the requested revision and cleans up after adapter failure",
     const summarize = withManagedCheckout(async () => ({ repository: source, commit: revision }),
       async (_, { directory }) => {
         await writeFile(join(directory, "fixture.txt"), "edited");
+        execFileSync("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+          "commit", "-qam", "Adapter edit"], { cwd: directory });
         await writeFile(join(directory, "new file.txt"), "new");
       },
       async (id, changes) => {
