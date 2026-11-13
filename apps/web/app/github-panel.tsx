@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 
 type Repository = { installationId: string; repositoryId: string; fullName: string };
 
-export function GithubPanel({ projectId, repository, activity, state, owner }: {
+export function GithubPanel({ projectId, repository, activity, state, health, owner }: {
+  health: { pending: number; lastReceived: Date | null; lastProcessed: Date | null; oldestPending: Date | null } | null;
   state: { event: string; key: string; label: string | null; state: string }[];
   projectId: string; repository: Repository | null; activity: { deliveryId: string; event: string; action: string | null; subject: string | null; receivedAt: Date }[]; owner: boolean;
 }) {
@@ -36,6 +37,13 @@ export function GithubPanel({ projectId, repository, activity, state, owner }: {
   return <section className="project-members">
     <h2>GitHub repository</h2>
     <p>{repository ? `Linked repository: ${repository.fullName}` : "No repository linked."}</p>
+    {health && <section className="panel task-summary">
+      <h3>Webhook delivery</h3>
+      <p>{health.pending} pending</p>
+      <p>Last received {health.lastReceived?.toISOString() ?? "—"}</p>
+      <p>Last processed {health.lastProcessed?.toISOString() ?? "—"}</p>
+      {health.oldestPending && <p>Oldest pending {health.oldestPending.toISOString()}</p>}
+    </section>}
     {repository && <>
       {([["push", "Branches"], ["pull_request", "Pull requests"], ["check_run", "Checks"]] as const).map(([event, label]) => {
         const items = state.filter(item => item.event === event);
