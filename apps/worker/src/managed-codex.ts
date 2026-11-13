@@ -1,6 +1,7 @@
 import { setTimeout } from "node:timers/promises";
 import { db } from "@devsync/db";
 import { createGithubDraftClient } from "@devsync/core/github-app";
+import { recordRunDraftPullRequest } from "@devsync/core/runs";
 import pino from "pino";
 import { createCodexExecutor } from "./codex-executor.ts";
 import { executeNextRun } from "./managed-run.ts";
@@ -27,6 +28,10 @@ const publish: Parameters<typeof executeNextRun>[7] = process.env.DEVSYNC_CODEX_
         ...github,
         ensureBranch: input => ensureDraftBranch(github.repository, input, signal, github.token),
       }, signal);
+      if (!await recordRunDraftPullRequest(run, plan.baseCommit, pull.url)) {
+        log.warn({ runId: run.id, pullRequestUrl: pull.url }, "Managed draft pull request link could not be saved");
+        return;
+      }
       log.info({ runId: run.id, pullRequestUrl: pull.url }, "Managed draft pull request published");
     } catch (error) {
       log.error({ runId: run.id, errorType: error instanceof Error ? error.name : "unknown" }, "Managed draft pull request publication failed");

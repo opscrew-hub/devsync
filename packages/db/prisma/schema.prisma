@@ -264,6 +264,7 @@ model AgentRun {
   changes Json?
   baseCommit String?
   patch String?
+  draftPullRequestUrl String?
   dispatchToken String?
   dispatchExpiresAt DateTime?
   task Task @relation(fields: [projectId, taskId], references: [projectId, id], onDelete: Cascade)

@@ -56,7 +56,7 @@ The dedicated Codex worker runs the adapter in a temporary checkout pinned to th
 
 Set `DEVSYNC_CODEX_DRAFT_PRS=true` to enable a draft pull request attempt after a successful run saves a patch. The GitHub App needs Contents and Pull requests write permissions on the linked repository. The worker logs the run ID and PR URL on success, or the run ID on publication failure. The successful run and patch remain available after a publication failure.
 
-Remaining work includes durable publication retries, saving the PR link on the run, and live verification of the SDK and private GitHub App checkout.
+The worker saves the published draft URL on the successful run. Deploy the database migration before running the updated worker. Durable publication retries and live verification of the SDK and private GitHub App checkout remain pending.
 
 ### Dedicated Codex worker
 

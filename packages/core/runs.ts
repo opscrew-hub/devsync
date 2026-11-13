@@ -167,6 +167,23 @@ export async function getRunExecutionContext(id: string, token: string) {
   return context ?? null;
 }
 
+export async function recordRunDraftPullRequest(
+  run: { id: string; projectId: string; repositoryId: string; installationId: string },
+  baseCommit: string,
+  url: string,
+) {
+  const count = await db.$executeRaw`
+    UPDATE "AgentRun" run SET "draftPullRequestUrl" = ${url}
+    FROM "GithubRepository" repo
+    WHERE run."id" = ${run.id} AND run."projectId" = ${run.projectId}
+      AND run."status" = 'SUCCEEDED' AND run."baseCommit" = ${baseCommit} AND run."patch" IS NOT NULL
+      AND repo."projectId" = run."projectId" AND repo."repositoryId" = ${BigInt(run.repositoryId)}
+      AND repo."installationId" = ${BigInt(run.installationId)}
+      AND (run."draftPullRequestUrl" IS NULL OR run."draftPullRequestUrl" = ${url})
+  `;
+  return count === 1;
+}
+
 export async function getRunPatch(userId: string, projectId: string, runId: string) {
   await requireProject(userId, projectId);
   const run = await db.agentRun.findUnique({ where: { id: runId, projectId }, select: { patch: true, status: true } });
