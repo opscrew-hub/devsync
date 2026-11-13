@@ -169,3 +169,14 @@ export async function getRunPatch(userId: string, projectId: string, runId: stri
   if (!run?.patch || run.status !== "SUCCEEDED") throw new DomainError(404, "Run patch not found.");
   return { patch: run.patch };
 }
+
+export async function invalidateStaleQueuedRuns() {
+  return db.$executeRaw`
+    UPDATE "AgentRun" run
+    SET "status" = 'FAILED', "finishedAt" = timezone('UTC', clock_timestamp()),
+        "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
+    FROM "Task" task
+    WHERE run."taskId" = task."id" AND run."projectId" = task."projectId"
+      AND run."status" = 'QUEUED' AND run."revision" <> task."revision"
+  `;
+}
