@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { setTimeout } from "node:timers/promises";
@@ -65,7 +68,7 @@ test("worker marks expired runs failed on startup", {
 test("executor consumes an approved run and persists its outcome", {
   skip: process.env.DEVSYNC_TEST_DB !== "1",
 }, async () => {
-  const { executeNextRun } = await import("./managed-run.ts");
+  const { executeNextRun, withManagedCheckout } = await import("./managed-run.ts");
   const { requestRun, decideRun, getRunPatch } = await import("@devsync/core/runs");
   const owner = randomUUID();
   try {
@@ -86,22 +89,39 @@ test("executor consumes an approved run and persists its outcome", {
     } });
     const ready = await requestRun(owner, project.id, { taskId: task.id, agentType: "CLAUDE" });
     await decideRun(owner, project.id, ready.id, { status: "QUEUED" });
-    const executed = await executeNextRun("CLAUDE", async (work, signal) => {
-      assert.equal(work.id, ready.id);
-      assert.equal(work.repository, "fixture/devsync");
-      assert.equal(work.title, "Executor fixture");
-      assert.equal(work.revision, task.revision);
-      assert.equal(signal.aborted, false);
-      return { changes: [{ path: "fixture.txt", status: " M" }], baseCommit: "a".repeat(40), patch: "fixture patch", tokenUsage: { inputTokens: 120, outputTokens: 30 } };
-    }, new AbortController().signal);
+    const source = await mkdtemp(join(tmpdir(), "devsync-run-fixture-"));
+    let commit: string;
+    let executed: boolean;
+    try {
+      const git = (...args: string[]) => execFileSync("git", [
+        "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args,
+      ], { cwd: source, encoding: "utf8" });
+      git("init", "-q");
+      await writeFile(join(source, "fixture.txt"), "original\n");
+      git("add", "fixture.txt");
+      git("commit", "-qm", "Fixture");
+      commit = git("rev-parse", "HEAD").trim();
+      const execute = withManagedCheckout(async () => ({ repository: source, commit }), async (work, checkout, signal) => {
+        assert.equal(work.id, ready.id);
+        assert.equal(work.repository, "fixture/devsync");
+        assert.equal(work.revision, task.revision);
+        assert.equal(checkout.commit, commit);
+        signal.throwIfAborted();
+        await writeFile(join(checkout.directory, "fixture.txt"), "updated\n");
+        return { inputTokens: 120, outputTokens: 30 };
+      });
+      executed = await executeNextRun("CLAUDE", execute, new AbortController().signal);
+    } finally {
+      await rm(source, { recursive: true, force: true, maxRetries: 3 });
+    }
     assert.equal(executed, true);
     const finished = await db.agentRun.findUniqueOrThrow({ where: { id: ready.id } });
     assert.equal(finished.status, "SUCCEEDED");
     assert.equal(finished.dispatchToken, null);
-    assert.deepEqual(await getRunPatch(owner, project.id, ready.id), { patch: "fixture patch" });
+    assert.match((await getRunPatch(owner, project.id, ready.id)).patch, /\+updated/);
     await assert.rejects(getRunPatch(randomUUID(), project.id, ready.id), /not found/);
     assert.deepEqual(finished.tokenUsage, { inputTokens: 120, outputTokens: 30 });
-    assert.equal(finished.baseCommit, "a".repeat(40));
+    assert.equal(finished.baseCommit, commit);
     assert.deepEqual(finished.changes, [{ path: "fixture.txt", status: " M" }]);
     const timed = await requestRun(owner, project.id, { taskId: task.id, agentType: "CLAUDE" });
     await decideRun(owner, project.id, timed.id, { status: "QUEUED" });
