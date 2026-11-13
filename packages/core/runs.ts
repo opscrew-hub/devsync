@@ -177,6 +177,7 @@ export async function invalidateStaleQueuedRuns() {
         "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
     FROM "Task" task
     WHERE run."taskId" = task."id" AND run."projectId" = task."projectId"
-      AND run."status" = 'QUEUED' AND run."revision" <> task."revision"
+      AND run."status" = 'QUEUED'
+      AND (run."revision" <> task."revision" OR task."status" IN ('DONE', 'CANCELLED'))
   `;
 }

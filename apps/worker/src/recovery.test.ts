@@ -26,6 +26,11 @@ test("worker marks expired runs failed on startup", {
       })).id, requestedById: owner, agentType: "CODEX", status: "QUEUED", revision: 1,
     } });
     await db.task.update({ where: { id: stale.taskId }, data: { revision: 2 } });
+    const terminal = await createTask(owner, project.id, { title: "Cancelled fixture", description: "", acceptanceCriteria: "" });
+    const terminalRun = await db.agentRun.create({ data: {
+      projectId: project.id, taskId: terminal.id, requestedById: owner, agentType: "CODEX", status: "QUEUED", revision: terminal.revision,
+    } });
+    await db.task.update({ where: { id: terminal.id }, data: { status: "CANCELLED" } });
     worker = spawn(process.execPath, ["src/outbox.ts", "--recover-once"], { stdio: "ignore" });
     const exited = new Promise(resolve => worker!.once("close", resolve));
     try {
@@ -34,6 +39,7 @@ test("worker marks expired runs failed on startup", {
         if (current.status === "FAILED") {
           assert.equal(await exited, 0);
           assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: stale.id } })).status, "FAILED");
+          assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: terminalRun.id } })).status, "FAILED");
           assert.ok(current.finishedAt);
           assert.equal(current.dispatchToken, null);
           return;
