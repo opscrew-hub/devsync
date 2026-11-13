@@ -124,3 +124,49 @@ export async function resolveGithubRunSource(
   signal.throwIfAborted();
   return { repository: `https://github.com/${full_name}.git`, commit: commit.data.sha, cloneToken: token };
 }
+
+export async function createGithubDraftClient(
+  run: { projectId: string; installationId: string; repositoryId: string },
+  signal: AbortSignal,
+  request = fetch,
+) {
+  signal.throwIfAborted();
+  const { installationId, repositoryId } = githubRepositoryInput.parse({
+    installationId: Number(run.installationId), repositoryId: Number(run.repositoryId),
+  });
+  const abortable: typeof fetch = (url, options) => request(url, {
+    ...options, signal: options?.signal ? AbortSignal.any([signal, options.signal]) : signal,
+  });
+  const { github, token } = await installationClient(
+    run.projectId, installationId, repositoryId, { metadata: "read", contents: "write", pull_requests: "write" }, abortable,
+  );
+  const metadata = githubSnapshotMetadata.safeParse(await github(`/repositories/${repositoryId}`, token));
+  if (!metadata.success || metadata.data.id !== repositoryId) {
+    throw new DomainError(502, "Invalid GitHub repository response.");
+  }
+  const { full_name, default_branch } = metadata.data;
+  const owner = full_name.split("/")[0]!;
+  const pulls = `/repos/${full_name}/pulls`;
+  function parsePull(value: unknown) {
+    if (!value || typeof value !== "object" || !("number" in value) ||
+        typeof value.number !== "number" || !Number.isSafeInteger(value.number) || value.number < 1 ||
+        !("html_url" in value) || value.html_url !== `https://github.com/${full_name}/pull/${value.number}`) {
+      throw new DomainError(502, "Invalid GitHub pull request response.");
+    }
+    return { number: value.number, url: value.html_url };
+  }
+  return {
+    base: default_branch,
+    repository: `https://github.com/${full_name}.git`,
+    token,
+    async findPull(head: string, base: string) {
+      const query = new URLSearchParams({ state: "all", head: `${owner}:${head}`, base, per_page: "1" });
+      const rows: unknown = await github(`${pulls}?${query}`, token);
+      if (!Array.isArray(rows)) throw new DomainError(502, "Invalid GitHub pull request list.");
+      return rows.length ? parsePull(rows[0]) : null;
+    },
+    async createPull(input: { head: string; base: string; title: string; body: string; draft: true }) {
+      return parsePull(await github(pulls, token, { ...input, draft: true }));
+    },
+  };
+}

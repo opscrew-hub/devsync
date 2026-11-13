@@ -69,7 +69,7 @@ test("executor consumes an approved run and persists its outcome", {
   skip: process.env.DEVSYNC_TEST_DB !== "1",
 }, async () => {
   const { executeNextRun, withManagedCheckout } = await import("./managed-run.ts");
-  const { requestRun, decideRun, getRunPatch } = await import("@devsync/core/runs");
+  const { requestRun, decideRun, getRunPatch, claimRunDraftPublication, recordRunDraftPullRequest } = await import("@devsync/core/runs");
   const owner = randomUUID();
   try {
     await db.user.create({ data: { id: owner, name: "Executor test" } });
@@ -110,7 +110,7 @@ test("executor consumes an approved run and persists its outcome", {
         await writeFile(join(checkout.directory, "fixture.txt"), "updated\n");
         return { inputTokens: 120, outputTokens: 30 };
       });
-      executed = await executeNextRun("CLAUDE", execute, new AbortController().signal);
+      executed = await executeNextRun("CLAUDE", execute, new AbortController().signal, undefined, undefined, undefined, undefined, true);
     } finally {
       await rm(source, { recursive: true, force: true, maxRetries: 3 });
     }
@@ -123,6 +123,19 @@ test("executor consumes an approved run and persists its outcome", {
     assert.deepEqual(finished.tokenUsage, { inputTokens: 120, outputTokens: 30 });
     assert.equal(finished.baseCommit, commit);
     assert.deepEqual(finished.changes, [{ path: "fixture.txt", status: " M" }]);
+    const claims = await Promise.all([claimRunDraftPublication(), claimRunDraftPublication()]);
+    const claimed = claims.filter(job => job !== null);
+    assert.equal(claimed.length, 1);
+    assert.equal(claimed[0]?.id, ready.id);
+    assert.equal(claimed[0]?.patch, finished.patch);
+    await db.agentRun.update({ where: { id: ready.id }, data: { draftRetryAt: new Date(0) } });
+    const retry = await claimRunDraftPublication();
+    assert.ok(retry);
+    assert.deepEqual(retry, claimed[0]);
+    const url = "https://github.com/fixture/devsync/pull/1";
+    assert.equal(await recordRunDraftPullRequest(retry, commit, url), true);
+    assert.equal(await claimRunDraftPublication(), null);
+    assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: ready.id } })).draftPullRequestUrl, url);
     const timed = await requestRun(owner, project.id, { taskId: task.id, agentType: "CLAUDE" });
     await decideRun(owner, project.id, timed.id, { status: "QUEUED" });
     await assert.rejects(executeNextRun("CLAUDE", async (_, signal) => {

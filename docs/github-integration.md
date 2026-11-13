@@ -27,3 +27,20 @@ Project writers can link a task to an observed pull request from the task detail
 Task details show the linked pull request title, observed state, and delivery timestamp. A GitHub merge does not mark the task complete.
 
 Owners and admins can refresh a read-only API snapshot for the linked repository. It stores the first 30 branches, recently updated pull requests, and default-branch check runs separately from webhook history. Grant the GitHub App read access to Contents, Pull requests, and Checks to enable this action.
+
+## Verify managed draft pull requests
+
+Use a disposable DevSync project and a private test repository with a default branch. Install the GitHub App on that repository with Contents and Pull requests write access. Link it from the project dashboard. Apply the Prisma migrations to the test database.
+
+Configure the dedicated worker with the same `DATABASE_URL`, GitHub App ID, private key, and project repository allowlist used by the test deployment. Set `DEVSYNC_CODEX_API_KEY` and `DEVSYNC_CODEX_DRAFT_PRS=true` in the worker environment. Start it from the repository root.
+
+```sh
+pnpm --filter @devsync/worker start:codex
+```
+
+1. Create a Ready task that asks Codex to edit an existing tracked text file in the test repository. Request a Codex run, then approve it from an owner or admin account.
+2. Confirm that the run succeeds and the downloaded patch contains the expected edit. Check that its base commit matches the checkout revision.
+3. Open **View draft pull request** from the task’s run panel. Confirm GitHub shows a draft against the repository’s default branch and the diff matches the saved patch.
+4. Record the run ID and PR URL. Restart the worker and confirm the saved link remains visible and GitHub still shows a single PR for that run branch.
+
+For a live retry test, use a separate run and initially grant Contents read access. Confirm the run saves its patch and publication fails. Grant Contents write access and accept the updated permission on the test installation. The job becomes eligible again five minutes after the previous claim. Confirm the same run gains a draft PR link and retains its original execution result.

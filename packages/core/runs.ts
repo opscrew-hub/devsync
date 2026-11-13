@@ -7,7 +7,7 @@ export async function listRuns(userId: string, projectId: string, taskId?: strin
   await requireProject(userId, projectId);
   const runs = await db.agentRun.findMany({
     where: { projectId, taskId }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 50,
-    omit: { dispatchToken: true, patch: true },
+    omit: { dispatchToken: true, patch: true, draftRepositoryId: true, draftInstallationId: true, draftRetryAt: true },
     include: { task: { select: { title: true } } },
   });
   const artifacts = await db.agentRun.findMany({
@@ -105,7 +105,7 @@ export async function startReservedRun(id: string, token: string) {
 
 export type RunTokenUsage = { inputTokens: number; outputTokens: number };
 
-export async function finishReservedRun(id: string, token: string, outcome: "SUCCEEDED" | "FAILED", changes?: { path: string; status: string }[], baseCommit?: string, patch?: string, failureReason: "EXECUTION_FAILED" | "TIME_LIMIT" | "TOKEN_BUDGET" | "USAGE_UNAVAILABLE" = "EXECUTION_FAILED", tokenUsage?: RunTokenUsage) {
+export async function finishReservedRun(id: string, token: string, outcome: "SUCCEEDED" | "FAILED", changes?: { path: string; status: string }[], baseCommit?: string, patch?: string, failureReason: "EXECUTION_FAILED" | "TIME_LIMIT" | "TOKEN_BUDGET" | "USAGE_UNAVAILABLE" = "EXECUTION_FAILED", tokenUsage?: RunTokenUsage, draft?: { repositoryId: string; installationId: string }) {
   return db.$transaction(async tx => {
     const run = await tx.agentRun.findUnique({ where: { id }, select: { taskId: true, projectId: true } });
     if (!run) return false;
@@ -113,6 +113,9 @@ export async function finishReservedRun(id: string, token: string, outcome: "SUC
     const count = await tx.$executeRaw`
       UPDATE "AgentRun" run
       SET "status" = ${outcome}::"RunStatus", "finishedAt" = timezone('UTC', clock_timestamp()),
+        "draftRepositoryId" = ${draft ? BigInt(draft.repositoryId) : null},
+        "draftInstallationId" = ${draft ? BigInt(draft.installationId) : null},
+        "draftRetryAt" = CASE WHEN ${Boolean(draft)} THEN timezone('UTC', clock_timestamp()) ELSE NULL END,
         "tokenUsage" = ${tokenUsage ? JSON.stringify(tokenUsage) : null}::jsonb,
         "failureReason" = CASE WHEN ${outcome} = 'FAILED' THEN ${failureReason} ELSE NULL END,
         "patch" = ${outcome === "SUCCEEDED" ? patch ?? null : null}, "baseCommit" = ${outcome === "SUCCEEDED" ? baseCommit ?? null : null}, "changes" = ${outcome === "SUCCEEDED" && changes ? JSON.stringify(changes) : null}::jsonb, "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
@@ -165,6 +168,48 @@ export async function getRunExecutionContext(id: string, token: string) {
       AND task."status" = 'READY' AND task."revision" = run."revision"
   `;
   return context ?? null;
+}
+
+export async function claimRunDraftPublication(agentType?: "CODEX" | "CLAUDE") {
+  const [job] = await db.$queryRaw<{
+    id: string; projectId: string; revision: number; title: string;
+    repositoryId: string; installationId: string; baseCommit: string; patch: string;
+  }[]>`
+    WITH next AS (
+      SELECT run."id", revision."title"
+      FROM "AgentRun" run
+      JOIN "GithubRepository" repo ON repo."projectId" = run."projectId"
+        AND repo."repositoryId" = run."draftRepositoryId" AND repo."installationId" = run."draftInstallationId"
+      JOIN "TaskRevision" revision ON revision."taskId" = run."taskId" AND revision."number" = run."revision"
+      WHERE run."status" = 'SUCCEEDED' AND run."draftPullRequestUrl" IS NULL
+        AND (${agentType ?? null}::"AgentType" IS NULL OR run."agentType" = ${agentType ?? null}::"AgentType")
+        AND run."draftRetryAt" <= timezone('UTC', clock_timestamp())
+      ORDER BY run."draftRetryAt", run."id"
+      LIMIT 1 FOR UPDATE OF run SKIP LOCKED
+    )
+    UPDATE "AgentRun" run SET "draftRetryAt" = timezone('UTC', clock_timestamp()) + interval '5 minutes'
+    FROM next WHERE run."id" = next."id"
+    RETURNING run."id", run."projectId", run."revision", next."title", run."baseCommit", run."patch",
+      run."draftRepositoryId"::text AS "repositoryId", run."draftInstallationId"::text AS "installationId"
+  `;
+  return job ?? null;
+}
+
+export async function recordRunDraftPullRequest(
+  run: { id: string; projectId: string; repositoryId: string; installationId: string },
+  baseCommit: string,
+  url: string,
+) {
+  const count = await db.$executeRaw`
+    UPDATE "AgentRun" run SET "draftPullRequestUrl" = ${url}, "draftRetryAt" = NULL
+    FROM "GithubRepository" repo
+    WHERE run."id" = ${run.id} AND run."projectId" = ${run.projectId}
+      AND run."status" = 'SUCCEEDED' AND run."baseCommit" = ${baseCommit} AND run."patch" IS NOT NULL
+      AND repo."projectId" = run."projectId" AND repo."repositoryId" = ${BigInt(run.repositoryId)}
+      AND repo."installationId" = ${BigInt(run.installationId)}
+      AND (run."draftPullRequestUrl" IS NULL OR run."draftPullRequestUrl" = ${url})
+  `;
+  return count === 1;
 }
 
 export async function getRunPatch(userId: string, projectId: string, runId: string) {
