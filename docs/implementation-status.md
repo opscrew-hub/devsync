@@ -42,9 +42,9 @@ Remaining work includes audit coverage for other mutations and an end-to-end han
 
 Signed GitHub App webhook intake validates the raw request body and a deployment-configured installation/repository allowlist. Accepted deliveries are persisted and deduplicated by delivery ID. See [GitHub webhook intake](github-integration.md) for configuration.
 
-Project owners can link a deployment-authorized repository after GitHub verifies its identity using a repository-scoped installation token. Event processing, GitHub dashboard synchronization, and live App verification remain pending.
+Project owners can link a deployment-authorized repository after GitHub verifies its identity using a repository-scoped installation token.
 
-The worker now processes webhook deliveries for linked repositories. The project dashboard shows recent activity and refreshes through SSE. Branch, PR, and check state projections and agent signals remain pending.
+The worker processes webhook deliveries for linked repositories. The dashboard shows recent activity and observed branch, pull request, and check state, and refreshes through SSE. The worker also delivers branch and pull request signals to registered agents. Live GitHub App verification remains pending.
 
 ## Phase 4 progress: managed coding jobs
 
@@ -52,16 +52,24 @@ Project writers can request a managed run for a Ready task revision. Owners and 
 
 The PostgreSQL dispatch API reserves approved runs by agent type with a two-minute lease and an opaque reservation token. Expired leases can be reclaimed. The run lifecycle checks the reservation token when starting and finishing a run and supports cancellation and expiry cleanup.
 
-The dedicated Codex worker runs the adapter in a temporary checkout pinned to the resolved commit. Successful results can store the base commit, changed-file summary, and a tracked-file patch. The summary includes untracked files, which must be staged or committed to appear in the patch. A regression test covers committed adapter edits. A PostgreSQL integration test covers the path from approval to patch persistence using a local Git repository and a test adapter.
+The dedicated Codex and Claude workers run their adapters in temporary checkouts pinned to the resolved commit. Successful results can store the base commit, changed-file summary, and a tracked-file patch. The summary includes untracked files, which must be staged or committed to appear in the patch. Tests cover committed adapter edits, simulated Claude CLI execution, and the approval-to-patch path against PostgreSQL.
 
-Set `DEVSYNC_CODEX_DRAFT_PRS=true` to enable a draft pull request attempt after a successful run saves a patch. The GitHub App needs Contents and Pull requests write permissions on the linked repository. The worker logs the run ID and PR URL on success, or the run ID on publication failure. The successful run and patch remain available after a publication failure.
+Set `DEVSYNC_CODEX_DRAFT_PRS=true` or `DEVSYNC_CLAUDE_DRAFT_PRS=true` to enable draft pull request publication for the corresponding worker. The GitHub App needs Contents and Pull requests write permissions on the linked repository.
 
-The worker queues publication in the same database update that saves the successful run. Unfinished attempts become eligible again after five minutes, including after a worker restart. Publication uses the saved patch and the original GitHub repository and installation IDs. A successful attempt saves the draft URL. Deploy the database migrations before running the updated worker. Live verification of the SDK and private GitHub App checkout remains pending.
+The worker queues publication when it saves the successful run. Unfinished attempts become eligible again after five minutes, including after a worker restart. A successful attempt saves the draft URL on the run and displays it in the task panel. PostgreSQL tests cover concurrent claims, expired claims, and completion. Mocked GitHub tests cover scoped token requests and draft creation.
 
-### Dedicated Codex worker
+### Dedicated workers
 
 For Claude runs, use `pnpm --filter @devsync/worker start:claude` on a dedicated execution host. Set `DEVSYNC_CLAUDE_BINARY` to the absolute path of the native Claude Code executable and configure `DEVSYNC_CLAUDE_API_KEY`, `DATABASE_URL`, and the same GitHub App settings. Optional settings are `DEVSYNC_CLAUDE_TOKEN_BUDGET` and `DEVSYNC_CLAUDE_DRAFT_PRS=true`. The adapter exposes file reading and editing tools and uses the shared checkout, patch, and publication lifecycle. Live Claude verification remains pending.
 
 Run `pnpm --filter @devsync/worker start:codex` on a dedicated execution host alongside the regular outbox worker. Set `DATABASE_URL`, `DEVSYNC_CODEX_API_KEY`, and the GitHub App settings documented in [GitHub integration](github-integration.md). The Codex worker consumes approved CODEX runs serially. The ordinary worker and Docker preview do not start it. Live SDK and private checkout verification remain pending.
 
 Set `DEVSYNC_CODEX_TOKEN_BUDGET` to a positive integer to check total input and output tokens before accepting a successful result. Over-budget results and results without usage are rejected. The check happens after execution, so it does not cap API spend.
+
+### Remaining Phase 4 work
+
+- Apply the managed draft PR migrations to a test database. Install the GitHub App on a private test repository and configure the worker credentials. The local workspace has Claude Code 2.1.113 installed. Dedicated API keys and GitHub App settings were absent at the last check.
+- Approve one run per agent using the live Codex SDK and native Claude CLI. Verify that each worker checks out the private repository, saves the expected patch, and links a matching GitHub draft PR on the run.
+- Interrupt publication and restart the worker. Verify that it resumes from the saved patch, reuses the same draft PR, and preserves the original run result. See the [live verification runbook](github-integration.md#verify-managed-draft-pull-requests).
+
+The full Claude-to-Codex MCP handoff is part of Phase 5 acceptance testing.
