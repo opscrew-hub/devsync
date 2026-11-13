@@ -53,6 +53,7 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
     <ul className="list">{runs.map(run => <li key={run.id}>
       <strong>{run.agentType}</strong> · Revision {run.revision} · {run.status.toLowerCase()}
       <dl>
+        <div><dt>Run ID</dt><dd><code>{run.id}</code></dd></div>
         {([["Requested", run.createdAt], ["Started", run.startedAt], ["Finished", run.finishedAt]] as const).map(([label, date]) =>
           date && <div key={label}><dt>{label}</dt><dd><time dateTime={date.toISOString()}>{formatTime.format(date)}</time></dd></div>
         )}
