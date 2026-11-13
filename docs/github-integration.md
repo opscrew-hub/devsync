@@ -25,3 +25,5 @@ The worker also delivers branch-update, PR-opened, and PR-merged signals to exis
 Project writers can link a task to an observed pull request from the task detail page. Changes are audited. Replacing the linked repository clears existing task links.
 
 Task details show the linked pull request title, observed state, and delivery timestamp. A GitHub merge does not mark the task complete.
+
+Owners and admins can refresh a read-only API snapshot for the linked repository. It stores the first 30 branches, recently updated pull requests, and default-branch check runs separately from webhook history. Grant the GitHub App read access to Contents, Pull requests, and Checks to enable this action.
