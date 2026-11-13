@@ -5,6 +5,7 @@ import { ProjectRealtime } from "@/app/project-realtime";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getGithubRepository } from "@devsync/core/github-app";
+import { getTaskPullRequestState } from "@devsync/core/task-pr-state";
 import { PullRequestForm } from "./pull-request-form";
 import { CommentForm } from "./comment-form";
 
@@ -17,7 +18,7 @@ export default async function TaskPage({ params, searchParams }: Props) {
   const { project } = await searchParams;
   if (typeof project !== "string") notFound();
   const { id } = await params;
-  const [task, membership, reports, repository] = await Promise.all([getTask(session.userId, project, id), requireProject(session.userId, project), listTaskActivity(session.userId, project, id), getGithubRepository(session.userId, project)]).catch((error: unknown) => {
+  const [task, membership, reports, repository, pullRequest] = await Promise.all([getTask(session.userId, project, id), requireProject(session.userId, project), listTaskActivity(session.userId, project, id), getGithubRepository(session.userId, project), getTaskPullRequestState(session.userId, project, id)]).catch((error: unknown) => {
     if (error instanceof DomainError && error.status === 404) notFound();
     throw error;
   });
@@ -37,6 +38,11 @@ export default async function TaskPage({ params, searchParams }: Props) {
     {repository && /^[\w.-]+\/[\w.-]+$/.test(repository.fullName) && <section className="task-summary panel">
       <h2>GitHub pull request</h2>
       {task.pullRequestNumber ? <a className="detail-link" href={`https://github.com/${repository.fullName}/pull/${task.pullRequestNumber}`}>Open pull request #{task.pullRequestNumber}</a> : <p>No pull request linked.</p>}
+      {pullRequest && pullRequest.number === task.pullRequestNumber && pullRequest.fullName === repository.fullName && <>
+        {pullRequest.title && <p>{pullRequest.title}</p>}
+        <span className="badge">{pullRequest.status ?? "Status unavailable"}</span>
+        {pullRequest.observedAt && <small>Last observed <time dateTime={pullRequest.observedAt.toISOString()}>{formatDate.format(pullRequest.observedAt)} UTC</time></small>}
+      </>}
       {membership.role !== "VIEWER" && <PullRequestForm key={`${id}:${task.pullRequestNumber}`} projectId={project} taskId={id} current={task.pullRequestNumber}/>}
     </section>}
     <h2>Activity</h2>

@@ -23,3 +23,5 @@ The dashboard shows up to ten observed branches, pull requests, and check runs p
 The worker also delivers branch-update, PR-opened, and PR-merged signals to existing agents in the linked project. A signal includes the GitHub delivery ID and available ref, SHA, or PR number.
 
 Project writers can link a task to an observed pull request from the task detail page. Changes are audited. Replacing the linked repository clears existing task links.
+
+Task details show the linked pull request title, observed state, and delivery timestamp. A GitHub merge does not mark the task complete.
