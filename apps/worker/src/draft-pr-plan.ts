@@ -20,7 +20,7 @@ export function planDraftPullRequest(
   };
 }
 
-type DraftPlan = NonNullable<ReturnType<typeof planDraftPullRequest>>;
+export type DraftPlan = NonNullable<ReturnType<typeof planDraftPullRequest>>;
 type DraftPull = { number: number; url: string };
 
 export async function publishDraftPullRequest(

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createCodexExecutor } from "./codex-executor.ts";
+import { ensureDraftBranch } from "./draft-pr-branch.ts";
 import { planDraftPullRequest, publishDraftPullRequest } from "./draft-pr-plan.ts";
 import { withManagedCheckout } from "./managed-run.ts";
 
@@ -73,6 +74,13 @@ test("checkout pins the requested revision and cleans up after adapter failure",
     assert.equal(planDraftPullRequest(run, summary)?.head, draft.head);
     assert.notEqual(planDraftPullRequest({ ...run, id: "another-run" }, summary)?.head, draft.head);
     assert.equal(planDraftPullRequest(run, { baseCommit: revision }), null);
+    const signal = new AbortController().signal;
+    await ensureDraftBranch(source, draft, signal);
+    const published = git("rev-parse", draft.head).trim();
+    assert.equal(git("rev-parse", published + "^").trim(), revision);
+    assert.equal(git("show", published + ":fixture.txt"), "edited");
+    await ensureDraftBranch(source, draft, signal);
+    assert.equal(git("rev-parse", draft.head).trim(), published);
     assert.ok(checkout);
     await assert.rejects(stat(checkout), { code: "ENOENT" });
   } finally {
