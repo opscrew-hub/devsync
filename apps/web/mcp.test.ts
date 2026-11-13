@@ -205,3 +205,33 @@ test("project stream refreshes on committed writes and closes when access is rev
     await db.$disconnect();
   }
 });
+
+test("managed runs require an administrator decision for the current task revision", { skip: process.env.DEVSYNC_TEST_DB !== "1" }, async () => {
+  const { db } = await import("@devsync/db");
+  const { createProject, createTask, updateTask, changeProjectMember } = await import("@devsync/core");
+  const { requestRun, decideRun, listRuns } = await import("@devsync/core/runs");
+  const owner = randomUUID();
+  const developer = randomUUID();
+  try {
+    await db.user.createMany({ data: [{ id: owner, name: "Owner" }, { id: developer, name: "Developer" }] });
+    const project = await createProject(owner, { name: "Runs", description: "" });
+    await changeProjectMember(owner, project.id, { userId: developer, role: "DEVELOPER" });
+    const task = await createTask(owner, project.id, { title: "Run fixture", description: "", acceptanceCriteria: "" });
+    const input = { taskId: task.id, agentType: "CODEX" };
+    await assert.rejects(requestRun(developer, project.id, input), /Ready/);
+    const ready = await updateTask(owner, project.id, task.id, { version: task.version, status: "READY" });
+    const run = await requestRun(developer, project.id, input);
+    await assert.rejects(requestRun(developer, project.id, input), /pending run/);
+    await assert.rejects(decideRun(developer, project.id, run.id, { status: "QUEUED" }), /administrator/);
+    await updateTask(owner, project.id, task.id, { version: ready.version, acceptanceCriteria: "Revised" });
+    await assert.rejects(decideRun(owner, project.id, run.id, { status: "QUEUED" }), /task changed/);
+    await decideRun(owner, project.id, run.id, { status: "CANCELLED" });
+    const current = await requestRun(developer, project.id, input);
+    await decideRun(owner, project.id, current.id, { status: "QUEUED" });
+    assert.equal((await listRuns(owner, project.id, task.id)).find(item => item.id === current.id)?.status, "QUEUED");
+  } finally {
+    await db.project.deleteMany({ where: { members: { some: { userId: owner } } } });
+    await db.user.deleteMany({ where: { id: { in: [owner, developer] } } });
+    await db.$disconnect();
+  }
+});

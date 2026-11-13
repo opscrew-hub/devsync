@@ -7,6 +7,8 @@ import { notFound, redirect } from "next/navigation";
 import { getGithubRepository } from "@devsync/core/github-app";
 import { getTaskPullRequestState } from "@devsync/core/task-pr-state";
 import { PullRequestForm } from "./pull-request-form";
+import { listRuns } from "@devsync/core/runs";
+import { RunsPanel } from "./runs-panel";
 import { CommentForm } from "./comment-form";
 
 type Props = { params: Promise<{ id: string }>; searchParams: Promise<{ project?: string }> };
@@ -18,7 +20,7 @@ export default async function TaskPage({ params, searchParams }: Props) {
   const { project } = await searchParams;
   if (typeof project !== "string") notFound();
   const { id } = await params;
-  const [task, membership, reports, repository, pullRequest] = await Promise.all([getTask(session.userId, project, id), requireProject(session.userId, project), listTaskActivity(session.userId, project, id), getGithubRepository(session.userId, project), getTaskPullRequestState(session.userId, project, id)]).catch((error: unknown) => {
+  const [task, membership, reports, repository, pullRequest, runs] = await Promise.all([getTask(session.userId, project, id), requireProject(session.userId, project), listTaskActivity(session.userId, project, id), getGithubRepository(session.userId, project), getTaskPullRequestState(session.userId, project, id), listRuns(session.userId, project, id)]).catch((error: unknown) => {
     if (error instanceof DomainError && error.status === 404) notFound();
     throw error;
   });
@@ -45,6 +47,7 @@ export default async function TaskPage({ params, searchParams }: Props) {
       </>}
       {membership.role !== "VIEWER" && <PullRequestForm key={`${id}:${task.pullRequestNumber}`} projectId={project} taskId={id} current={task.pullRequestNumber}/>}
     </section>}
+    <RunsPanel projectId={project} taskId={id} ready={task.status === "READY"} writer={membership.role !== "VIEWER"} admin={membership.role === "OWNER" || membership.role === "ADMIN"} runs={runs}/>
     <h2>Activity</h2>
     {membership.role !== "VIEWER" && <CommentForm taskId={id} projectId={project}/>}
     <ol className="timeline">
