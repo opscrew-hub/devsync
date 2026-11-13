@@ -262,6 +262,16 @@ test("managed runs require an administrator decision for the current task revisi
     assert.equal(await renewRunningRun(retry.id, reserved.dispatchToken), null);
     assert.equal(await expireRunningRuns(), 1);
     assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: retry.id } })).status, "FAILED");
+    const stale = await requestRun(developer, project.id, input);
+    await decideRun(owner, project.id, stale.id, { status: "QUEUED" });
+    const lease = await reserveQueuedRun("CODEX");
+    assert.ok(lease);
+    assert.equal(await startReservedRun(stale.id, lease.dispatchToken), true);
+    const latest = await db.task.findUniqueOrThrow({ where: { id: task.id } });
+    await updateTask(owner, project.id, task.id, { version: latest.version, acceptanceCriteria: "Changed mid-run" });
+    assert.equal(await renewRunningRun(stale.id, lease.dispatchToken), null);
+    assert.equal(await finishReservedRun(stale.id, lease.dispatchToken, "SUCCEEDED"), false);
+    assert.equal(await finishReservedRun(stale.id, lease.dispatchToken, "FAILED"), true);
     assert.equal(await reserveQueuedRun("CODEX"), null);
   } finally {
     await db.project.deleteMany({ where: { members: { some: { userId: owner } } } });

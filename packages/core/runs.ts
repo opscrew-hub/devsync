@@ -98,13 +98,22 @@ export async function startReservedRun(id: string, token: string) {
 }
 
 export async function finishReservedRun(id: string, token: string, outcome: "SUCCEEDED" | "FAILED") {
-  const count = await db.$executeRaw`
-    UPDATE "AgentRun" SET "status" = ${outcome}::"RunStatus", "finishedAt" = timezone('UTC', clock_timestamp()),
-      "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
-    WHERE "id" = ${id} AND "status" = 'RUNNING' AND "dispatchToken" = ${token}
-      AND "dispatchExpiresAt" > timezone('UTC', clock_timestamp())
-  `;
-  return count === 1;
+  return db.$transaction(async tx => {
+    const run = await tx.agentRun.findUnique({ where: { id }, select: { taskId: true, projectId: true } });
+    if (!run) return false;
+    await tx.$queryRaw`SELECT "id" FROM "Task" WHERE "id" = ${run.taskId} AND "projectId" = ${run.projectId} FOR UPDATE`;
+    const count = await tx.$executeRaw`
+      UPDATE "AgentRun" run
+      SET "status" = ${outcome}::"RunStatus", "finishedAt" = timezone('UTC', clock_timestamp()),
+        "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
+      FROM "Task" task
+      WHERE run."id" = ${id} AND task."id" = run."taskId" AND task."projectId" = run."projectId"
+        AND run."status" = 'RUNNING' AND run."dispatchToken" = ${token}
+        AND run."dispatchExpiresAt" > timezone('UTC', clock_timestamp())
+        AND (${outcome} = 'FAILED' OR (task."status" = 'READY' AND task."revision" = run."revision"))
+    `;
+    return count === 1;
+  });
 }
 
 export async function expireRunningRuns() {
