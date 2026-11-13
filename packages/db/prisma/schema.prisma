@@ -140,6 +140,7 @@ model Signal {
   recipientId String
   senderId String?
   senderAgentId String?
+  githubDeliveryId String?
   replyToId String? @unique
   hopCount Int @default(0)
   kind String
@@ -152,6 +153,8 @@ model Signal {
   senderAgent Agent? @relation("SignalAgentSender", fields: [projectId, senderAgentId], references: [projectId, id], onDelete: Cascade)
   replyTo Signal? @relation("SignalReply", fields: [replyToId], references: [id], onDelete: Cascade)
   reply Signal? @relation("SignalReply")
+  githubDelivery GithubEvent? @relation(fields: [githubDeliveryId], references: [deliveryId], onDelete: Cascade)
+  @@unique([githubDeliveryId, recipientId])
   @@unique([projectId, senderId, idempotencyKey])
   @@unique([projectId, senderAgentId, idempotencyKey])
   @@index([projectId, senderAgentId, createdAt])
@@ -210,6 +213,7 @@ model GithubEvent {
   payload Json
   receivedAt DateTime @default(now())
   processedAt DateTime?
+  signals Signal[]
   @@index([processedAt, receivedAt])
   @@index([installationId, repositoryId, receivedAt])
 }

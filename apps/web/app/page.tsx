@@ -48,7 +48,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ p
       </section>}
       {active && <AgentPanel key={active.id} projectId={active.id} owner={role === "OWNER"} writer={role !== undefined && role !== "VIEWER"}
         agents={agents}
-        signals={signals.map(signal => ({ id: signal.id, kind: signal.kind, recipientId: signal.recipientId, acknowledged: !!signal.acknowledgedAt, sender: signal.sender?.name ?? signal.senderAgent?.name ?? "Unknown sender", message: typeof signal.payload === "object" && signal.payload && "message" in signal.payload && typeof signal.payload.message === "string" ? signal.payload.message : "" }))}
+        signals={signals.map(signal => ({ id: signal.id, kind: signal.kind, recipientId: signal.recipientId, acknowledged: !!signal.acknowledgedAt, sender: signal.sender?.name ?? signal.senderAgent?.name ?? (signal.githubDeliveryId ? "GitHub" : "Unknown sender"), message: typeof signal.payload === "object" && signal.payload && "message" in signal.payload && typeof signal.payload.message === "string" ? signal.payload.message : "" }))}
       />}
       {active && <GithubPanel key={active.id} projectId={active.id} repository={githubRepository} activity={githubActivity} state={githubState} owner={role === "OWNER"}/>}
       {active && <ProjectRealtime projectId={active.id}/>}

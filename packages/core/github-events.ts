@@ -4,11 +4,37 @@ import { requireProject } from "./index.ts";
 export async function processGithubEvent() {
   return db.$executeRaw`
     WITH pending AS (
-      SELECT event."deliveryId" FROM "GithubEvent" event
+      SELECT event.*, repo."projectId" FROM "GithubEvent" event
       JOIN "GithubRepository" repo USING ("installationId", "repositoryId")
       WHERE event."processedAt" IS NULL
       ORDER BY event."receivedAt", event."deliveryId"
       LIMIT 1 FOR UPDATE OF event SKIP LOCKED
+    ), classified AS (
+      SELECT pending.*, CASE
+        WHEN "event" = 'push' AND "payload"->>'ref' LIKE 'refs/heads/%' THEN 'git.branch_updated'
+        WHEN "event" = 'pull_request' AND "payload"->>'action' = 'opened' THEN 'git.pr_opened'
+        WHEN "event" = 'pull_request' AND "payload"->>'action' = 'closed'
+          AND "payload"#>>'{pull_request,merged}' = 'true' THEN 'git.pr_merged'
+      END AS kind FROM pending
+    ), delivered AS (
+      INSERT INTO "Signal" ("id", "projectId", "recipientId", "githubDeliveryId", "kind", "payload", "idempotencyKey")
+      SELECT gen_random_uuid()::text, event."projectId", agent."id", event."deliveryId", event.kind,
+        jsonb_strip_nulls(jsonb_build_object(
+          'message', CASE event.kind
+            WHEN 'git.branch_updated' THEN 'GitHub branch updated'
+            WHEN 'git.pr_opened' THEN 'GitHub pull request opened'
+            WHEN 'git.pr_merged' THEN 'GitHub pull request merged'
+          END,
+          'ref', left(event."payload"->>'ref', 512),
+          'sha', left(COALESCE(event."payload"->>'after', event."payload"#>>'{pull_request,head,sha}'), 64),
+          'pullRequestNumber', event."payload"#>'{pull_request,number}',
+          'repositoryId', event."repositoryId"::text,
+          'deliveryId', event."deliveryId"
+        )), 'github:' || event."deliveryId"
+      FROM classified event JOIN "Agent" agent ON agent."projectId" = event."projectId"
+      WHERE event.kind IS NOT NULL AND agent."revokedAt" IS NULL
+        AND agent."createdAt" <= event."receivedAt"
+      ON CONFLICT ("githubDeliveryId", "recipientId") DO NOTHING
     )
     UPDATE "GithubEvent" event SET "processedAt" = timezone('UTC', clock_timestamp())
     FROM pending WHERE event."deliveryId" = pending."deliveryId"

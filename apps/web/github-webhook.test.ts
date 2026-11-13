@@ -89,6 +89,9 @@ test("GitHub repository links require owner access and scoped verification", {
     const { processGithubEvent, listGithubActivity, listGithubState } = await import("@devsync/core/github-events");
     const { readProjectRealtimeVersion } = await import("@devsync/core/project-realtime");
     const other = await createProject(owner, { name: "Other GitHub project", description: "" });
+    const { registerAgent, pendingSignals } = await import("@devsync/core/agent-signals");
+    const agent = await registerAgent(owner, project.id, { type: "CODEX", name: "GitHub watcher" });
+    const outsider = await registerAgent(owner, other.id, { type: "CODEX", name: "Other watcher" });
     const deliveryId = randomUUID();
     const unlinkedId = randomUUID();
     try {
@@ -103,6 +106,12 @@ test("GitHub repository links require owner access and scoped verification", {
       const [activity] = await listGithubActivity(owner, project.id);
       assert.equal(activity.deliveryId, deliveryId);
       assert.equal(activity.subject, "refs/heads/main");
+      const signals = await pendingSignals(agent.token);
+      assert.equal(signals.length, 1);
+      assert.equal(signals[0].kind, "git.branch_updated");
+      assert.equal(signals[0].githubDeliveryId, deliveryId);
+      assert.deepEqual(await pendingSignals(outsider.token), []);
+      assert.equal(await processGithubEvent(), 0);
       assert.deepEqual(await listGithubActivity(owner, other.id), []);
       await assert.rejects(listGithubActivity(randomUUID(), project.id), /not found/);
       assert.notEqual(await readProjectRealtimeVersion(owner, project.id), before);
