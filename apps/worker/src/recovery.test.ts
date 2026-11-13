@@ -44,3 +44,32 @@ test("worker marks expired runs failed on startup", {
     await db.$disconnect();
   }
 });
+
+test("executor consumes an approved run and persists its outcome", {
+  skip: process.env.DEVSYNC_TEST_DB !== "1",
+}, async () => {
+  const { executeNextRun } = await import("./managed-run.ts");
+  const { requestRun, decideRun } = await import("@devsync/core/runs");
+  const owner = randomUUID();
+  try {
+    await db.user.create({ data: { id: owner, name: "Executor test" } });
+    const project = await createProject(owner, { name: "Executor", description: "" });
+    const task = await createTask(owner, project.id, { title: "Executor fixture", description: "", acceptanceCriteria: "" });
+    await db.task.update({ where: { id: task.id }, data: { status: "READY" } });
+    const run = await requestRun(owner, project.id, { taskId: task.id, agentType: "CLAUDE" });
+    await decideRun(owner, project.id, run.id, { status: "QUEUED" });
+    const executed = await executeNextRun("CLAUDE", async (work, signal) => {
+      assert.equal(work.id, run.id);
+      assert.equal(work.revision, task.revision);
+      assert.equal(signal.aborted, false);
+    }, new AbortController().signal);
+    assert.equal(executed, true);
+    const finished = await db.agentRun.findUniqueOrThrow({ where: { id: run.id } });
+    assert.equal(finished.status, "SUCCEEDED");
+    assert.equal(finished.dispatchToken, null);
+  } finally {
+    await db.project.deleteMany({ where: { members: { some: { userId: owner } } } });
+    await db.user.deleteMany({ where: { id: owner } });
+    await db.$disconnect();
+  }
+});
