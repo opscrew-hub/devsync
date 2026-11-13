@@ -16,6 +16,7 @@ export async function executeNextRun(
   timeoutMs = 15 * 60 * 1000,
   log?: Pick<import("pino").Logger, "info">,
   tokenBudget?: number,
+  heartbeatMs = 15000,
 ) {
   if (shutdown.aborted) return false;
   const run = await reserveQueuedRun(agentType);
@@ -35,7 +36,7 @@ export async function executeNextRun(
   const signal = AbortSignal.any([shutdown, stopped.signal, deadline]);
   const heartbeat = (async () => {
     while (!signal.aborted) {
-      await setTimeout(15000, undefined, { signal });
+      await setTimeout(heartbeatMs, undefined, { signal });
       if (!signal.aborted && !await renewRunningRun(id, dispatchToken)) stopped.abort();
     }
   })().catch(() => stopped.abort());
