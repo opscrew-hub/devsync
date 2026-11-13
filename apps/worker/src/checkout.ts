@@ -60,3 +60,16 @@ export async function listCheckoutChanges(directory: string, signal: AbortSignal
     path: entry.slice(3),
   }));
 }
+
+export async function captureCheckoutPatch(directory: string, commit: string, signal: AbortSignal) {
+  if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error("A full commit SHA is required.");
+  try {
+    const { stdout } = await exec("git", ["diff", "--binary", "--no-ext-diff", "--no-textconv", commit, "--"], {
+      cwd: directory, signal, maxBuffer: 512 * 1024,
+    });
+    return stdout || undefined;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return undefined;
+    throw error;
+  }
+}

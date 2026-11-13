@@ -59,7 +59,8 @@ test("checkout pins the requested revision and cleans up after adapter failure",
         ]);
       },
     );
-    await summarize(run, new AbortController().signal);
+    const summary = await summarize(run, new AbortController().signal);
+    assert.match(summary?.patch ?? "", /[+]edited/);
     assert.ok(checkout);
     await assert.rejects(stat(checkout), { code: "ENOENT" });
   } finally {
