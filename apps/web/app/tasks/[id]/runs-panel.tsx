@@ -32,7 +32,7 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
   return <section className="panel task-summary">
     <h2>Managed runs</h2>
     <p>Approved runs are queued. Execution is pending worker integration.</p>
-    {writer && ready && !runs.some(run => ["REQUESTED", "QUEUED"].includes(run.status)) &&
+    {writer && ready && !runs.some(run => ["REQUESTED", "QUEUED", "RUNNING"].includes(run.status)) &&
       <form className="actions" action={data => save({ taskId, agentType: data.get("agentType") })}>
         <label>Agent<select name="agentType"><option>CODEX</option><option>CLAUDE</option></select></label>
         <button disabled={busy}>Request run</button>
@@ -44,7 +44,7 @@ export function RunsPanel({ projectId, taskId, ready, writer, admin, runs }: {
         <button disabled={busy} onClick={() => save({ status: "QUEUED" }, run.id)}>Approve</button>
         <button disabled={busy} onClick={() => save({ status: "REJECTED" }, run.id)}>Reject</button>
       </div>}
-      {admin && ["REQUESTED", "QUEUED"].includes(run.status) &&
+      {admin && ["REQUESTED", "QUEUED", "RUNNING"].includes(run.status) &&
         <button disabled={busy} onClick={() => save({ status: "CANCELLED" }, run.id)}>Cancel</button>}
     </li>)}</ul>
   </section>;

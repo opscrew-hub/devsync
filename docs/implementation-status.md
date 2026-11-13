@@ -51,3 +51,5 @@ The worker now processes webhook deliveries for linked repositories. The project
 Project writers can request a managed run for a Ready task revision. Owners and admins can approve, reject, or cancel requests. Approved runs are stored as queued. Checkout isolation, SDK execution, and draft PR creation remain pending.
 
 The PostgreSQL dispatch API reserves approved runs by agent type with a two-minute lease and an opaque reservation token. Expired leases can be reclaimed. The background worker does not consume these reservations until an execution adapter is integrated.
+
+The run lifecycle supports token-checked start and finish, cancellation, and expiry cleanup. These are database operations for a future executor.

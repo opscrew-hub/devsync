@@ -21,7 +21,7 @@ export async function requestRun(userId: string, projectId: string, input: unkno
     `;
     if (!task) throw new DomainError(404, "Task not found.");
     if (task.status !== "READY") throw new DomainError(409, "Move the task to Ready before requesting a run.");
-    const existing = await tx.agentRun.findFirst({ where: { taskId, status: { in: ["REQUESTED", "QUEUED"] } } });
+    const existing = await tx.agentRun.findFirst({ where: { taskId, status: { in: ["REQUESTED", "QUEUED", "RUNNING"] } } });
     if (existing) throw new DomainError(409, "This task already has a pending run.");
     return tx.agentRun.create({ data: { taskId, projectId, agentType, revision: task.revision, requestedById: userId }, omit: { dispatchToken: true } });
   });
@@ -41,8 +41,8 @@ export async function decideRun(userId: string, projectId: string, runId: string
       throw new DomainError(409, "The task changed. Cancel this request and request a new run.");
     }
     const result = await tx.agentRun.updateMany({
-      where: { id: runId, projectId, status: { in: status === "CANCELLED" ? ["REQUESTED", "QUEUED"] : ["REQUESTED"] } },
-      data: { status, decidedAt: new Date(), decidedById: userId, dispatchToken: null, dispatchExpiresAt: null },
+      where: { id: runId, projectId, status: { in: status === "CANCELLED" ? ["REQUESTED", "QUEUED", "RUNNING"] : ["REQUESTED"] } },
+      data: { status, finishedAt: status === "CANCELLED" ? new Date() : undefined, decidedAt: new Date(), decidedById: userId, dispatchToken: null, dispatchExpiresAt: null },
     });
     if (!result.count) throw new DomainError(409, "The run has already been decided.");
     await tx.auditLog.create({ data: { projectId, actorId: userId, targetId: runId, action: "run." + status.toLowerCase(), details: { revision: run.revision } } });
@@ -78,4 +78,39 @@ export async function releaseRunReservation(id: string, dispatchToken: string) {
     data: { dispatchToken: null, dispatchExpiresAt: null },
   });
   return result.count === 1;
+}
+
+export async function startReservedRun(id: string, token: string) {
+  return db.$transaction(async tx => {
+    const run = await tx.agentRun.findUnique({ where: { id }, select: { taskId: true } });
+    if (!run) return false;
+    await tx.$queryRaw`SELECT "id" FROM "Task" WHERE "id" = ${run.taskId} FOR UPDATE`;
+    const count = await tx.$executeRaw`
+      UPDATE "AgentRun" run SET "status" = 'RUNNING', "startedAt" = timezone('UTC', clock_timestamp()),
+        "dispatchExpiresAt" = timezone('UTC', clock_timestamp()) + interval '2 minutes'
+      FROM "Task" task WHERE run."id" = ${id} AND task."id" = run."taskId"
+        AND run."status" = 'QUEUED' AND run."dispatchToken" = ${token}
+        AND run."dispatchExpiresAt" > timezone('UTC', clock_timestamp())
+        AND task."status" = 'READY' AND task."revision" = run."revision"
+    `;
+    return count === 1;
+  });
+}
+
+export async function finishReservedRun(id: string, token: string, outcome: "SUCCEEDED" | "FAILED") {
+  const count = await db.$executeRaw`
+    UPDATE "AgentRun" SET "status" = ${outcome}::"RunStatus", "finishedAt" = timezone('UTC', clock_timestamp()),
+      "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
+    WHERE "id" = ${id} AND "status" = 'RUNNING' AND "dispatchToken" = ${token}
+      AND "dispatchExpiresAt" > timezone('UTC', clock_timestamp())
+  `;
+  return count === 1;
+}
+
+export async function expireRunningRuns() {
+  return db.$executeRaw`
+    UPDATE "AgentRun" SET "status" = 'FAILED', "finishedAt" = timezone('UTC', clock_timestamp()),
+      "dispatchToken" = NULL, "dispatchExpiresAt" = NULL
+    WHERE "status" = 'RUNNING' AND "dispatchExpiresAt" <= timezone('UTC', clock_timestamp())
+  `;
 }
