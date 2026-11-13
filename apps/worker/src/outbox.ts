@@ -2,6 +2,7 @@ import { setTimeout } from "node:timers/promises";
 import { db } from "@devsync/db";
 import { processTaskOutboxEvent } from "@devsync/core/task-outbox";
 import { processGithubEvent } from "@devsync/core/github-events";
+import { expireRunningRuns } from "@devsync/core/runs";
 import pino from "pino";
 
 const log = pino({ name: "devsync-outbox" });
@@ -10,7 +11,17 @@ process.once("SIGINT", () => shutdown.abort());
 process.once("SIGTERM", () => shutdown.abort());
 
 try {
+  let nextRecoveryAt = 0;
   while (!shutdown.signal.aborted) {
+    if (Date.now() >= nextRecoveryAt) {
+      nextRecoveryAt = Date.now() + 30000;
+      try {
+        const expired = await expireRunningRuns();
+        if (expired) log.warn({ expired }, "Expired managed runs marked failed");
+      } catch (error) {
+        log.error({ errorType: error instanceof Error ? error.name : "unknown" }, "Managed run recovery failed");
+      }
+    }
     let wait = true;
     try {
       const result = await processTaskOutboxEvent();
