@@ -20,12 +20,20 @@ test("worker marks expired runs failed on startup", {
       projectId: project.id, taskId: task.id, requestedById: owner, agentType: "CODEX",
       status: "RUNNING", revision: task.revision, dispatchToken: randomUUID(), dispatchExpiresAt: new Date(0),
     } });
+    const stale = await db.agentRun.create({ data: {
+      projectId: project.id, taskId: (await createTask(owner, project.id, {
+        title: "Stale fixture", description: "", acceptanceCriteria: "",
+      })).id, requestedById: owner, agentType: "CODEX", status: "QUEUED", revision: 1,
+    } });
+    await db.task.update({ where: { id: stale.taskId }, data: { revision: 2 } });
     worker = spawn(process.execPath, ["src/outbox.ts", "--recover-once"], { stdio: "ignore" });
     const exited = new Promise(resolve => worker!.once("close", resolve));
     try {
       for (let attempt = 0; attempt < 50; attempt++) {
         const current = await db.agentRun.findUniqueOrThrow({ where: { id: run.id } });
         if (current.status === "FAILED") {
+          assert.equal(await exited, 0);
+          assert.equal((await db.agentRun.findUniqueOrThrow({ where: { id: stale.id } })).status, "FAILED");
           assert.ok(current.finishedAt);
           assert.equal(current.dispatchToken, null);
           return;
