@@ -4,7 +4,8 @@
  * DevSync on as a `GithubJob` on the `devsync.github` queue. DevSync applies each delivery once per
  * project (`github_delivery`): it keeps the pull request's latest state (an update older than the
  * stored one changes nothing) and sends the project's live agents branch-updated,
- * pull-request-opened and pull-request-merged signals.
+ * pull-request-opened and pull-request-merged signals. A `workflow_run` fact (a managed run
+ * GitHub completed) goes to the runs (`applyWorkflowRun`), which apply it once by the run's status.
  */
 import { randomUUID } from "node:crypto";
 import type { PullRequestList } from "@devsync/schemas";
@@ -12,6 +13,7 @@ import { and, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
 import { z } from "zod";
 import { agent, githubDelivery, pullRequest, signal } from "../db";
 import type { DevSyncDb, DevSyncHost, ProjectContext, ProjectRef } from "../host";
+import { applyWorkflowRun } from "./runs";
 import { toPullRequest } from "./tasks";
 
 /** How many pull requests `GET /pull-requests` answers. */
@@ -20,7 +22,7 @@ const PAGE = 50;
 const Sha = z.string().min(1).max(64);
 const DeliveryId = z.string().min(1).max(200);
 
-/** One GitHub delivery, as the host forwards it (contracts/modules.md, GitHub). */
+/** One GitHub delivery, as the host forwards it (`GithubFact` in host.ts). */
 export const GithubFact = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("push"),
@@ -43,10 +45,16 @@ export const GithubFact = z.discriminatedUnion("kind", [
     headSha: Sha,
     updatedAt: z.iso.datetime({ offset: true }),
   }),
+  z.object({
+    kind: z.literal("workflow_run"),
+    deliveryId: DeliveryId,
+    githubRunId: z.number().int().positive(),
+    conclusion: z.string().max(50).nullable(),
+  }),
 ]);
 export type GithubFact = z.infer<typeof GithubFact>;
 
-/** A `devsync.github` job's payload: the host's `ModuleGithubJob`. */
+/** A `devsync.github` job's payload (`GithubJob` in host.ts). */
 export const GithubJob = z.object({
   workspaceId: z.uuid(),
   projectId: z.uuid(),
@@ -54,8 +62,10 @@ export const GithubJob = z.object({
 });
 export type GithubJob = z.infer<typeof GithubJob>;
 
+type DeliveryFact = Exclude<GithubFact, { kind: "workflow_run" }>;
+
 /** The signal a fact sends the project's agents, legacy's kinds and wording; null for none. */
-function signalOf(fact: GithubFact): { kind: string; payload: Record<string, unknown> } | null {
+function signalOf(fact: DeliveryFact): { kind: string; payload: Record<string, unknown> } | null {
   if (fact.kind === "push") {
     if (!fact.ref.startsWith("refs/heads/")) return null;
     return {
@@ -122,6 +132,7 @@ export async function applyGithubFact(host: DevSyncHost, job: GithubJob): Promis
   const project = await host.project(job.projectId);
   if (!project) return;
   const { fact } = job;
+  if (fact.kind === "workflow_run") return applyWorkflowRun(host, project, fact);
   const now = host.clock.now();
   await host.db.transaction(async (tx) => {
     const [delivery] = await tx

@@ -63,6 +63,7 @@ DevSync uses (`host.ts` has the exact types). In short:
 | `members(workspaceId)` | the workspace's members with their names and roles. |
 | `project(projectId)` | the connected project with DevSync on for it and its workspace, or null: checked on every MCP request. |
 | `enqueue(queue, payload, options?)` | sends a job to a DevSync queue after the current transaction commits. |
+| `github` | DevSync's workflow in the project's repository, through the host's GitHub App: `setup`, `dispatch`, `artifact`, `deleteArtifact` (see Managed runs). |
 
 ### Request contexts
 
@@ -91,6 +92,9 @@ The host's roles are OpsCrew's: Owner, Admin, Approver, Developer. `can(role, ac
 | `agent.manage`: register, rotate, revoke an agent | yes | yes | no | no |
 | `run.request`: ask for a managed run | yes | yes | yes | yes |
 | `run.decide`: approve or reject a managed run | yes | yes | yes | no |
+
+A member who asked for a run may cancel it while it waits for approval, whatever their role; so may
+anyone with `run.decide`.
 
 ## Mount points
 
@@ -127,6 +131,12 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 | `POST /agents/:agentId/rotate` | `agent.manage` | | `{ agent: Agent, token: string }` |
 | `DELETE /agents/:agentId` | `agent.manage` | | 204 |
 | `POST /agents/:agentId/messages` | `task.write` | `AgentMessage` | 201 `{ id, kind, createdAt }`, idempotent by its key |
+| `GET /tasks/:taskId/runs` | read | | `{ runs: Run[] }`, the task's 50 latest, newest first |
+| `POST /tasks/:taskId/runs` | `run.request` | | 201 `Run`, waiting for approval |
+| `GET /runs/setup` | read | | `RunSetup` |
+| `POST /runs/:runId/approve` | `run.decide` | | `Run` |
+| `POST /runs/:runId/reject` | `run.decide` | | `Run` |
+| `POST /runs/:runId/cancel` | the requester, or `run.decide` | | `Run` |
 
 ### Workspace routes
 
@@ -156,6 +166,16 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
   `createdAt`.
 - `AgentMessage`: `kind` (`clarification.requested`, `clarification.answered`, `review.requested`,
   `system.warning`), `message` (1–4000), `idempotencyKey` (a UUID).
+- `Run`: `id`, `taskId`, `revision` (the requirements revision it runs on), `status` (`REQUESTED`,
+  `QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `REJECTED`, `CANCELLED`), `requestedBy`, `decidedBy`
+  (who approved, rejected or cancelled it, or null), `createdAt`, `decidedAt`, `startedAt`,
+  `finishedAt`, `failure` (`{ code, message }`: why it failed and what to do, or null),
+  `changedFiles`, `usage` (`inputTokens`, `outputTokens`, `cacheCreationInputTokens`,
+  `cacheReadInputTokens`, `costUsd`, `models`, or null), `draftPullRequestUrl` and `githubRunUrl`
+  (`https://github.com/<owner>/<repo>/actions/runs/<id>`, once GitHub started it).
+- `RunSetup`: `workflow` (`.github/workflows/devsync.yml` is on the default branch), `secret`
+  (runs can read the `ANTHROPIC_API_KEY` Actions secret), `missing` (what to add, in plain English;
+  empty when nothing is).
 
 ### Task statuses
 
@@ -223,17 +243,26 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
   run every minute.
 - `devsync.github`: one GitHub fact for a project with DevSync on, as the host forwards it from its
   webhooks: `{ workspaceId, projectId, fact }`, where `fact` is
-  `{ kind: "push", deliveryId, ref, before, after, defaultBranch }` or
-  `{ kind: "pull_request", deliveryId, action, number, title, state, merged, url, headRef, headSha, updatedAt }`.
+  `{ kind: "push", deliveryId, ref, before, after, defaultBranch }`,
+  `{ kind: "pull_request", deliveryId, action, number, title, state, merged, url, headRef, headSha, updatedAt }`
+  or `{ kind: "workflow_run", deliveryId, githubRunId, conclusion }`. For a push or a pull request,
   DevSync keeps the pull request's latest state and sends the project's agents branch-updated,
-  pull-request-opened and pull-request-merged signals, once per delivery.
+  pull-request-opened and pull-request-merged signals, once per delivery. A `workflow_run` fact,
+  which the host sends only for a completed run DevSync started, ends that run (see Managed runs);
+  a repeated delivery changes nothing.
+- `devsync.runs`: `{ projectId, runId }` dispatches an approved run, enqueued once its approval
+  commits. Every ten minutes (`*/10 * * * *`), with an empty payload, it sweeps every project's
+  runs: it dispatches an approved run still waiting ten minutes after its approval, and reads a run
+  still in GitHub six hours after it started once more, ending it `FAILED` (`no-result`) without a
+  result.
 
 ## Migrations and removal
 
 - `migrations` (`{ folder, schema: "devsync" }`): the host applies them after its own, with the
   journal in `devsync.__drizzle_migrations`.
 - `removeProject(db, projectId)`, `removeWorkspace(db, workspaceId)`: delete every DevSync row of
-  it, in the host's removal transaction. `removeMember(db, workspaceId, userId)`: unassigns them.
+  it, its runs too, in the host's removal transaction. `removeMember(db, workspaceId, userId)`:
+  unassigns them; the runs they asked for or decided are kept, and name them "Former member".
 
 ## Pages
 
@@ -264,8 +293,32 @@ names (the host's sprite must have them, Phosphor regular): `kanban`, `plus`, `r
 
 ## Managed runs
 
-To come (DevSync's runs, reworked): a member asks for a run on a Ready task, an Owner, Admin or
-Approver approves it, and the host starts a workflow in the project's own GitHub Actions that runs
-Claude Code on the workspace's own Anthropic key and opens a draft pull request from the user's
-workflow. DevSync keeps the run's state and result. This section is completed when that work is
-designed.
+A member asks for a run on a Ready task; an Owner, Admin or Approver approves it; the host starts
+DevSync's workflow in the project's own GitHub Actions, which runs Claude Code on the workspace's
+own Anthropic key and opens a draft pull request itself. The design is
+[managed-runs.md](managed-runs.md); this is what DevSync asks of the host.
+
+`serverModule` declares `workflows: ["devsync.yml"]` (with `github: true`), so the host lets DevSync
+start `.github/workflows/devsync.yml` and nothing else. DevSync calls `host.github`, the contract's
+`ModuleHost.github`, whose calls answer `{ ok: true, … }` or `{ ok: false, failure }` and never
+throw GitHub's errors:
+
+| Call | When | What DevSync does with the answer |
+|---|---|---|
+| `setup(projectId, "devsync.yml")` | `GET /runs/setup`, and before a run is asked for | `workflow`, and whether `secrets` holds `ANTHROPIC_API_KEY`, give `RunSetup`; asking for a run while either is missing answers 409 with `missing`'s words |
+| `dispatch(projectId, "devsync.yml", { run_id, task })` | `devsync.runs`, once per approved run | `run_id` is the run's id; `task` is `{ "title", "description", "acceptanceCriteria" }` of the requested revision as JSON, at most 60,000 characters (a longer task is refused when the run is asked for). The run is then `RUNNING` with `githubRunId`; a failure ends it `FAILED` with that failure as its reason |
+| `artifact(projectId, githubRunId, "devsync-result")` | a `workflow_run` fact, and the six-hour sweep | `result.json` (schema version 1, `RunResult` in `@devsync/schemas`) is checked (the run's own id, a pull request of the project's own repository, at most 1,000 changed paths of at most 400 characters, every figure non-negative) and kept; a result that fails a check ends the run `bad-result`, none `no-result`. A failure fails the fact's job, so the host retries it |
+| `deleteArtifact(projectId, githubRunId, name)` | once the run has ended | both `devsync-result` and `devsync-patch`; a failure is logged, and GitHub removes them when they expire |
+
+A run whose `workflow_run` conclusion is `cancelled` ends `FAILED` (`cancelled`), whatever its
+result says. A succeeded run's draft pull request is linked to the task when the task has none
+(audited as `devsync.task.pull_request_linked`, by the host). The `failure` codes are the workflow's
+(`agent-failed`, `budget`, `turns`, `no-changes`, `patch-did-not-apply`, `patch-touches-workflows`,
+`push-failed`, `pull-request-not-allowed`), the host's `GithubFailure` when it couldn't start the run
+(`not-found`, `unavailable`, `workflow-missing`, `workflow-disabled`, `forbidden`), and DevSync's own
+(`bad-result`, `no-result`, `cancelled`); each `Run` shows its plain-English message.
+
+Each change is a timeline event of the task (`run.requested`, `run.approved`, `run.rejected`,
+`run.cancelled`, `run.started`, `run.finished`) and, but for the start, an audit entry
+(`devsync.run.requested`, `approved`, `rejected`, `cancelled`, `finished`, the last by the host),
+with ids and figures only.

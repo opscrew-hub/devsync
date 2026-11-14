@@ -3,8 +3,19 @@ import { MemberList, type Role, TaskList } from "@devsync/schemas";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { z } from "zod";
+import type { GithubJob as GithubJobSchema } from "./domain/pull-requests";
 import { createTask } from "./domain/tasks";
-import type { DevSyncHost, Member, ProjectContext, ProjectEnv, ProjectRef } from "./host";
+import type {
+  DevSyncGithub,
+  DevSyncHost,
+  GithubFailure,
+  GithubJob,
+  Member,
+  ProjectContext,
+  ProjectEnv,
+  ProjectRef,
+} from "./host";
 import { serverModule } from "./module";
 import { createTestDb, fakeHost, type TestDb } from "./testing";
 
@@ -46,6 +57,68 @@ namespace Contract {
       payload: Record<string, unknown>,
       options?: { singleton?: { key: string; seconds: number } },
     ): Promise<void>;
+    github: ModuleGithub;
+  }
+  export type GithubFact =
+    | {
+        kind: "push";
+        deliveryId: string;
+        ref: string;
+        before: string;
+        after: string;
+        defaultBranch: boolean;
+      }
+    | {
+        kind: "pull_request";
+        deliveryId: string;
+        action: string;
+        number: number;
+        title: string;
+        state: "open" | "closed";
+        merged: boolean;
+        url: string;
+        headRef: string;
+        headSha: string;
+        updatedAt: string;
+      }
+    | { kind: "workflow_run"; deliveryId: string; githubRunId: number; conclusion: string | null };
+  export interface ModuleGithubJob {
+    workspaceId: string;
+    projectId: string;
+    fact: GithubFact;
+  }
+  export type GithubFailure =
+    | "not-found"
+    | "unavailable"
+    | "workflow-missing"
+    | "workflow-disabled"
+    | "forbidden";
+  export interface ModuleGithub {
+    setup(
+      projectId: string,
+      workflow: string,
+    ): Promise<
+      { ok: true; workflow: boolean; secrets: string[] } | { ok: false; failure: GithubFailure }
+    >;
+    dispatch(
+      projectId: string,
+      workflow: string,
+      inputs: Record<string, string>,
+    ): Promise<
+      { ok: true; githubRunId: number; url: string } | { ok: false; failure: GithubFailure }
+    >;
+    artifact(
+      projectId: string,
+      githubRunId: number,
+      name: string,
+    ): Promise<
+      { ok: true; files: Map<string, Uint8Array> | null } | { ok: false; failure: GithubFailure }
+    >;
+    deleteArtifact(
+      projectId: string,
+      githubRunId: number,
+      name: string,
+    ): Promise<{ ok: true } | { ok: false; failure: GithubFailure }>;
   }
   export interface ModuleJob {
     handler(payload: unknown, host: ModuleHost): Promise<void>;
@@ -65,6 +138,7 @@ namespace Contract {
     publicRoutes?(host: ModuleHost): Hono<any>;
     jobs?: Record<string, ModuleJob>;
     github?: boolean;
+    workflows?: readonly string[];
     removeProject(tx: ModuleDb, projectId: string): Promise<void>;
     removeWorkspace(tx: ModuleDb, workspaceId: string): Promise<void>;
     removeMember(tx: ModuleDb, workspaceId: string, userId: string): Promise<void>;
@@ -74,13 +148,29 @@ namespace Contract {
 /** Compiles only when `From` is assignable to `To`. */
 function assignable<To>(_value: To): void {}
 
+/** A value of type `T`, for the typecheck only. */
+function some<T>(): T {
+  return null as unknown as T;
+}
+
 describe("the contract's types (checked by the typecheck)", () => {
   it("a host's ModuleHost is a DevSyncHost, and serverModule is a ServerModule", () => {
-    const host = null as unknown as Contract.ModuleHost;
-    assignable<DevSyncHost>(host);
+    assignable<DevSyncHost>(some<Contract.ModuleHost>());
     assignable<Contract.ServerModule>(serverModule);
-    const member = null as unknown as Contract.Member;
-    assignable<Member>(member);
+    assignable<Member>(some<Contract.Member>());
+    expect(true).toBe(true);
+  });
+
+  it("DevSync's copies of the host's GitHub types are the contract's, both ways", () => {
+    assignable<DevSyncGithub>(some<Contract.ModuleGithub>());
+    assignable<Contract.ModuleGithub>(some<DevSyncGithub>());
+    assignable<GithubFailure>(some<Contract.GithubFailure>());
+    assignable<Contract.GithubFailure>(some<GithubFailure>());
+    assignable<GithubJob>(some<Contract.ModuleGithubJob>());
+    assignable<Contract.ModuleGithubJob>(some<GithubJob>());
+    // Every fact the host sends is one the devsync.github queue's schema can take.
+    assignable<z.input<typeof GithubJobSchema>>(some<Contract.ModuleGithubJob>());
+    assignable<GithubJob>(some<z.output<typeof GithubJobSchema>>());
     expect(true).toBe(true);
   });
 });
@@ -124,13 +214,21 @@ describe("the opscrewModule manifest", () => {
     }
     expect(serverModule.github).toBe(true);
     expect(Object.keys(serverModule.jobs)).toContain(`${manifest.id}.github`);
+    // The host's rule for `workflows`: bare `*.yml` or `*.yaml` names, and `github` with them.
+    expect(serverModule.workflows).toEqual(["devsync.yml"]);
+    for (const file of serverModule.workflows) expect(file).toMatch(/^[\w.-]+\.ya?ml$/);
   });
 });
 
 describe("serverModule", () => {
   it("has its jobs, routes and removal hooks", () => {
-    expect(Object.keys(serverModule.jobs).sort()).toEqual(["devsync.github", "devsync.outbox"]);
+    expect(Object.keys(serverModule.jobs).sort()).toEqual([
+      "devsync.github",
+      "devsync.outbox",
+      "devsync.runs",
+    ]);
     expect(serverModule.jobs["devsync.outbox"].cron).toBe("* * * * *");
+    expect(serverModule.jobs["devsync.runs"].cron).toBe("*/10 * * * *");
     for (const job of Object.values(serverModule.jobs)) {
       expect(typeof job.handler).toBe("function");
       expect(job.retryLimit).toBeGreaterThan(0);

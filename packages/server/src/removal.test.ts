@@ -190,4 +190,11 @@ describe("removeMember", () => {
       { projectId: projectC, assignee: userId, version: 1 },
     ]);
   });
+
+  it("keeps the runs they asked for, with their id", async () => {
+    await removeMember(testDb.db, workspaceId, userId);
+    expect(await counts(projectA)).toMatchObject({ run: 1 });
+    const rows = await testDb.db.select().from(run).where(eq(run.projectId, projectA));
+    expect(rows.map((r) => r.requestedByUserId)).toEqual([userId]);
+  });
 });

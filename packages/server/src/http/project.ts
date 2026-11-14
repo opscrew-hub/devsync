@@ -16,6 +16,9 @@ import {
   MemberList,
   PullRequestLink,
   PullRequestList,
+  Run,
+  RunList,
+  RunSetup,
   Task,
   TaskDetail,
   TaskInput,
@@ -26,6 +29,7 @@ import {
 import { Hono, type MiddlewareHandler } from "hono";
 import { listAgents, registerAgent, revokeAgent, rotateAgent } from "../domain/agents";
 import { listPullRequests } from "../domain/pull-requests";
+import { approveRun, cancelRun, listRuns, rejectRun, requestRun, runSetup } from "../domain/runs";
 import { publishSignal } from "../domain/signals";
 import {
   commentOnTask,
@@ -42,6 +46,8 @@ const REFUSED = {
   "task.write":
     "Your role can't change this project's tasks. Ask an Owner or Admin for a role that can.",
   "agent.manage": "Only an Owner or Admin can register, rotate or revoke agents. Ask one of them.",
+  "run.request": "Your role can't ask for managed runs. Ask an Owner or Admin for a role that can.",
+  "run.decide": "Only an Owner, Admin or Approver can approve or reject a run. Ask one of them.",
 } as const;
 
 /** Refuses a member whose role may not do `action`. */
@@ -60,6 +66,7 @@ export function projectRoutes(host: DevSyncHost): Hono<ProjectEnv> {
   app.use(noStore);
   const write = allow("task.write");
   const manage = allow("agent.manage");
+  const decide = allow("run.decide");
 
   app.get("/tasks", async (c) => {
     const query = readQuery(c, TaskListQuery);
@@ -86,6 +93,24 @@ export function projectRoutes(host: DevSyncHost): Hono<ProjectEnv> {
     const task = await linkPullRequest(host, c.get("module"), c.req.param("taskId"), input);
     return answer(c, Task, task);
   });
+
+  app.get("/tasks/:taskId/runs", async (c) =>
+    answer(c, RunList, await listRuns(host, c.get("module"), c.req.param("taskId"))),
+  );
+  app.post("/tasks/:taskId/runs", allow("run.request"), async (c) =>
+    answer(c, Run, await requestRun(host, c.get("module"), c.req.param("taskId")), 201),
+  );
+  app.get("/runs/setup", async (c) => answer(c, RunSetup, await runSetup(host, c.get("module"))));
+  app.post("/runs/:runId/approve", decide, async (c) =>
+    answer(c, Run, await approveRun(host, c.get("module"), c.req.param("runId"))),
+  );
+  app.post("/runs/:runId/reject", decide, async (c) =>
+    answer(c, Run, await rejectRun(host, c.get("module"), c.req.param("runId"))),
+  );
+  // The requester may cancel too: the domain checks who asks.
+  app.post("/runs/:runId/cancel", async (c) =>
+    answer(c, Run, await cancelRun(host, c.get("module"), c.req.param("runId"))),
+  );
 
   app.get("/pull-requests", async (c) =>
     answer(c, PullRequestList, await listPullRequests(host, c.get("module"))),

@@ -7,6 +7,7 @@
 import { z } from "zod";
 import { deliverDue } from "./domain/delivery";
 import { applyGithubFact, GithubJob } from "./domain/pull-requests";
+import { dispatchRun, sweepRuns } from "./domain/runs";
 import type { DevSyncHost, QueueName } from "./host";
 
 /** A queue, as the host's worker runs it: the shape of the host's own jobs. */
@@ -29,6 +30,17 @@ const OUTBOX_MAX_BATCHES = 50;
 
 /** `devsync.outbox`'s payload: a project's wake-up (`wakeOutbox`), or the cron's empty one. */
 const OutboxJob = z.object({ projectId: z.uuid().optional() }).nullish();
+
+/**
+ * `devsync.runs`' payload: an approved run to dispatch (`approveRun`), or the schedule's empty one
+ * (the sweep).
+ */
+const RunsJob = z
+  .object({ projectId: z.uuid().optional(), runId: z.uuid().optional() })
+  .nullish()
+  .refine((job) => (job?.projectId === undefined) === (job?.runId === undefined), {
+    path: ["runId"],
+  });
 
 /** Parses a job's payload, refusing it with the invalid fields' names (never their values). */
 function parsePayload<T extends z.ZodType>(queue: QueueName, schema: T, payload: unknown) {
@@ -58,6 +70,23 @@ export const jobs = {
       await applyGithubFact(host, parsePayload("devsync.github", GithubJob, payload));
     },
     retryLimit: 5,
+    retryBackoff: true,
+  },
+  /**
+   * Dispatches an approved run to the project's workflow; on its schedule, sweeps the runs whose
+   * dispatch didn't happen and those still in GitHub six hours after they started.
+   */
+  "devsync.runs": {
+    async handler(payload, host) {
+      const job = parsePayload("devsync.runs", RunsJob, payload);
+      if (job?.projectId && job.runId) {
+        await dispatchRun(host, { projectId: job.projectId, runId: job.runId });
+      } else {
+        await sweepRuns(host);
+      }
+    },
+    cron: "*/10 * * * *",
+    retryLimit: 3,
     retryBackoff: true,
   },
 } satisfies Record<QueueName, DevSyncJob>;

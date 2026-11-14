@@ -43,6 +43,7 @@ import {
 } from "../db";
 import {
   type AgentActor,
+  type AuditActor,
   type DevSyncDb,
   DevSyncError,
   type DevSyncHost,
@@ -151,7 +152,7 @@ function taskIdOf(taskId: string): string {
   return taskId;
 }
 
-function inProject(project: ProjectRef, taskId: string): SQL {
+function inProject(project: Pick<ProjectRef, "workspaceId" | "projectId">, taskId: string): SQL {
   return and(
     eq(task.id, taskId),
     eq(task.projectId, project.projectId),
@@ -703,21 +704,39 @@ export async function linkPullRequest(
       }
     }
     if (current.pullRequestNumber !== number) {
-      await tx
-        .update(task)
-        .set({ pullRequestNumber: number, version: current.version + 1, updatedAt: at })
-        .where(inProject(project, id));
-      await host.audit(
-        tx,
-        { userId: member.userId },
-        {
-          workspaceId: project.workspaceId,
-          projectId: project.projectId,
-          action: "devsync.task.pull_request_linked",
-          detail: { taskId: id, previousNumber: current.pullRequestNumber, number },
-        },
-      );
+      const link = { taskId: id, current, number, at };
+      await writePullRequestLink(host, tx, { userId: member.userId }, project, link);
     }
     return loadTask(tx, project, id);
+  });
+}
+
+/**
+ * Links the task to pull request `number` (or unlinks it) in `tx`, the task's row locked and read
+ * as `current`: its version bumped, and the change audited. A member's link and a finished run's
+ * draft pull request both go through it.
+ */
+export async function writePullRequestLink(
+  host: DevSyncHost,
+  tx: DevSyncDb,
+  actor: AuditActor,
+  project: Pick<ProjectRef, "workspaceId" | "projectId">,
+  link: {
+    taskId: string;
+    current: { pullRequestNumber: number | null; version: number };
+    number: number | null;
+    at: Date;
+  },
+): Promise<void> {
+  const { taskId, current, number, at } = link;
+  await tx
+    .update(task)
+    .set({ pullRequestNumber: number, version: current.version + 1, updatedAt: at })
+    .where(inProject(project, taskId));
+  await host.audit(tx, actor, {
+    workspaceId: project.workspaceId,
+    projectId: project.projectId,
+    action: "devsync.task.pull_request_linked",
+    detail: { taskId, previousNumber: current.pullRequestNumber, number },
   });
 }

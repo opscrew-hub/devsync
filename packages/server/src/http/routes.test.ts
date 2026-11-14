@@ -7,6 +7,9 @@ import {
   MemberList,
   PullRequestList,
   type Role,
+  Run,
+  RunList,
+  RunSetup,
   Task,
   TaskDetail,
   TaskList,
@@ -478,6 +481,127 @@ describe("project routes", () => {
     expect(host.errors[1]).toContain("The audit log is unavailable.");
     expect(host.errors[1]).not.toContain("Secret name");
     expect((await as("owner")("GET", "/agents")).body).toEqual({ agents: [] });
+  });
+});
+
+describe("project run routes", () => {
+  /** A Ready task of the project, made by the owner. */
+  async function readyTask(s: ReturnType<typeof setup>, on?: ProjectRef) {
+    const created = await createTask(s.host, s.ctx("owner", on), newTask);
+    return updateTask(s.host, s.ctx("owner", on), created.id, {
+      version: created.version,
+      status: "READY",
+    });
+  }
+
+  it("answer the setup, ask for a run, approve it and list the task's runs", async () => {
+    const s = setup();
+    const ready = await readyTask(s);
+    const developer = s.as("developer");
+
+    const setupAnswer = await developer("GET", "/runs/setup");
+    expect(setupAnswer.status).toBe(200);
+    expect(RunSetup.parse(setupAnswer.body)).toEqual({ workflow: true, secret: true, missing: [] });
+    expect(setupAnswer.headers.get("cache-control")).toBe("no-store");
+
+    const asked = await developer("POST", `/tasks/${ready.id}/runs`);
+    expect(asked.status).toBe(201);
+    const run = Run.parse(asked.body);
+    expect(run).toMatchObject({ taskId: ready.id, revision: 1, status: "REQUESTED" });
+
+    const approved = await s.as("approver")("POST", `/runs/${run.id}/approve`);
+    expect(approved.status).toBe(200);
+    expect(Run.parse(approved.body)).toMatchObject({
+      id: run.id,
+      status: "QUEUED",
+      decidedBy: { kind: "member", name: "The approver" },
+    });
+
+    const listed = await developer("GET", `/tasks/${ready.id}/runs`);
+    expect(listed.status).toBe(200);
+    expect(RunList.parse(listed.body).runs.map((r) => [r.id, r.status])).toEqual([
+      [run.id, "QUEUED"],
+    ]);
+  });
+
+  it("answer 409 with the setup's words while the repository lacks the workflow or the key", async () => {
+    const s = setup();
+    const ready = await readyTask(s);
+    s.host.github.repository = { workflow: false, secrets: [] };
+    const missing = RunSetup.parse((await s.as("owner")("GET", "/runs/setup")).body).missing;
+    expect(missing).toEqual([
+      "Add .github/workflows/devsync.yml from the runs section to the repository's default branch.",
+      "Add the ANTHROPIC_API_KEY Actions secret to the repository or its organization.",
+    ]);
+    const refused = refusal(
+      await s.as("developer")("POST", `/tasks/${ready.id}/runs`),
+      409,
+      "conflict",
+    );
+    expect(refused.message).toBe(missing.join(" "));
+    expect((await s.as("developer")("GET", `/tasks/${ready.id}/runs`)).body).toEqual({ runs: [] });
+
+    s.host.github.fail.setup = "not-found";
+    refusal(await s.as("owner")("GET", "/runs/setup"), 404, "not-found");
+  });
+
+  describe.each(ROLES)("a member who is %s", (role) => {
+    const decides = role !== "developer";
+
+    it(`asks for runs, cancels their own, and ${decides ? "decides" : "can't decide"} runs`, async () => {
+      const s = setup();
+      const member = s.as(role);
+      const one = Run.parse(
+        (await s.as("developer")("POST", `/tasks/${(await readyTask(s)).id}/runs`)).body,
+      );
+      const two = Run.parse(
+        (await s.as("developer")("POST", `/tasks/${(await readyTask(s)).id}/runs`)).body,
+      );
+
+      const approve = await member("POST", `/runs/${one.id}/approve`);
+      const reject = await member("POST", `/runs/${two.id}/reject`);
+      if (decides) {
+        expect(Run.parse(approve.body).status).toBe("QUEUED");
+        expect(Run.parse(reject.body).status).toBe("REJECTED");
+      } else {
+        for (const answer of [approve, reject]) {
+          expect(refusal(answer, 403, "forbidden").message).toBe(
+            "Only an Owner, Admin or Approver can approve or reject a run. Ask one of them.",
+          );
+        }
+      }
+
+      const ready = await readyTask(s);
+      const own = await member("POST", `/tasks/${ready.id}/runs`);
+      expect(own.status).toBe(201);
+      const cancelled = await member("POST", `/runs/${Run.parse(own.body).id}/cancel`);
+      expect(cancelled.status).toBe(200);
+      expect(Run.parse(cancelled.body).status).toBe("CANCELLED");
+
+      const theirs = Run.parse(
+        (await s.as(role === "owner" ? "admin" : "owner")("POST", `/tasks/${ready.id}/runs`)).body,
+      );
+      const cancel = await member("POST", `/runs/${theirs.id}/cancel`);
+      if (decides) expect(cancel.status).toBe(200);
+      else refusal(cancel, 403, "forbidden");
+    });
+  });
+
+  it("don't find another project's tasks or runs", async () => {
+    const s = setup();
+    const theirs = await readyTask(s, s.other);
+    const theirRun = Run.parse(
+      (await s.as("developer", s.other)("POST", `/tasks/${theirs.id}/runs`)).body,
+    );
+    const owner = s.as("owner");
+    refusal(await owner("GET", `/tasks/${theirs.id}/runs`), 404, "not-found");
+    refusal(await owner("POST", `/tasks/${theirs.id}/runs`), 404, "not-found");
+    for (const action of ["approve", "reject", "cancel"]) {
+      refusal(await owner("POST", `/runs/${theirRun.id}/${action}`), 404, "not-found");
+      refusal(await owner("POST", `/runs/not-a-uuid/${action}`), 404, "not-found");
+    }
+    const unchanged = await s.as("owner", s.other)("GET", `/tasks/${theirs.id}/runs`);
+    expect(RunList.parse(unchanged.body).runs.map((r) => r.status)).toEqual(["REQUESTED"]);
   });
 });
 

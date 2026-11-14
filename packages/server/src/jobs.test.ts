@@ -1,7 +1,9 @@
 import { eq, isNull } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { outboxEvent, pullRequest, signal } from "./db";
+import { outboxEvent, pullRequest, run, signal } from "./db";
 import { registerAgent } from "./domain/agents";
+import { approveRun, requestRun } from "./domain/runs";
+import { createTask, updateTask } from "./domain/tasks";
 import type { ProjectRef } from "./host";
 import { jobs } from "./jobs";
 import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "./testing";
@@ -35,12 +37,14 @@ async function setup() {
 }
 
 describe("jobs", () => {
-  it("names DevSync's two queues with their schedules and retries", () => {
-    expect(Object.keys(jobs).sort()).toEqual(["devsync.github", "devsync.outbox"]);
+  it("names DevSync's three queues with their schedules and retries", () => {
+    expect(Object.keys(jobs).sort()).toEqual(["devsync.github", "devsync.outbox", "devsync.runs"]);
     expect(jobs["devsync.outbox"].cron).toBe("* * * * *");
     expect(jobs["devsync.outbox"].retryLimit).toBeGreaterThan(0);
     expect("cron" in jobs["devsync.github"]).toBe(false);
     expect(jobs["devsync.github"].retryLimit).toBeGreaterThan(0);
+    expect(jobs["devsync.runs"].cron).toBe("*/10 * * * *");
+    expect(jobs["devsync.runs"].retryLimit).toBeGreaterThan(0);
   });
 });
 
@@ -137,5 +141,36 @@ describe("devsync.github", () => {
       jobs["devsync.github"].handler({ projectId: project.projectId, fact: {} }, host),
     ).rejects.toThrow(/workspaceId/);
     expect(await testDb.db.select().from(pullRequest)).toEqual([]);
+  });
+});
+
+describe("devsync.runs", () => {
+  it("dispatches an approved run, sweeps on its schedule, and refuses half a payload", async () => {
+    const { host, project, owner } = await setup();
+    const ctx = { project, member: owner };
+    const created = await createTask(host, ctx, {
+      title: "Add a health check",
+      description: "",
+      acceptanceCriteria: "",
+    });
+    await updateTask(host, ctx, created.id, { version: created.version, status: "READY" });
+    const asked = await requestRun(host, ctx, created.id);
+    await approveRun(host, ctx, asked.id);
+
+    await expect(jobs["devsync.runs"].handler({ runId: asked.id }, host)).rejects.toThrow(
+      "DevSync's devsync.runs job has an invalid payload: runId.",
+    );
+    await expect(
+      jobs["devsync.runs"].handler({ projectId: project.projectId, runId: "nope" }, host),
+    ).rejects.toThrow("DevSync's devsync.runs job has an invalid payload: runId.");
+    // The schedule's empty payloads sweep: this run waited less than ten minutes.
+    await jobs["devsync.runs"].handler(null, host);
+    await jobs["devsync.runs"].handler({}, host);
+    expect(host.github.dispatches).toEqual([]);
+
+    await jobs["devsync.runs"].handler({ projectId: project.projectId, runId: asked.id }, host);
+    expect(host.github.dispatches.map((d) => d.inputs.run_id)).toEqual([asked.id]);
+    const [row] = await testDb.db.select().from(run).where(eq(run.id, asked.id));
+    expect(row?.status).toBe("RUNNING");
   });
 });

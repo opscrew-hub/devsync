@@ -1,7 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import { pgSchema, text } from "drizzle-orm/pg-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createTestDb, fakeHost, fakeToken, type TestDb } from "../testing";
+import { artifactFiles, createTestDb, fakeHost, fakeToken, type TestDb } from "../testing";
 import {
   agent,
   devsyncSchema,
@@ -44,9 +44,9 @@ describe("the devsync schema's migration", () => {
     expect(migrations.folder).toMatch(/migrations$/);
   });
 
-  it("applies twice, journaled once in devsync.__drizzle_migrations", async () => {
+  it("applies twice, each migration journaled once in devsync.__drizzle_migrations", async () => {
     await testDb.migrate();
-    expect(await testDb.db.select().from(journal)).toHaveLength(1);
+    expect(await testDb.db.select().from(journal)).toHaveLength(2);
     const tables = await testDb.db
       .select({ name: catalog.tableName })
       .from(catalog)
@@ -181,6 +181,49 @@ describe("the devsync schema's migration", () => {
     await testDb.db.insert(pullRequest).values(row);
     await expect(testDb.db.insert(pullRequest).values(row)).rejects.toThrow();
   });
+
+  it("keeps one run that hasn't ended per task, and GitHub's run id once per project", async () => {
+    const { db } = testDb;
+    const scope = { workspaceId, projectId };
+    const newTask = async () => {
+      const [t] = await db
+        .insert(task)
+        .values({ ...scope, title: "T", description: "", acceptanceCriteria: "" })
+        .returning();
+      if (!t) throw new Error("no task");
+      return t.id;
+    };
+    const taskId = await newTask();
+    const runOf = (status: (typeof run.$inferInsert)["status"], githubRunId?: number) => ({
+      ...scope,
+      taskId,
+      revision: 1,
+      requestedByUserId: userId,
+      status,
+      githubRunId,
+    });
+
+    for (const status of ["SUCCEEDED", "FAILED", "REJECTED", "CANCELLED", "FAILED"] as const) {
+      await db.insert(run).values(runOf(status));
+    }
+    await db.insert(run).values(runOf("REQUESTED"));
+    for (const status of ["REQUESTED", "QUEUED", "RUNNING"] as const) {
+      await expect(db.insert(run).values(runOf(status))).rejects.toThrow();
+    }
+    await db
+      .update(run)
+      .set({ status: "CANCELLED" })
+      .where(sql`${run.taskId} = ${taskId} and ${run.status} = 'REQUESTED'`);
+    await db.insert(run).values(runOf("RUNNING", 41));
+
+    const otherTask = await newTask();
+    await expect(
+      db.insert(run).values({ ...runOf("FAILED", 41), taskId: otherTask }),
+    ).rejects.toThrow();
+    await db
+      .insert(run)
+      .values({ ...runOf("FAILED", 41), taskId: otherTask, projectId: crypto.randomUUID() });
+  });
 });
 
 describe("fakeHost", () => {
@@ -203,6 +246,64 @@ describe("fakeHost", () => {
 
     host.directory.projects = [];
     expect(await host.project(projectId)).toBeNull();
+  });
+
+  it("has a GitHub that records dispatches, serves artifacts and answers scripted failures", async () => {
+    const project = { workspaceId, projectId, fullName: "acme/app", readOnly: false };
+    const { github } = fakeHost(testDb.db, { projects: [project] });
+
+    expect(await github.setup(projectId, "devsync.yml")).toEqual({
+      ok: true,
+      workflow: true,
+      secrets: ["ANTHROPIC_API_KEY"],
+    });
+    expect(await github.setup(crypto.randomUUID(), "devsync.yml")).toEqual({
+      ok: false,
+      failure: "not-found",
+    });
+    expect(await github.dispatch(projectId, "other.yml", {})).toEqual({
+      ok: false,
+      failure: "not-found",
+    });
+
+    const started = await github.dispatch(projectId, "devsync.yml", { run_id: "r" });
+    if (!started.ok) throw new Error("not dispatched");
+    expect(started.url).toBe(`https://github.com/acme/app/actions/runs/${started.githubRunId}`);
+    expect(github.dispatches).toEqual([
+      {
+        projectId,
+        workflow: "devsync.yml",
+        inputs: { run_id: "r" },
+        githubRunId: started.githubRunId,
+      },
+    ]);
+
+    github.artifacts.push({
+      githubRunId: started.githubRunId,
+      name: "devsync-result",
+      files: artifactFiles({ "result.json": "{}" }),
+    });
+    const read = await github.artifact(projectId, started.githubRunId, "devsync-result");
+    expect(read.ok && new TextDecoder().decode(read.files?.get("result.json"))).toBe("{}");
+    expect(await github.artifact(projectId, started.githubRunId, "devsync-patch")).toEqual({
+      ok: true,
+      files: null,
+    });
+    expect(await github.deleteArtifact(projectId, started.githubRunId, "devsync-result")).toEqual({
+      ok: true,
+    });
+    expect(github.artifacts).toEqual([]);
+    expect(github.deleted).toEqual([
+      { projectId, githubRunId: started.githubRunId, name: "devsync-result" },
+    ]);
+
+    github.fail.dispatch = "workflow-missing";
+    expect(await github.dispatch(projectId, "devsync.yml", {})).toEqual({
+      ok: false,
+      failure: "workflow-missing",
+    });
+    github.repository.secrets = [];
+    expect(await github.setup(projectId, "devsync.yml")).toMatchObject({ secrets: [] });
   });
 
   it("takes the time it is given", () => {

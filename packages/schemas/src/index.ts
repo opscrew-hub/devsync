@@ -7,5 +7,6 @@ export * from "./mcp";
 export * from "./members";
 export * from "./permissions";
 export * from "./roles";
+export * from "./runs";
 export * from "./tasks";
 export * from "./workflow";

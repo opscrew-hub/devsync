@@ -11,6 +11,7 @@ import type { DevSyncDb, DevSyncHost } from "./host";
 import { projectRoutes, publicRoutes, workspaceRoutes } from "./http";
 import { type DevSyncJob, jobs } from "./jobs";
 import { removeMember, removeProject, removeWorkspace } from "./removal";
+import { WORKFLOW_FILE } from "./workflow";
 
 /** What a module gives the host: the contract's `ServerModule`, over `DevSyncHost`. */
 export interface ServerModule {
@@ -29,6 +30,8 @@ export interface ServerModule {
   jobs?: Record<string, DevSyncJob>;
   /** Receives `<id>.github` jobs; it must then have that queue. */
   github?: boolean;
+  /** The workflow files it starts in projects' repositories (names in `.github/workflows/`); needs `github`. */
+  workflows?: readonly string[];
   /** Called in the transaction that removes the project, hard-deletes the workspace or removes the member. */
   removeProject(tx: DevSyncDb, projectId: string): Promise<void>;
   removeWorkspace(tx: DevSyncDb, workspaceId: string): Promise<void>;
@@ -42,6 +45,7 @@ export const serverModule = {
   publicRoutes,
   jobs,
   github: true,
+  workflows: [WORKFLOW_FILE],
   removeProject,
   removeWorkspace,
   removeMember,

@@ -74,7 +74,93 @@ export interface AuditEntry {
 export type AuditActor = { userId: string } | "host";
 
 /** DevSync's queues, run by the host's worker. */
-export type QueueName = "devsync.outbox" | "devsync.github";
+export type QueueName = "devsync.outbox" | "devsync.github" | "devsync.runs";
+
+/**
+ * One GitHub delivery for a project with DevSync on, as the host forwards it on `devsync.github`
+ * (the contract's `GithubFact`). A `workflow_run` fact comes only for a completed run DevSync
+ * started (`github.dispatch`), while DevSync is on for the project.
+ */
+export type GithubFact =
+  | {
+      kind: "push";
+      deliveryId: string;
+      ref: string;
+      before: string;
+      after: string;
+      defaultBranch: boolean;
+    }
+  | {
+      kind: "pull_request";
+      deliveryId: string;
+      action: string;
+      number: number;
+      title: string;
+      state: "open" | "closed";
+      merged: boolean;
+      url: string;
+      headRef: string;
+      headSha: string;
+      updatedAt: string;
+    }
+  | { kind: "workflow_run"; deliveryId: string; githubRunId: number; conclusion: string | null };
+
+/** A `devsync.github` job's payload (the contract's `ModuleGithubJob`). */
+export interface GithubJob {
+  workspaceId: string;
+  projectId: string;
+  fact: GithubFact;
+}
+
+/** Why a call to the project's Actions failed (the contract's `GithubFailure`). */
+export type GithubFailure =
+  /** The project isn't connected, or DevSync is off for it. */
+  | "not-found"
+  /** The host has no GitHub App, or GitHub didn't answer. */
+  | "unavailable"
+  /** The workflow file isn't on the default branch. */
+  | "workflow-missing"
+  /** The workflow is disabled, or GitHub refused its inputs. */
+  | "workflow-disabled"
+  /** Actions is off for the repository, or the host's App can't start the workflow. */
+  | "forbidden";
+
+/**
+ * DevSync's workflow (`serverModule.workflows`) in a project's repository, through the host's
+ * GitHub App (the contract's `ModuleGithub`). Every call takes a project with DevSync on and the
+ * workflow file DevSync declared; none throws GitHub's errors.
+ */
+export interface DevSyncGithub {
+  /** The workflow file on the default branch, and the names of the Actions secrets its runs can read. */
+  setup(
+    projectId: string,
+    workflow: string,
+  ): Promise<
+    { ok: true; workflow: boolean; secrets: string[] } | { ok: false; failure: GithubFailure }
+  >;
+  /** Starts the workflow on the default branch with `inputs` and records the run for DevSync. */
+  dispatch(
+    projectId: string,
+    workflow: string,
+    inputs: Record<string, string>,
+  ): Promise<
+    { ok: true; githubRunId: number; url: string } | { ok: false; failure: GithubFailure }
+  >;
+  /** The files of the artifact `name` of a run DevSync started in the project; null when it has none. */
+  artifact(
+    projectId: string,
+    githubRunId: number,
+    name: string,
+  ): Promise<
+    { ok: true; files: Map<string, Uint8Array> | null } | { ok: false; failure: GithubFailure }
+  >;
+  /** Deletes that artifact; a missing one counts as deleted. */
+  deleteArtifact(
+    projectId: string,
+    githubRunId: number,
+    name: string,
+  ): Promise<{ ok: true } | { ok: false; failure: GithubFailure }>;
+}
 
 export interface DevSyncHost {
   db: DevSyncDb;
@@ -98,6 +184,8 @@ export interface DevSyncHost {
     payload: Record<string, unknown>,
     options?: { singleton?: { key: string; seconds: number } },
   ): Promise<void>;
+  /** DevSync's workflow in the project's repository: its managed runs. */
+  github: DevSyncGithub;
 }
 
 /** The error codes DevSync answers with, and their HTTP statuses: the dashboard's own. */
