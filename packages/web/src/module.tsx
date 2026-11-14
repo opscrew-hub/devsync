@@ -73,21 +73,25 @@ function Provider({
   apiBase,
   userId,
   role,
+  readOnly,
   ui,
   children,
-}: ModulePageProps & { children: ReactNode }) {
+}: ModulePageProps & { readOnly?: boolean; children: ReactNode }) {
   const pieces = useMemo(() => devSyncUi(ui), [ui]);
   return (
-    <DevSyncProvider apiBase={apiBase} userId={userId} role={role} ui={pieces}>
+    <DevSyncProvider apiBase={apiBase} userId={userId} role={role} readOnly={readOnly} ui={pieces}>
       {children}
     </DevSyncProvider>
   );
 }
 
-/** A project's DevSync tab; the open task is the query's `?task=`. */
-function ModuleProjectTab({ query, setQuery, ...page }: ModuleProjectTabProps) {
+/**
+ * A project's DevSync tab; the open task is the query's `?task=`. A read-only project (the host's
+ * `readOnly`, which a disconnected one is too) locks every action.
+ */
+function ModuleProjectTab({ project, query, setQuery, ...page }: ModuleProjectTabProps) {
   return (
-    <Provider {...page}>
+    <Provider {...page} readOnly={project.readOnly}>
       <ProjectTab selectedTaskId={query.get("task")} onSelectTask={(task) => setQuery({ task })} />
     </Provider>
   );

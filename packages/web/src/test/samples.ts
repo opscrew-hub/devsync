@@ -1,4 +1,4 @@
-import type { Agent, Member, PullRequest, Task, TaskDetail } from "@devsync/schemas";
+import type { Agent, Member, PullRequest, Run, RunSetup, Task, TaskDetail } from "@devsync/schemas";
 import { id, ME } from "./render";
 
 export const PROJECT = id(50);
@@ -107,4 +107,40 @@ export const agent: Agent = {
   expiresAt: "2026-11-14T08:12:00Z",
   lastSeenAt: at,
   createdAt: at,
+};
+
+/** A run of `detail` at its current revision, asked for by Ben, waiting for approval. */
+export function run(n: number, fields: Partial<Run> = {}): Run {
+  return {
+    id: id(n),
+    taskId: detail.id,
+    revision: 2,
+    status: "REQUESTED",
+    requestedBy: { kind: "member", userId: BEN, name: "Ben Okafor" },
+    decidedBy: null,
+    createdAt: at,
+    decidedAt: null,
+    startedAt: null,
+    finishedAt: null,
+    failure: null,
+    changedFiles: null,
+    usage: null,
+    draftPullRequestUrl: null,
+    githubRunUrl: null,
+    ...fields,
+  };
+}
+
+/** The setup's words, as the server answers them. */
+export const SETUP_WORDS = {
+  workflow:
+    "Add .github/workflows/devsync.yml from the runs section to the repository's default branch.",
+  secret: "Add the ANTHROPIC_API_KEY Actions secret to the repository or its organization.",
+} as const;
+
+export const setupComplete: RunSetup = { workflow: true, secret: true, missing: [] };
+export const setupMissing: RunSetup = {
+  workflow: false,
+  secret: false,
+  missing: [SETUP_WORDS.workflow, SETUP_WORDS.secret],
 };

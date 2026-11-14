@@ -6,7 +6,16 @@ import type { ComponentType, FormEvent, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type ModuleProjectTabProps, type ModuleWorkspacePageProps, webModule } from "./module";
 import { fakeFetch, id, ME, type Reply } from "./test/render";
-import { agent, detail, members, PROJECT, pullRequests, task, tasks } from "./test/samples";
+import {
+  agent,
+  detail,
+  members,
+  PROJECT,
+  pullRequests,
+  setupComplete,
+  task,
+  tasks,
+} from "./test/samples";
 
 afterEach(() => {
   cleanup();
@@ -69,14 +78,14 @@ function host(element: ReactNode, apiBase: string, routes: Record<string, Reply>
   return fake;
 }
 
-function projectTab(query: string) {
+function projectTab(query: string, readOnly = false) {
   const setQuery = vi.fn<ModuleProjectTabProps["setQuery"]>();
   const props: ModuleProjectTabProps = {
     apiBase: PROJECT_API,
     userId: ME,
     role: "developer",
     ui,
-    project: { id: PROJECT, fullName: "acme/shop", readOnly: false },
+    project: { id: PROJECT, fullName: "acme/shop", readOnly },
     query: new URLSearchParams(query),
     setQuery,
   };
@@ -86,6 +95,8 @@ function projectTab(query: string) {
     "GET /agents": { body: { agents: [agent] } },
     "GET /pull-requests": { body: { pullRequests } },
     [`GET /tasks/${detail.id}`]: { body: detail },
+    [`GET /tasks/${detail.id}/runs`]: { body: { runs: [] } },
+    "GET /runs/setup": { body: setupComplete },
   });
   return { ...fake, setQuery };
 }
@@ -111,6 +122,20 @@ describe("webModule.ProjectTab", () => {
     projectTab("");
     expect(
       (await screen.findByRole("button", { name: /Register an agent/ })).hasAttribute("disabled"),
+    ).toBe(true);
+  });
+
+  it("locks every change on a read-only project", async () => {
+    projectTab(`task=${detail.id}`, true);
+    const panel = await screen.findByRole("region", { name: "Add the sign-up form" });
+    expect((await screen.findByRole("button", { name: /New task/ })).hasAttribute("disabled")).toBe(
+      true,
+    );
+    expect(
+      within(panel).getByRole("button", { name: "Edit the requirements" }).hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      within(panel).getByRole("button", { name: "Ask for a run" }).hasAttribute("disabled"),
     ).toBe(true);
   });
 });

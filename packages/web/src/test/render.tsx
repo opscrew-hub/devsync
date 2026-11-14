@@ -72,7 +72,7 @@ export const ME = id(1);
 
 export function renderWith(
   element: ReactElement,
-  options: { routes: Record<string, Reply>; role?: Role; apiBase?: string },
+  options: { routes: Record<string, Reply>; role?: Role; apiBase?: string; readOnly?: boolean },
 ) {
   const apiBase = options.apiBase ?? API;
   const fake = fakeFetch(options.routes, apiBase);
@@ -83,6 +83,7 @@ export function renderWith(
         apiBase={apiBase}
         userId={ME}
         role={options.role ?? "owner"}
+        readOnly={options.readOnly}
         ui={ui}
         fetch={fake.fetch}
       >

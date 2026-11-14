@@ -2,9 +2,13 @@ import {
   AgentList,
   MemberList,
   PullRequestList,
+  RunList,
+  RunSetup,
+  type RunStatus,
   TaskDetail,
   TaskList,
   type TaskStatus,
+  UNENDED_RUN_STATUSES,
   WorkspaceTaskList,
 } from "@devsync/schemas";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -33,6 +37,40 @@ export const usePullRequests = () =>
 export function useTask(taskId: string) {
   const path = `/tasks/${encodeURIComponent(taskId)}`;
   return useList(path, (api) => api.get(path, TaskDetail));
+}
+
+/** Whether a run hasn't ended: waiting for approval, approved, or in GitHub. */
+export function unended(run: { status: RunStatus }): boolean {
+  return (UNENDED_RUN_STATUSES as readonly RunStatus[]).includes(run.status);
+}
+
+/** A task's runs, newest first: read again with the panel only while one hasn't ended. */
+export function useRuns(taskId: string) {
+  const { api, apiBase } = useDevSync();
+  const path = `/tasks/${encodeURIComponent(taskId)}/runs`;
+  return useQuery({
+    queryKey: ["devsync", apiBase, path],
+    queryFn: () => api.get(path, RunList),
+    refetchInterval: (query) =>
+      query.state.data?.runs.some(unended) ? LIVE.refetchInterval : false,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/**
+ * What the repository has of what a run needs. Asking costs several GitHub calls, so it is read
+ * when the runs section opens and when the member asks again, never on a timer, on focus or after
+ * a change: its key is outside the `["devsync", apiBase]` that changes read again.
+ */
+export function useRunSetup() {
+  const { api, apiBase } = useDevSync();
+  return useQuery({
+    queryKey: ["devsync-setup", apiBase],
+    queryFn: () => api.get("/runs/setup", RunSetup),
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchOnMount: "always",
+    refetchInterval: false,
+  });
 }
 
 /** The workspace's tasks; without `status`, the open ones. */

@@ -65,6 +65,8 @@ export interface DevSyncProviderProps {
   /** The signed-in member's user id and role in the workspace. */
   userId: string;
   role: Role;
+  /** A read-only or disconnected project: the host refuses every change, so every action is locked. */
+  readOnly?: boolean;
   ui: DevSyncUi;
   /** Tests pass a fake; the dashboard leaves it out. */
   fetch?: FetchLike;
@@ -77,7 +79,7 @@ interface DevSyncContext {
   userId: string;
   role: Role;
   ui: DevSyncUi;
-  /** Whether the member may do `action`: locks the buttons the server would refuse. */
+  /** Whether the member may do `action` on this project: locks the buttons the server would refuse. */
   may: (action: Action) => boolean;
 }
 
@@ -88,6 +90,7 @@ export function DevSyncProvider({
   apiBase,
   userId,
   role,
+  readOnly = false,
   ui,
   fetch,
   children,
@@ -99,9 +102,9 @@ export function DevSyncProvider({
       userId,
       role,
       ui,
-      may: (action) => can(role, action),
+      may: (action) => !readOnly && can(role, action),
     }),
-    [apiBase, userId, role, ui, fetch],
+    [apiBase, userId, role, readOnly, ui, fetch],
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;
 }

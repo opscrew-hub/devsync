@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectTab } from "./ProjectTab";
 import { ME, type Reply, renderWith } from "./test/render";
-import { agent, detail, members, pullRequests, tasks } from "./test/samples";
+import { agent, detail, members, pullRequests, setupComplete, tasks } from "./test/samples";
 
 afterEach(cleanup);
 
@@ -16,6 +16,8 @@ function routes(task: TaskDetail = detail, extra: Record<string, Reply> = {}) {
     "GET /pull-requests": { body: { pullRequests } },
     [`GET /tasks/${task.id}`]: { body: task },
     [`PATCH /tasks/${task.id}`]: { body: task },
+    [`GET /tasks/${task.id}/runs`]: { body: { runs: [] } },
+    "GET /runs/setup": { body: setupComplete },
     ...extra,
   };
 }

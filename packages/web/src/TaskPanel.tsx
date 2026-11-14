@@ -17,8 +17,12 @@ import styles from "./devsync.module.css";
 import { authorName, Field, formatTime, Problem, RequirementFields, requirements } from "./parts";
 import { useDevSync } from "./provider";
 import { useChange, useMembers, usePullRequests, useTask } from "./queries";
+import { Runs } from "./Runs";
 
-/** The open task: its requirements, status, assignee, pull request, revisions, comments and timeline. */
+/**
+ * The open task: its requirements, status, assignee, pull request, managed runs, revisions, comments
+ * and timeline.
+ */
 export function TaskPanel({ taskId, onClose }: { taskId: string; onClose: () => void }) {
   const { ui } = useDevSync();
   const task = useTask(taskId);
@@ -117,6 +121,7 @@ function TaskBody({ task }: { task: TaskDetail }) {
       />
       <Problem error={update.error} />
       <PullRequestPicker task={task} />
+      <Runs task={task} />
       <Revisions task={task} />
       <Comments task={task} />
       <Timeline events={task.timeline} />
