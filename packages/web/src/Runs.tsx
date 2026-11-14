@@ -6,21 +6,25 @@ import {
   type RunStatus,
   type RunUsage,
   type TaskDetail,
+  UNENDED_RUN_STATUSES,
   WORKFLOW,
   WORKFLOW_FILE,
 } from "@devsync/schemas";
 import { useId, useState } from "react";
 import styles from "./devsync.module.css";
-import { authorName, DialogButtons, formatTime, Problem } from "./parts";
+import { authorName, DialogButtons, formatTime, GithubLink, Problem } from "./parts";
 import { type DevSyncIcon, useDevSync } from "./provider";
-import { unended, useChange, useRunSetup, useRuns } from "./queries";
+import { useChange, useRunSetup, useRuns } from "./queries";
 
 /** Where the user adds the workflow file in the repository. */
 const WORKFLOW_PATH = `.github/workflows/${WORKFLOW_FILE}`;
-/** Only GitHub's own addresses become links; anything else is shown as text. */
-const GITHUB = "https://github.com/";
 /** How many changed files show before the rest fold away. */
 const FILES_SHOWN = 10;
+
+/** The server's own words when it refuses approving a run whose task changed. */
+const CHANGED = "The task changed since this run was asked for. Cancel it and ask for a new run.";
+const DECIDERS =
+  "An Owner, Admin or Approver approves or rejects it; they or the member who asked for it can cancel it.";
 
 const STATUS: Record<RunStatus, [string, string, DevSyncIcon]> = {
   REQUESTED: ["Waiting for approval", "s-warning", "clock-counter-clockwise"],
@@ -43,28 +47,31 @@ const USD = new Intl.NumberFormat("en", {
 /** What an open dialog is for. */
 type Open = { kind: "ask" } | { kind: "approve"; run: Run };
 
+/** Whether a run hasn't ended: waiting for approval, approved, or in GitHub. */
+function unended(run: Run): boolean {
+  return (UNENDED_RUN_STATUSES as readonly RunStatus[]).includes(run.status);
+}
+
+/** Whether the server refuses approving `run`: its task is no longer Ready, or was edited since. */
+function taskChanged(task: TaskDetail, run: Run): boolean {
+  return task.status !== "READY" || task.revision !== run.revision;
+}
+
 /**
  * The task's managed runs: what the repository still needs, asking for a run on a Ready task, and
  * the runs with their state, decisions and results.
  */
 export function Runs({ task }: { task: TaskDetail }) {
-  const { ui, may, role, userId } = useDevSync();
+  const { ui, may } = useDevSync();
   const { Icon } = ui;
   const runs = useRuns(task.id);
   const setup = useRunSetup();
   const [open, setOpen] = useState<Open | null>(null);
   const heading = useId();
   const why = useId();
-  const reject = useChange(Id, (api, runId) =>
-    api.send("POST", `/runs/${runId}/reject`, undefined, Run),
-  );
-  const cancel = useChange(Id, (api, runId) =>
-    api.send("POST", `/runs/${runId}/cancel`, undefined, Run),
-  );
   const close = () => setOpen(null);
   const list = runs.data?.runs;
   const blocked = askBlocked(task, list, setup.data);
-  const decide = may("run.decide");
 
   return (
     <section className={styles.stack} aria-labelledby={heading}>
@@ -94,57 +101,18 @@ export function Runs({ task }: { task: TaskDetail }) {
           {blocked}
         </p>
       )}
-      <Problem error={runs.error ?? reject.error ?? cancel.error} />
+      <Problem error={runs.error} />
       {list?.length === 0 && <p className="sub">No runs yet.</p>}
       {list && list.length > 0 && (
         <ul className="feed" aria-label="Runs">
-          {list.map((run) => {
-            // The requester may cancel whatever their role: `may("run.request")`, which every role
-            // has, adds only a read-only project's lock.
-            const mine = run.requestedBy.kind === "member" && run.requestedBy.userId === userId;
-            return (
-              <li key={run.id}>
-                <Icon name="robot" />
-                <div className={styles.stack}>
-                  <RunFacts run={run} />
-                  {run.status === "REQUESTED" && (
-                    <>
-                      <fieldset className={styles.buttons} aria-label="Decide on the run">
-                        <button
-                          className="btn btn-sm btn-primary"
-                          type="button"
-                          disabled={!decide}
-                          onClick={() => setOpen({ kind: "approve", run })}
-                        >
-                          Approve
-                        </button>
-                        <button
-                          className="btn btn-sm btn-secondary bordered"
-                          type="button"
-                          disabled={!decide || reject.isPending}
-                          onClick={() => reject.mutate(run.id)}
-                        >
-                          Reject
-                        </button>
-                        <button
-                          className="btn btn-sm btn-danger bordered"
-                          type="button"
-                          disabled={!(decide || (mine && may("run.request"))) || cancel.isPending}
-                          onClick={() => cancel.mutate(run.id)}
-                        >
-                          Cancel the run
-                        </button>
-                      </fieldset>
-                      {!can(role, "run.decide") && (
-                        <p className="sub">An Owner, Admin or Approver approves or rejects it.</p>
-                      )}
-                    </>
-                  )}
-                  <RunResult run={run} />
-                </div>
-              </li>
-            );
-          })}
+          {list.map((run) => (
+            <RunItem
+              key={run.id}
+              task={task}
+              run={run}
+              onApprove={() => setOpen({ kind: "approve", run })}
+            />
+          ))}
         </ul>
       )}
       {open?.kind === "ask" && <Ask task={task} onClose={close} />}
@@ -168,8 +136,85 @@ function askBlocked(
 }
 
 /**
+ * One run: its facts, its result, and while it waits for approval, Approve and Reject for an
+ * Owner, Admin or Approver and Cancel for them or its requester, each locked button saying why.
+ */
+function RunItem({ task, run, onApprove }: { task: TaskDetail; run: Run; onApprove: () => void }) {
+  const { ui, may, role, userId, readOnly } = useDevSync();
+  const why = useId();
+  const reject = useChange(Id, (api, runId) =>
+    api.send("POST", `/runs/${runId}/reject`, undefined, Run),
+  );
+  const cancel = useChange(Id, (api, runId) =>
+    api.send("POST", `/runs/${runId}/cancel`, undefined, Run),
+  );
+  const decide = may("run.decide");
+  const mine = run.requestedBy.kind === "member" && run.requestedBy.userId === userId;
+  const changed = taskChanged(task, run);
+  const allowed = {
+    approve: decide && !changed,
+    reject: decide,
+    // The requester may cancel whatever their role.
+    cancel: decide || (mine && !readOnly),
+  };
+  const reason = [!can(role, "run.decide") && DECIDERS, changed && CHANGED]
+    .filter(Boolean)
+    .join(" ");
+  const describe = (ok: boolean) => (!ok && reason ? why : undefined);
+
+  return (
+    <li>
+      <ui.Icon name="robot" />
+      <div className={styles.stack}>
+        <RunFacts run={run} />
+        {run.status === "REQUESTED" && (
+          <>
+            <fieldset className={styles.buttons} aria-label="Decide on the run">
+              <button
+                className="btn btn-sm btn-primary"
+                type="button"
+                disabled={!allowed.approve}
+                aria-describedby={describe(allowed.approve)}
+                onClick={onApprove}
+              >
+                Approve
+              </button>
+              <button
+                className="btn btn-sm btn-secondary bordered"
+                type="button"
+                disabled={!allowed.reject || reject.isPending}
+                aria-describedby={describe(allowed.reject)}
+                onClick={() => reject.mutate(run.id)}
+              >
+                Reject
+              </button>
+              <button
+                className="btn btn-sm btn-danger bordered"
+                type="button"
+                disabled={!allowed.cancel || cancel.isPending}
+                aria-describedby={describe(allowed.cancel)}
+                onClick={() => cancel.mutate(run.id)}
+              >
+                Cancel the run
+              </button>
+            </fieldset>
+            {reason && (
+              <p className="sub" id={why}>
+                {reason}
+              </p>
+            )}
+            <Problem error={reject.error ?? cancel.error} />
+          </>
+        )}
+        <RunResult run={run} />
+      </div>
+    </li>
+  );
+}
+
+/**
  * What the repository still needs, in the server's words, with the workflow file to copy when it
- * is missing. Read when the section opens and on Check again only.
+ * is missing. Read once while the tab is in use, and again on Check again.
  */
 function Setup({ setup }: { setup: ReturnType<typeof useRunSetup> }) {
   const { Icon } = useDevSync().ui;
@@ -347,22 +392,13 @@ function ChangedFiles({ files }: { files: string[] }) {
 function FileList({ label, files }: { label: string; files: string[] }) {
   return (
     <ul className={styles.files} aria-label={label}>
-      {files.map((file) => (
-        <li key={file} className="mono">
+      {files.map((file, n) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: paths may repeat, and the list never reorders
+        <li key={`${n}:${file}`} className="mono">
           {file}
         </li>
       ))}
     </ul>
-  );
-}
-
-/** A link to GitHub, in a new tab; an address anywhere else is only shown. */
-function GithubLink({ url }: { url: string }) {
-  if (!url.startsWith(GITHUB)) return <span className={`mono ${styles.prose}`}>{url}</span>;
-  return (
-    <a className="cream" href={url} target="_blank" rel="noopener noreferrer">
-      {url.slice(GITHUB.length)}
-    </a>
   );
 }
 
@@ -411,33 +447,48 @@ function Ask({ task, onClose }: { task: TaskDetail; onClose: () => void }) {
   );
 }
 
+/**
+ * Approves a run after showing the text it is sent: the task's current revision, which is the
+ * run's. Once the task changes (an edit arriving while the dialog is open too), the server would
+ * refuse, so the dialog says so in its words and can't be submitted.
+ */
 function Approve({ task, run, onClose }: { task: TaskDetail; run: Run; onClose: () => void }) {
-  const { Dialog } = useDevSync().ui;
+  const { Dialog, Icon } = useDevSync().ui;
   const approve = useChange(Id, (api, runId) =>
     api.send("POST", `/runs/${runId}/approve`, undefined, Run),
   );
-  const revision = task.revisions.find((r) => r.number === run.revision);
+  const changed = taskChanged(task, run);
   return (
     <Dialog
       title="Approve the run"
       icon="check-circle"
       onSubmit={(event) => {
         event.preventDefault();
-        approve.mutate(run.id, { onSuccess: onClose });
+        if (!changed) approve.mutate(run.id, { onSuccess: onClose });
       }}
     >
       <p className="sub">
         Claude Code then works on revision {run.revision} of this task, as{" "}
         {authorName(run.requestedBy)} asked for it, in the repository's Actions and on its
-        ANTHROPIC_API_KEY secret. The run is sent this text:
+        ANTHROPIC_API_KEY secret.
       </p>
-      {revision ? (
-        <RunText text={revision} />
+      {changed ? (
+        <p className={`status s-warning ${styles.problem}`}>
+          <Icon name="warning" className="i-sm" />
+          {CHANGED}
+        </p>
       ) : (
-        <p className="sub">Reload the task to read revision {run.revision}'s text.</p>
+        <>
+          <p className="sub">The run is sent this text:</p>
+          <RunText text={task} />
+        </>
       )}
       <Problem error={approve.error} />
-      <DialogButtons label="Approve the run" pending={approve.isPending} onCancel={onClose} />
+      <DialogButtons
+        label="Approve the run"
+        pending={approve.isPending || changed}
+        onCancel={onClose}
+      />
     </Dialog>
   );
 }

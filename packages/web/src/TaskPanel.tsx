@@ -14,7 +14,15 @@ import {
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { DevSyncRequestError } from "./client";
 import styles from "./devsync.module.css";
-import { authorName, Field, formatTime, Problem, RequirementFields, requirements } from "./parts";
+import {
+  authorName,
+  Field,
+  formatTime,
+  GithubLink,
+  Problem,
+  RequirementFields,
+  requirements,
+} from "./parts";
 import { useDevSync } from "./provider";
 import { useChange, useMembers, usePullRequests, useTask } from "./queries";
 import { Runs } from "./Runs";
@@ -262,9 +270,9 @@ function PullRequestPicker({ task }: { task: TaskDetail }) {
       </h4>
       {linked ? (
         <p>
-          <a className="cream" href={linked.url} target="_blank" rel="noreferrer">
+          <GithubLink url={linked.url}>
             #{linked.number} {linked.title}
-          </a>{" "}
+          </GithubLink>{" "}
           <span className="chip">{PR_STATE[linked.state]}</span>
         </p>
       ) : (

@@ -1,4 +1,4 @@
-import type { TaskDetail } from "@devsync/schemas";
+import type { PullRequest, TaskDetail } from "@devsync/schemas";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -142,6 +142,13 @@ describe("the task panel", () => {
     const link = within(again.panel).getByRole("link", { name: "#42 Sign-up form" });
     expect(link.getAttribute("href")).toBe("https://github.com/acme/shop/pull/42");
     expect(within(again.panel).getByText("Open")).toBeTruthy();
+  });
+
+  it("shows a linked pull request outside GitHub as text, not as a link", async () => {
+    const elsewhere = { ...(pullRequests[0] as PullRequest), url: "https://example.com/pull/42" };
+    const { panel } = await open({ ...detail, pullRequestNumber: 42, pullRequest: elsewhere });
+    expect(within(panel).getByText("#42 Sign-up form")).toBeTruthy();
+    expect(within(panel).queryByRole("link", { name: /Sign-up form/ })).toBeNull();
   });
 
   it("keeps a refused edit's text, says why, and saves against the reloaded version", async () => {

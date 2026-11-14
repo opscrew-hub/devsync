@@ -78,6 +78,8 @@ interface DevSyncContext {
   apiBase: string;
   userId: string;
   role: Role;
+  /** A read-only or disconnected project, where every change is refused. */
+  readOnly: boolean;
   ui: DevSyncUi;
   /** Whether the member may do `action` on this project: locks the buttons the server would refuse. */
   may: (action: Action) => boolean;
@@ -101,6 +103,7 @@ export function DevSyncProvider({
       apiBase,
       userId,
       role,
+      readOnly,
       ui,
       may: (action) => !readOnly && can(role, action),
     }),

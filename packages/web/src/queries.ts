@@ -4,11 +4,9 @@ import {
   PullRequestList,
   RunList,
   RunSetup,
-  type RunStatus,
   TaskDetail,
   TaskList,
   type TaskStatus,
-  UNENDED_RUN_STATUSES,
   WorkspaceTaskList,
 } from "@devsync/schemas";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -39,28 +37,17 @@ export function useTask(taskId: string) {
   return useList(path, (api) => api.get(path, TaskDetail));
 }
 
-/** Whether a run hasn't ended: waiting for approval, approved, or in GitHub. */
-export function unended(run: { status: RunStatus }): boolean {
-  return (UNENDED_RUN_STATUSES as readonly RunStatus[]).includes(run.status);
-}
-
-/** A task's runs, newest first: read again with the panel only while one hasn't ended. */
+/** A task's runs, newest first (they cost no GitHub call, so they refresh with the panel). */
 export function useRuns(taskId: string) {
-  const { api, apiBase } = useDevSync();
   const path = `/tasks/${encodeURIComponent(taskId)}/runs`;
-  return useQuery({
-    queryKey: ["devsync", apiBase, path],
-    queryFn: () => api.get(path, RunList),
-    refetchInterval: (query) =>
-      query.state.data?.runs.some(unended) ? LIVE.refetchInterval : false,
-    refetchIntervalInBackground: false,
-  });
+  return useList(path, (api) => api.get(path, RunList));
 }
 
 /**
  * What the repository has of what a run needs. Asking costs several GitHub calls, so it is read
- * when the runs section opens and when the member asks again, never on a timer, on focus or after
- * a change: its key is outside the `["devsync", apiBase]` that changes read again.
+ * the first time a runs section opens and when the member asks again, and kept while the tab is in
+ * use: never on a timer, on focus, on opening another task or after a change (its key is outside
+ * the `["devsync", apiBase]` that changes read again).
  */
 export function useRunSetup() {
   const { api, apiBase } = useDevSync();
@@ -68,7 +55,6 @@ export function useRunSetup() {
     queryKey: ["devsync-setup", apiBase],
     queryFn: () => api.get("/runs/setup", RunSetup),
     staleTime: Number.POSITIVE_INFINITY,
-    refetchOnMount: "always",
     refetchInterval: false,
   });
 }

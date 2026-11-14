@@ -1,8 +1,10 @@
-import type { Role, Run, RunSetup, TaskDetail } from "@devsync/schemas";
+import type { Role, Run, RunSetup, Task, TaskDetail } from "@devsync/schemas";
 import { WORKFLOW } from "@devsync/schemas";
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProjectTab } from "./ProjectTab";
 import { TaskPanel } from "./TaskPanel";
 import { ME, type Reply, renderWith, type Sent } from "./test/render";
 import {
@@ -13,6 +15,7 @@ import {
   SETUP_WORDS,
   setupComplete,
   setupMissing,
+  tasks,
 } from "./test/samples";
 
 afterEach(() => {
@@ -24,6 +27,7 @@ const at = "2026-11-13T08:12:00Z";
 const ana = { kind: "member", userId: ME, name: "Ana Lima" } as const;
 const RUNS = `/tasks/${detail.id}/runs`;
 const GITHUB_RUN = "https://github.com/acme/shop/actions/runs/9001";
+const CHANGED = "The task changed since this run was asked for. Cancel it and ask for a new run.";
 
 function show(
   options: {
@@ -81,6 +85,12 @@ const posts = (sent: Sent[]) => sent.filter((s) => s.method === "POST");
 const items = (runs: HTMLElement) =>
   Array.from(within(runs).getByRole("list", { name: "Runs" }).children) as HTMLElement[];
 
+/** The project tab with `detail` open, where picking another task opens its panel. */
+function Tab() {
+  const [selected, select] = useState<string | null>(detail.id);
+  return <ProjectTab selectedTaskId={selected} onSelectTask={select} />;
+}
+
 describe("the runs section's setup", () => {
   it("lists what's missing in the server's words, with the workflow file to copy", async () => {
     const user = userEvent.setup();
@@ -132,6 +142,29 @@ describe("the runs section's setup", () => {
     expect(reason(ask)).toBeNull();
   });
 
+  it("isn't read again when another task's panel opens", async () => {
+    const other: TaskDetail = { ...detail, ...(tasks[1] as Task) };
+    const { sent } = renderWith(<Tab />, {
+      routes: {
+        "GET /tasks": { body: { tasks } },
+        "GET /members": { body: { members } },
+        "GET /agents": { body: { agents: [] } },
+        "GET /pull-requests": { body: { pullRequests } },
+        [`GET /tasks/${detail.id}`]: { body: detail },
+        [`GET /tasks/${other.id}`]: { body: other },
+        [`GET /tasks/${detail.id}/runs`]: { body: { runs: [] } },
+        [`GET /tasks/${other.id}/runs`]: { body: { runs: [] } },
+        "GET /runs/setup": { body: setupComplete },
+      },
+    });
+    await section();
+    await userEvent.click(screen.getByRole("button", { name: /Send the welcome email/ }));
+    await screen.findByRole("region", { name: "Send the welcome email" });
+    await section();
+    expect(reads(sent, `/tasks/${other.id}/runs`)).toBe(1);
+    expect(reads(sent, "/runs/setup")).toBe(1);
+  });
+
   it("reads the setup when it opens and on Check again, never on the periodic refresh", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const running = run(70, { status: "RUNNING", decidedBy: ana, githubRunUrl: GITHUB_RUN });
@@ -143,7 +176,7 @@ describe("the runs section's setup", () => {
 
     await act(() => vi.advanceTimersByTimeAsync(10_000));
     await waitFor(() => expect(reads(sent, `/tasks/${detail.id}`)).toBeGreaterThan(task));
-    // A run hasn't ended: the runs are read again with the panel; the setup isn't.
+    // The runs are read again with the panel's refresh; the setup isn't.
     await waitFor(() => expect(reads(sent, RUNS)).toBeGreaterThan(list));
     expect(reads(sent, "/runs/setup")).toBe(1);
 
@@ -152,16 +185,19 @@ describe("the runs section's setup", () => {
     await waitFor(() => expect(reads(sent, "/runs/setup")).toBe(2));
   });
 
-  it("stops reading the runs again once every run has ended", async () => {
+  it("shows a teammate's new run on the periodic refresh after every run had ended", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    const { sent } = show({ runs: [run(71, { status: "REJECTED", decidedBy: ana })] });
-    await section();
-    const task = reads(sent, `/tasks/${detail.id}`);
-    const list = reads(sent, RUNS);
+    let listed = [run(71, { status: "REJECTED", decidedBy: ana, decidedAt: at, finishedAt: at })];
+    show({ runs: () => ({ body: { runs: listed } }) });
+    const runs = await section();
+    expect(button("Ask for a run", runs).disabled).toBe(false);
 
+    listed = [run(72), ...listed];
     await act(() => vi.advanceTimersByTimeAsync(10_000));
-    await waitFor(() => expect(reads(sent, `/tasks/${detail.id}`)).toBeGreaterThan(task));
-    expect(reads(sent, RUNS)).toBe(list);
+    await waitFor(() => expect(items(runs)).toHaveLength(2));
+    const ask = button("Ask for a run", runs);
+    expect(ask.disabled).toBe(true);
+    expect(reason(ask)).toBe("This task has a run that hasn't ended yet.");
   });
 
   it("shows the setup's refusal in the API's words", async () => {
@@ -272,8 +308,7 @@ describe("asking for a run", () => {
 
 describe("a run waiting for approval", () => {
   it("is approved after the approver reads the exact text of its revision", async () => {
-    // Asked for at revision 1, whose text differs from the task's current one.
-    const waiting = run(70, { revision: 1 });
+    const waiting = run(70);
     const { sent } = show({
       runs: [waiting],
       extra: {
@@ -289,16 +324,60 @@ describe("a run waiting for approval", () => {
     await userEvent.click(button("Approve", item));
 
     const dialog = screen.getByRole("dialog", { name: "Approve the run" });
-    expect(dialog.textContent).toContain("revision 1");
+    expect(dialog.textContent).toContain("revision 2");
     expect(dialog.textContent).toContain("Ben Okafor");
     expect(
       within(dialog)
         .getAllByRole("definition")
         .map((d) => d.textContent),
-    ).toEqual(["Sign-up", "Empty", "Empty"]);
+    ).toEqual([
+      "Add the sign-up form",
+      "A form with an email and a password.",
+      "The account exists after submitting.",
+    ]);
     await userEvent.click(button("Approve the run", dialog));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(posts(sent).map((s) => s.path)).toEqual([`/runs/${waiting.id}/approve`]);
+  });
+
+  it.each([
+    ["asked for at an older revision", detail, run(70, { revision: 1 })],
+    ["on a task no longer Ready", { ...detail, status: "IN_PROGRESS" as const }, run(70)],
+  ])("can't be approved, only rejected or cancelled, when %s", async (_, task, waiting) => {
+    show({ task, runs: [waiting] });
+    const runs = await section();
+    const [item] = items(runs);
+    if (!item) throw new Error("No run listed.");
+    const approve = button("Approve", item);
+    expect(approve.disabled).toBe(true);
+    expect(reason(approve)).toBe(CHANGED);
+    expect(button("Reject", item).disabled).toBe(false);
+    expect(button("Cancel the run", item).disabled).toBe(false);
+  });
+
+  it("can't be approved once the task changes while its dialog is open", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    let task = detail;
+    const waiting = run(70);
+    const { sent } = show({
+      runs: [waiting],
+      extra: { [`GET /tasks/${detail.id}`]: () => ({ body: task }) },
+    });
+    const runs = await section();
+    const [item] = items(runs);
+    if (!item) throw new Error("No run listed.");
+    await user.click(button("Approve", item));
+    const dialog = screen.getByRole("dialog", { name: "Approve the run" });
+    expect(button("Approve the run", dialog).disabled).toBe(false);
+
+    // Someone edits the requirements: the panel's refresh brings revision 3.
+    task = { ...detail, revision: 3, version: 4 };
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(await within(dialog).findByText(CHANGED)).toBeTruthy();
+    expect(within(dialog).queryAllByRole("definition")).toEqual([]);
+    expect(button("Approve the run", dialog).disabled).toBe(true);
+    expect(posts(sent)).toEqual([]);
   });
 
   it("is rejected or cancelled by an Owner, Admin or Approver", async () => {
@@ -314,6 +393,7 @@ describe("a run waiting for approval", () => {
     const runs = await section();
     const [item] = items(runs);
     if (!item) throw new Error("No run listed.");
+    const list = reads(sent, RUNS);
     expect(button("Approve", item).disabled).toBe(false);
     await userEvent.click(button("Reject", item));
     await waitFor(() => expect(posts(sent)).toHaveLength(1));
@@ -323,6 +403,9 @@ describe("a run waiting for approval", () => {
       `/runs/${waiting.id}/reject`,
       `/runs/${waiting.id}/cancel`,
     ]);
+    // The changes read the runs again, never the setup.
+    await waitFor(() => expect(reads(sent, RUNS)).toBeGreaterThan(list));
+    expect(reads(sent, "/runs/setup")).toBe(1);
   });
 
   it("can't be approved or rejected by a Developer, who cancels only their own", async () => {
@@ -336,15 +419,18 @@ describe("a run waiting for approval", () => {
     }
     expect(button("Cancel the run", others).disabled).toBe(true);
     expect(button("Cancel the run", mine).disabled).toBe(false);
-    expect(
-      within(others).getByText("An Owner, Admin or Approver approves or rejects it."),
-    ).toBeTruthy();
+    const role =
+      "An Owner, Admin or Approver approves or rejects it; they or the member who asked for it can cancel it.";
+    for (const name of ["Approve", "Reject", "Cancel the run"]) {
+      expect(reason(button(name, others))).toBe(role);
+    }
+    expect(reason(button("Approve", mine))).toBe(role);
+    expect(reason(button("Cancel the run", mine))).toBeNull();
   });
 
   it("shows a refused decision in the API's words", async () => {
     const waiting = run(70);
-    const message =
-      "The task changed since this run was asked for. Cancel it and ask for a new run.";
+    const message = "This run was already approved, rejected or cancelled. Reload the task.";
     show({
       runs: [waiting],
       extra: {
@@ -417,8 +503,6 @@ describe("a run's state and result", () => {
           status: "FAILED",
           failure,
           changedFiles: ["src/app.ts"],
-          draftPullRequestUrl: "https://example.com/acme/shop/pull/44",
-          githubRunUrl: "http://github.com/acme/shop/actions/runs/9000",
         }),
       ],
     });
@@ -454,10 +538,32 @@ describe("a run's state and result", () => {
     expect(within(failed).getByText(failure.message)).toBeTruthy();
     expect(within(failed).getByText("src/app.ts")).toBeTruthy();
     expect(within(failed).queryByText(/more files/)).toBeNull();
-    // Only addresses on https://github.com/ are links; anything else is shown as text.
-    expect(within(failed).queryByRole("link")).toBeNull();
-    expect(within(failed).getByText("https://example.com/acme/shop/pull/44")).toBeTruthy();
-    expect(within(failed).getByText("http://github.com/acme/shop/actions/runs/9000")).toBeTruthy();
+  });
+
+  it.each([
+    "https://github.com.evil.com/acme/shop/pull/44",
+    "https://github.com@evil.com/acme/shop/pull/44",
+    "javascript:alert(1)",
+    "http://github.com/acme/shop/pull/44",
+    "https://example.com/acme/shop/pull/44",
+  ])("shows %s as text, never as a link", async (url) => {
+    show({
+      runs: [
+        run(71, {
+          status: "SUCCEEDED",
+          decidedBy: ana,
+          decidedAt: at,
+          finishedAt: at,
+          draftPullRequestUrl: url,
+          githubRunUrl: url,
+        }),
+      ],
+    });
+    const runs = await section();
+    const [item] = items(runs);
+    if (!item) throw new Error("No run listed.");
+    expect(within(item).queryByRole("link")).toBeNull();
+    expect(within(item).getAllByText(url)).toHaveLength(2);
   });
 
   it("says who rejected or cancelled a run", async () => {

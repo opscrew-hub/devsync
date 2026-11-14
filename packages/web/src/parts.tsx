@@ -10,6 +10,28 @@ export function formatTime(iso: string): string {
   return TIME.format(new Date(iso));
 }
 
+/** Only GitHub's own addresses become links. */
+const GITHUB = "https://github.com/";
+
+/**
+ * A link to `url` in a new tab when it is on `https://github.com/`, labelled `children` (by
+ * default, the address after `github.com/`); anything else is only shown, as text.
+ */
+export function GithubLink({ url, children }: { url: string; children?: ReactNode }) {
+  if (!url.startsWith(GITHUB)) {
+    return children ? (
+      <span>{children}</span>
+    ) : (
+      <span className={`mono ${styles.prose}`}>{url}</span>
+    );
+  }
+  return (
+    <a className="cream" href={url} target="_blank" rel="noopener noreferrer">
+      {children ?? url.slice(GITHUB.length)}
+    </a>
+  );
+}
+
 /** A failure, in the API's own words. */
 export function Problem({ error }: { error: Error | null }) {
   const { Icon } = useDevSync().ui;
