@@ -42,11 +42,10 @@ updates over SSE (the dashboard polls), Redis, and the dedicated Codex and Claud
 
 ## Next
 
-1. **Managed runs** in the project's own GitHub Actions (story 4), in progress: the research is
-   done ([research/managed-runs.md](research/managed-runs.md)) and the design and tasks are in
-   [managed-runs.md](managed-runs.md): the runs' API and jobs, the workflow file the user adds, and
-   the task's runs section. The standalone version's runs code stays in `legacy/` until then, and
-   is removed with it.
+1. **Managed runs** in the project's own GitHub Actions (story 4), in progress
+   ([managed-runs.md](managed-runs.md), research in
+   [research/managed-runs.md](research/managed-runs.md)): the runs' API, jobs and result checks and
+   the workflow file the user adds are built and reviewed; the task's runs section is being built.
 2. **A live test** on a real project, the inventory project first, with Claude Code and Codex
    connected over MCP.
 

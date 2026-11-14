@@ -1,6 +1,5 @@
 /**
- * Agents: registration, tokens and authentication (docs/host.md, MCP for coding agents), legacy's
- * `agent-signals.ts`. An Owner or Admin registers an agent for a project; its bearer token is shown
+ * Agents: registration, tokens and authentication (docs/host.md, MCP for coding agents). An Owner or Admin registers an agent for a project; its bearer token is shown
  * once and DevSync keeps only its SHA-256. A token lasts 24 hours and can be rotated or revoked.
  */
 import { createHash, randomBytes } from "node:crypto";
@@ -25,7 +24,7 @@ import { parse, REFUSAL } from "./common";
 
 /** How long a token lasts from its registration or rotation. */
 const AGENT_TOKEN_LIFETIME_MS = 24 * 60 * 60 * 1000;
-/** Seen within this long: "Recently active" (legacy's two minutes). */
+/** Seen within this long: "Recently active" (two minutes). */
 const RECENTLY_ACTIVE_MS = 2 * 60 * 1000;
 /** 32 random bytes, base64url. */
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{43}$/;
@@ -135,7 +134,7 @@ export async function registerAgent(
 
 /**
  * `POST /agents/:agentId/rotate` (`agent.manage`): a new token for 24 hours from now; the old one
- * stops working. As in legacy, it revives a revoked agent and keeps its inbox.
+ * stops working. It revives a revoked agent and keeps its inbox.
  */
 export async function rotateAgent(
   host: DevSyncHost,
@@ -183,7 +182,7 @@ export async function revokeAgent(
   });
 }
 
-/** `GET /agents`: the project's agents, newest first, with legacy's statuses. */
+/** `GET /agents`: the project's agents, newest first, with their statuses. */
 export async function listAgents(host: DevSyncHost, ctx: ProjectContext): Promise<AgentList> {
   const now = host.clock.now();
   const rows = await host.db

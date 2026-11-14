@@ -1,1 +1,0 @@
-{"name":"@devsync/db","private":true,"type":"module","exports":"./index.ts","dependencies":{"@prisma/client":"6.19.3"}}

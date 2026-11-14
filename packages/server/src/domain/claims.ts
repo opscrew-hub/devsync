@@ -1,5 +1,5 @@
 /**
- * Task claims (docs/host.md, MCP for coding agents), legacy's `task-claims.ts`. An agent claims a
+ * Task claims (docs/host.md, MCP for coding agents). An agent claims a
  * Ready task (or one whose claim expired) under a claim id of its own for 15 minutes, renews it
  * while it works, and releases it to Ready. Each change is one conditional UPDATE, so two agents
  * never hold the same task.

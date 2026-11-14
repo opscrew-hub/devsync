@@ -49,7 +49,7 @@ export function requireWritable(project: ProjectRef): void {
 
 /**
  * Locks the agent's row in `tx` (`FOR NO KEY UPDATE`), so one agent's idempotent writes and its
- * signal limits are checked one at a time, as legacy does.
+ * signal limits are checked one at a time.
  */
 export async function lockAgentRow(tx: DevSyncDb, actor: AgentActor): Promise<void> {
   const [row] = await tx

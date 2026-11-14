@@ -121,9 +121,6 @@ The code follows OpsCrew's conventions: TypeScript strict ESM, Biome, Vitest, zo
 side effects (the database, the clock, the queue) injected through the host, plain-English errors
 that say what to do next, and no token in any log, audit entry or fixture.
 
-`legacy/` holds the standalone version (Next.js, Prisma, Auth.js, its own GitHub App and workers)
-that this one replaces, read-only, kept until its managed runs are ported and then removed.
-
 ## Status
 
 The port is done and verified inside the dashboard; managed runs in the project's own GitHub

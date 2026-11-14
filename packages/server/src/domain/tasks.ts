@@ -1,6 +1,6 @@
 /**
  * Tasks: create, read, edit, move, assign, comment and link a pull request, for a project's members
- * (a `ProjectContext`) and its agents (an `AgentActor`). Legacy's rules (packages/core/index.ts):
+ * (a `ProjectContext`) and its agents (an `AgentActor`). The rules:
  * the lifecycle, the version check, a revision per requirements change, a claimed task's status
  * changed only by its claim, an agent's `requestId` idempotency, and an outbox event per change
  * recorded in its transaction. Every query filters by the project.
@@ -63,7 +63,7 @@ const FORMER_MEMBER = "Former member";
 const REMOVED_AGENT = "Removed agent";
 
 const TASK_CHANGED = "This task changed. Reload it and try again.";
-/** How many of a task's latest events its timeline shows, as legacy's activity list. */
+/** How many of a task's latest events its timeline shows. */
 const TIMELINE_LIMIT = 100;
 
 /** An agent's `update_task` fields, its task id given apart. */
@@ -480,7 +480,7 @@ export async function createTask(
 }
 
 /**
- * The event a saved edit records, in legacy's order (`saveTaskEdit`), and its plain-English
+ * The event a saved edit records, and its plain-English
  * message: none unless the requirements, the status or the assignee changed; then a requirements
  * change, else a Blocked task (whatever else changed), else an assignment, else a move.
  */

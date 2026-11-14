@@ -5,7 +5,7 @@ export const Id = z.uuid();
 /** Every time DevSync answers: ISO 8601, from `Date.toISOString()`. */
 export const Timestamp = z.iso.datetime();
 
-/** Legacy's limits on text people and agents write. */
+/** The limits on text people and agents write. */
 export const LIMITS = {
   title: 160,
   description: 8000,

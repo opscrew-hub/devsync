@@ -124,7 +124,7 @@ describe("registerAgent", () => {
 });
 
 describe("listAgents", () => {
-  it("answers the project's agents newest first with legacy's statuses", async () => {
+  it("answers the project's agents newest first with their statuses", async () => {
     const { host, as, other } = setup();
     const start = Date.parse(FAKE_NOW);
     const register = async (name: string, at: number) => {
@@ -259,7 +259,7 @@ describe("rotateAgent", () => {
     expect(JSON.stringify(host.audits)).not.toContain(rotated.token);
   });
 
-  it("revives a revoked agent with a new token, as legacy does", async () => {
+  it("revives a revoked agent with a new token", async () => {
     const { host, as } = setup();
     const registered = await registerAgent(host, as("owner"), { name: "Codex", kind: "CODEX" });
     await revokeAgent(host, as("owner"), registered.agent.id);

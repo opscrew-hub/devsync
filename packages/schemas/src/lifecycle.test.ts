@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { STATUS_LABEL, TaskStatus, TRANSITIONS } from "./lifecycle";
 
 describe("the task lifecycle", () => {
-  it("keeps legacy's statuses, in order", () => {
+  it("has the statuses, in order", () => {
     expect(TaskStatus.options).toEqual([
       "BACKLOG",
       "READY",
@@ -15,7 +15,7 @@ describe("the task lifecycle", () => {
     ]);
   });
 
-  it("allows legacy's moves only", () => {
+  it("allows the lifecycle's moves only", () => {
     expect(TRANSITIONS).toEqual({
       BACKLOG: ["READY", "CANCELLED"],
       READY: ["BACKLOG", "IN_PROGRESS", "CANCELLED"],

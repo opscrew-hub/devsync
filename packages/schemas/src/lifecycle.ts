@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** A task's statuses: legacy's names. */
+/** A task's statuses. */
 export const TaskStatus = z.enum([
   "BACKLOG",
   "READY",

@@ -567,7 +567,7 @@ describe("updateTask", () => {
     expect(moved).toMatchObject({ status: "IN_PROGRESS", claim: null });
   });
 
-  it("records legacy's event for an edit changing several things", async () => {
+  it("records one event for an edit changing several things", async () => {
     const created = await createTask(host, as(owner), fields);
     // A move and an assignment: the assignment.
     const assigned = await updateTask(host, as(owner), created.id, {
@@ -583,7 +583,7 @@ describe("updateTask", () => {
       version: working.version,
       status: "BLOCKED",
     });
-    // A Blocked task's assignment: still a blocked event, as legacy.
+    // A Blocked task's assignment: still a blocked event.
     const reassigned = await updateTask(host, as(owner), created.id, {
       version: blocked.version,
       assigneeUserId: approver.userId,

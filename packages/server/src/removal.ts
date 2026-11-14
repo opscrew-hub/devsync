@@ -48,7 +48,7 @@ export function removeWorkspace(db: DevSyncDb, workspaceId: string): Promise<voi
   return removeRows(db, "workspaceId", workspaceId);
 }
 
-/** Unassigns a member who left the workspace from its tasks, as legacy (each task's version bumped). */
+/** Unassigns a member who left the workspace from its tasks (each task's version bumped). */
 export async function removeMember(
   db: DevSyncDb,
   workspaceId: string,

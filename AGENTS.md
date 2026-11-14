@@ -7,7 +7,6 @@ the commands) and `docs/host.md` (the contract with the host) before changing an
   source (`exports` → `./src/index.ts`). Never import the host's code; what DevSync needs from it
   goes through `DevSyncHost` (`packages/server/src/host.ts`), and a change to that interface or to
   `docs/host.md` is a change to the host too.
-- `legacy/` is the standalone version being ported: read it, never edit it.
 - Permissions live in `can()` in `@devsync/schemas`; every query filters by the project (or the
   workspace); every input and every answer is parsed with zod; every timestamp comes from
   `host.clock`.

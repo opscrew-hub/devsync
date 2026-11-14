@@ -1,6 +1,6 @@
 /**
  * The public routes, mounted by the host at `/m/devsync` with no session: `POST /mcp`, the coding
- * agents' MCP endpoint (docs/host.md, MCP for coding agents), legacy's `app/api/mcp/route.ts`.
+ * agents' MCP endpoint (docs/host.md, MCP for coding agents).
  * Stateless Streamable HTTP with JSON answers: each request is authenticated by its bearer token
  * (which also checks DevSync is still on for the agent's project), then answered by a fresh MCP
  * server whose tools call the domain as that agent.
@@ -56,7 +56,7 @@ async function result(
   }
 }
 
-/** An MCP server for one request, its tools acting as `actor`: legacy's names and descriptions. */
+/** An MCP server for one request, its tools acting as `actor`. */
 function mcpServer(host: DevSyncHost, actor: AgentActor): McpServer {
   const server = new McpServer({ name: "devsync", version: "0.1.0" });
   const inputs = MCP_TOOL_INPUTS;

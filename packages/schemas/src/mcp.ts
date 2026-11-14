@@ -1,4 +1,4 @@
-/** The MCP tools' inputs (docs/host.md, MCP for coding agents): legacy's field names. */
+/** The MCP tools' inputs (docs/host.md, MCP for coding agents). */
 import { z } from "zod";
 import { MessageText, SignalKind } from "./agents";
 import { Counter, Id } from "./common";

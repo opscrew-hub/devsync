@@ -44,7 +44,7 @@ describe("the MCP tools' inputs", () => {
     expect(TaskClaimInput.safeParse({ ...claim, taskId: "t1" }).success).toBe(false);
   });
 
-  it("take a signal for a peer with legacy's fields and limits", () => {
+  it("take a signal for a peer with its fields and limits", () => {
     const signal = {
       recipientId: randomUUID(),
       kind: "review.requested",

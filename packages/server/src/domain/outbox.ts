@@ -11,7 +11,7 @@ import type { DevSyncDb, DevSyncHost } from "../host";
 /** Who caused an event: a member, an agent, or the host (a GitHub fact). */
 export type OutboxActor = { userId: string } | { agentId: string } | null;
 
-/** An event to record: legacy's payload is `{ taskId, revision, version, message }` for a task's change. */
+/** An event to record: a task's change has the payload `{ taskId, revision, version, message }`. */
 export interface OutboxRecord {
   workspaceId: string;
   projectId: string;

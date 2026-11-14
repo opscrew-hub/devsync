@@ -1,6 +1,5 @@
 /**
- * GitHub facts and the pull requests they report (docs/host.md, Queues), legacy's
- * `github-events.ts`. The host forwards each `push` and `pull_request` delivery of a project with
+ * GitHub facts and the pull requests they report (docs/host.md, Queues). The host forwards each `push` and `pull_request` delivery of a project with
  * DevSync on as a `GithubJob` on the `devsync.github` queue. DevSync applies each delivery once per
  * project (`github_delivery`): it keeps the pull request's latest state (an update older than the
  * stored one changes nothing) and sends the project's live agents branch-updated,
@@ -64,7 +63,7 @@ export type GithubJob = z.infer<typeof GithubJob>;
 
 type DeliveryFact = Exclude<GithubFact, { kind: "workflow_run" }>;
 
-/** The signal a fact sends the project's agents, legacy's kinds and wording; null for none. */
+/** The signal a fact sends the project's agents, its kind and wording; null for none. */
 function signalOf(fact: DeliveryFact): { kind: string; payload: Record<string, unknown> } | null {
   if (fact.kind === "push") {
     if (!fact.ref.startsWith("refs/heads/")) return null;

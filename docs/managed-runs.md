@@ -102,5 +102,5 @@ time.
   setup's missing pieces (the workflow to copy), asking for a run on a Ready task, the runs with
   their state, approve and reject for the roles that may, cancel, and a run's result (changed files,
   tokens and cost, the models, the draft pull request, the GitHub run).
-- [ ] **D4, the end of `legacy/`** (lead), after D3: delete `legacy/`, its mentions in the README,
-  `CLAUDE.md`, `AGENTS.md` and the docs; `implementation-status.md` updated.
+- [x] **D4, the standalone version removed** (lead): its folder deleted once D1 and D2 had ported
+  its runs, with every mention in the README, the agents' guides, the docs and the code's comments.

@@ -1,6 +1,6 @@
 /**
- * The MCP endpoint, legacy's `apps/web/mcp.test.ts`: JSON-RPC requests to the Hono app as legacy
- * sends them (stateless, JSON answers, no `initialize`), with two agents handing a task over.
+ * The MCP endpoint: JSON-RPC requests to the Hono app as coding agents
+ * send them (stateless, JSON answers, no `initialize`), with two agents handing a task over.
  */
 import { ErrorAnswer, type Role } from "@devsync/schemas";
 import { Hono } from "hono";
@@ -81,7 +81,7 @@ async function setup() {
       },
       body: JSON.stringify(body),
     });
-  /** A JSON-RPC request as legacy's test sends it. */
+  /** A JSON-RPC request as an agent sends it. */
   const call = (token: string, method: string, params: object, headers = {}) =>
     post(
       { Authorization: `Bearer ${token}`, ...headers },
