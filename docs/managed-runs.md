@@ -92,7 +92,7 @@ time.
   handling in `devsync.github`, the result's checks, the routes
   (`GET|POST /tasks/:taskId/runs`, `POST /runs/:runId/approve|reject|cancel`, `GET /runs/setup`),
   the removal hooks.
-- [ ] **D2, the workflow file** (`packages/schemas/src/workflow.ts` and its test). `WORKFLOW_FILE`
+- [x] **D2, the workflow file** (`packages/schemas/src/workflow.ts` and its test). `WORKFLOW_FILE`
   (`devsync.yml`) and `WORKFLOW` (the file's text) from the research's skeleton, adapted to the
   contract above: the two inputs, `permissions: {}` at the top, the three jobs, inputs only through
   `env`, the patch with its changed files as one artifact, the result as `devsync-result`, the
