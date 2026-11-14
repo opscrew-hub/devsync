@@ -282,9 +282,12 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
   task links use with `{ task }`.
 
 Inside, each wraps DevSync's own component in `DevSyncProvider` (which also takes an optional
-`fetch` for tests).
+`fetch` for tests, and `readOnly`: on a read-only or disconnected project every change DevSync
+offers is disabled, as the host refuses them).
 
-They use the host's TanStack Query client, refetch every 10 seconds while visible, and use the
+They use the TanStack Query client the host gives the page (one of the module's own), refetch every
+10 seconds while visible (except the runs' setup, `GET runs/setup`, which costs several GitHub
+calls: read when the tab opens and on "Check again"), and use the
 host's global classes (`card`, `card-h`, `card-t`, `btn`, `btn-primary`, `btn-secondary`,
 `btn-ghost`, `btn-danger`, `btn-sm`, `bordered`, `i-sm`, `field`, `status` with `s-good`, `s-warning`, `s-serious`,
 `s-muted`, `chip`, `feed`, `kv`, `tabs`, `tab`, `is-table`, `sub`, `mono`, `cream`) and its CSS
