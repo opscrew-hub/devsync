@@ -110,8 +110,7 @@ that this one replaces, read-only while its behaviour is ported, and removed onc
 
 ## Status
 
-DevSync is being reworked from a standalone app into OpsCrew's module on the `opscrew-module`
-branch:
+DevSync is being reworked from a standalone app into OpsCrew's module:
 
 - done: the new toolchain and package layout, and the host contract;
 - in progress: the database, the domain (tasks, agents, claims, signals, the outbox), the routes
