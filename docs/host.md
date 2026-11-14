@@ -206,14 +206,15 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
 - `DevSyncProvider`: `apiBase` (the mount point above), `userId` and `role` (the member's), and the
   host's UI pieces, so DevSync looks like the rest of the dashboard: `Icon` (`{ name, className? }`),
   `Dialog` (`{ title, icon, onSubmit?, children }`), `EmptyState` (`{ icon, title, children,
-  action? }`) and `Link` (`{ to, className?, children }`, the host's router link).
+  action? }`) and `Link` (`{ to, className?, children }`, the host's router link); and optionally `fetch`
+  (tests pass a fake; the default is the browser's).
 - `ProjectTab`: `{ selectedTaskId, onSelectTask }`, the selected task kept in the host's URL
   (`?task=<id>`).
 - `WorkspacePage`: `{ taskHref(projectId, taskId) }`.
 
 They use the host's TanStack Query client, refetch every 10 seconds while visible, and use the
 host's global classes (`card`, `card-h`, `card-t`, `btn`, `btn-primary`, `btn-secondary`,
-`btn-ghost`, `btn-danger`, `btn-sm`, `field`, `status` with `s-good`, `s-warning`, `s-serious`,
+`btn-ghost`, `btn-danger`, `btn-sm`, `bordered`, `i-sm`, `field`, `status` with `s-good`, `s-warning`, `s-serious`,
 `s-muted`, `chip`, `feed`, `kv`, `tabs`, `tab`, `is-table`, `sub`, `mono`, `cream`) and its CSS
 variables (`--c-*`, `--s-*`, `--radius-card`, `--radius-inner`, `--font-*`) in their own CSS
 modules. No `style` attributes: the host's Content-Security-Policy forbids them. The icons DevSync
