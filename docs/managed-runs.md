@@ -81,7 +81,7 @@ commit or reopens it).
 Each runs in its own worktree, test-first, with a fresh reviewer; the lead merges them one at a
 time.
 
-- [ ] **D1, the server** (`packages/server/**`, `packages/schemas/src/runs.ts`,
+- [x] **D1, the server** (`packages/server/**`, `packages/schemas/src/runs.ts`,
   `packages/schemas/src/index.ts`, `docs/host.md`). The host interface's copy: `github`
   (`ModuleHost.github` as the dashboard's contract has it), `workflows: ["devsync.yml"]` on
   `serverModule`, the `workflow_run` fact; `fakeHost().github`. The `run` table (requirements.md's
