@@ -1,0 +1,26 @@
+{
+  "name": "@devsync/server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DevSync's server half: its database schema and migrations, domain, HTTP routes, MCP endpoint, queues and removal hooks, against the host interface in host.ts.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@devsync/schemas": "workspace:*",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.18",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
+    "drizzle-kit": "^0.31.11"
+  }
+}

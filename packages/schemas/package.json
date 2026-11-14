@@ -1,0 +1,17 @@
+{
+  "name": "@devsync/schemas",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Zod schemas for DevSync's API and MCP tools, its statuses, lifecycle and permissions: shared by the server and the browser.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "zod": "^4.6.7"
+  }
+}
