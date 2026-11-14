@@ -76,12 +76,28 @@ uses the host's instead of its own:
 | the database | its tables, in their own `devsync` schema with their own migrations |
 | the dashboard's look: styles, icons, dialogs | the DevSync tab and the workspace page |
 
-DevSync never imports the host's code. It defines the small interface it needs from a host
-(`packages/server/src/host.ts`), and gives the host its routes, MCP endpoint, queues, migrations,
-removal hooks and pages to mount. [docs/host.md](docs/host.md) is the full contract: the interface,
-the mount points, the roles, the HTTP API, the MCP tools, the queues and the UI pieces. The host
-switches DevSync on per workspace and per project and checks every request against its session
-and the member's role before DevSync's code runs.
+The dashboard names no module: it has a module system, and DevSync plugs into it. DevSync never
+imports the dashboard's code either. It follows the dashboard's module contract with its own copy of
+the types, checked by type-level tests, and gives the dashboard its routes, MCP endpoint, queues,
+migrations, removal hooks and pages through two entries, `serverModule` and `webModule`, named in
+the `opscrewModule` manifest of its `package.json`. [docs/host.md](docs/host.md) is DevSync's side of
+that contract: the interface, the mount points, the roles, the HTTP API, the MCP tools, the queues
+and the page props. The dashboard switches DevSync on per workspace and per project and checks every
+request against its session and the member's role before DevSync's code runs.
+
+### Plugging it into the dashboard
+
+DevSync runs only inside OpsCrew's dashboard. Its deployment lists it in `OPSCREW_MODULES`, pinned to
+a full commit of this repository:
+
+```bash
+OPSCREW_MODULES="https://github.com/opscrew-hub/devsync#<40-character commit>"
+```
+
+The dashboard's build downloads that commit, checks the manifest, includes DevSync's server code
+and pages (its pages load as their own chunk), and its release applies DevSync's migrations in the
+`devsync` schema. To ship a new version of DevSync, push it to `main` here and build the dashboard
+with the new commit.
 
 ## Development
 
@@ -98,29 +114,18 @@ pnpm db:generate      # a new migration after changing packages/server/src/db
 | Package | What it holds |
 |---|---|
 | `packages/schemas` (`@devsync/schemas`) | zod shapes of the API and MCP tools, the statuses and their moves, the permission table: shared by the server and the browser |
-| `packages/server` (`@devsync/server`) | the host interface, the `devsync` schema and migrations, the domain, the HTTP routes and MCP endpoint, the queues, the removal hooks; `@devsync/server/testing` has `createTestDb()`, `fakeHost()` and `fakeToken()` |
-| `packages/web` (`@devsync/web`) | the DevSync tab and the workspace page, for the host's dashboard |
+| `packages/server` (`@devsync/server`) | the host interface, the `devsync` schema and migrations, the domain, the HTTP routes and MCP endpoint, the queues, the removal hooks, and `serverModule`; `@devsync/server/testing` has `createTestDb()`, `fakeHost()` and `fakeToken()` |
+| `packages/web` (`@devsync/web`) | the DevSync tab and the workspace page, and `webModule` |
 
 The code follows OpsCrew's conventions: TypeScript strict ESM, Biome, Vitest, zod for every input,
 side effects (the database, the clock, the queue) injected through the host, plain-English errors
 that say what to do next, and no token in any log, audit entry or fixture.
 
 `legacy/` holds the standalone version (Next.js, Prisma, Auth.js, its own GitHub App and workers)
-that this one replaces, read-only while its behaviour is ported, and removed once the port is done.
+that this one replaces, read-only, kept until its managed runs are ported and then removed.
 
 ## Status
 
-DevSync is being reworked from a standalone app into OpsCrew's module:
-
-- done: the new toolchain and package layout, and the host contract;
-- in progress: the database, the domain (tasks, agents, claims, signals, the outbox), the routes
-  and MCP endpoint, the pages; then the dashboard mounts it;
-- next: managed runs in the user's own GitHub Actions; then a first live project.
-
-What the standalone version had and the module drops, because the host has it: its own sign-in,
-projects and project members, audit log, GitHub App, webhook intake and repository linking, live
-updates over SSE (the dashboard refreshes by polling), Redis, and the dedicated Codex and Claude
-workers (replaced by managed runs in the user's Actions).
-
-Later: more models for managed runs, task dependencies, labels and priorities, and check runs on
-linked pull requests.
+The port is done and verified inside the dashboard; managed runs in the project's own GitHub
+Actions come next, then a first live project. [docs/implementation-status.md](docs/implementation-status.md)
+has the details, and [docs/requirements.md](docs/requirements.md) what DevSync must do.
