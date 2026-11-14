@@ -302,12 +302,12 @@ export async function getTask(
   const [found] = await selectTasks(host.db, inProject(project, taskIdOf(taskId)));
   if (!found) throw noSuchTask();
   const row = found.task;
-  const scope = and(
-    eq(taskRevision.taskId, row.id),
-    eq(taskRevision.projectId, project.projectId),
-  ) as SQL;
   const [revisions, comments, events, pull, members] = await Promise.all([
-    host.db.select().from(taskRevision).where(scope).orderBy(desc(taskRevision.number)),
+    host.db
+      .select()
+      .from(taskRevision)
+      .where(and(eq(taskRevision.taskId, row.id), eq(taskRevision.projectId, project.projectId)))
+      .orderBy(desc(taskRevision.number)),
     host.db
       .select()
       .from(taskComment)
@@ -457,7 +457,7 @@ export async function createTask(
         workspaceId: project.workspaceId,
         projectId: project.projectId,
         ...fields,
-        creatorUserId: agentId ? null : (creator as { userId: string }).userId,
+        creatorUserId: "userId" in creator ? creator.userId : null,
         creatorAgentId: agentId,
         createRequestId: requestId,
         createdAt: at,
