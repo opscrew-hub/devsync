@@ -34,10 +34,14 @@ async function setup() {
     projects: [project, other],
   });
   const register = async (name: string, on = project) => {
-    const { token } = await registerAgent(host, { project: on, member: owner }, {
-      name,
-      kind: "CLAUDE",
-    });
+    const { token } = await registerAgent(
+      host,
+      { project: on, member: owner },
+      {
+        name,
+        kind: "CLAUDE",
+      },
+    );
     return authenticateAgent(host, token);
   };
   const codex = await register("Codex");
@@ -109,7 +113,10 @@ describe("an agent's reports on its claim", () => {
     };
     // Not Claude's claim, and not the current revision.
     await refusal(reportProgress(host, claude, progress), "conflict");
-    const stale = await refusal(reportProgress(host, codex, { ...progress, revision: 1 }), "conflict");
+    const stale = await refusal(
+      reportProgress(host, codex, { ...progress, revision: 1 }),
+      "conflict",
+    );
     expect(stale.message).toMatch(/latest revision/);
 
     tick();
@@ -123,7 +130,11 @@ describe("an agent's reports on its claim", () => {
       { queue: "devsync.outbox", payload: { projectId: project.projectId }, options: undefined },
     ]);
 
-    const blocker = { ...progress, requestId: crypto.randomUUID(), message: "Waiting for a fixture." };
+    const blocker = {
+      ...progress,
+      requestId: crypto.randomUUID(),
+      message: "Waiting for a fixture.",
+    };
     tick();
     const blocked = await reportBlocker(host, codex, blocker);
     expect(blocked.kind).toBe("task.blocked");
@@ -168,12 +179,20 @@ describe("an agent's reports on its claim", () => {
         codex.agentId,
         { taskId, revision: 2, message: "Tests underway." },
       ],
-      ["task.blocked", codex.agentId, { taskId, revision: 2, message: "Waiting for a fixture.", taskVersion: 5 }],
-      ["review.requested", codex.agentId, { taskId, revision: 2, message: "Ready for review.", taskVersion: 8 }],
+      [
+        "task.blocked",
+        codex.agentId,
+        { taskId, revision: 2, message: "Waiting for a fixture.", taskVersion: 5 },
+      ],
+      [
+        "review.requested",
+        codex.agentId,
+        { taskId, revision: 2, message: "Ready for review.", taskVersion: 8 },
+      ],
     ]);
-    expect(timeline.every((e) => e.workspaceId === project.workspaceId && e.processedAt === null)).toBe(
-      true,
-    );
+    expect(
+      timeline.every((e) => e.workspaceId === project.workspaceId && e.processedAt === null),
+    ).toBe(true);
     expect(timeline[0]?.availableAt).toEqual(timeline[0]?.createdAt);
     expect(outboxJobs(host)).toHaveLength(3);
   });
@@ -185,7 +204,10 @@ describe("an agent's reports on its claim", () => {
     await claimTask(host, codex, claim);
     const input = { ...claim, revision: 2, requestId: crypto.randomUUID(), message: "Done." };
     await refusal(reportProgress(host, outsider, input), "not-found");
-    await refusal(reportProgress(host, codex, { ...input, taskId: crypto.randomUUID() }), "not-found");
+    await refusal(
+      reportProgress(host, codex, { ...input, taskId: crypto.randomUUID() }),
+      "not-found",
+    );
     const frozen: AgentActor = { ...codex, project: { ...codex.project, readOnly: true } };
     await refusal(requestReview(host, frozen, input), "forbidden");
     const error = await refusal(reportProgress(host, codex, { ...input, message: "" }), "invalid");
@@ -234,11 +256,19 @@ describe("submitReview", () => {
     expect(await submitReview(host, claude, input)).toEqual(decision);
     await refusal(submitReview(host, claude, { ...input, message: "Other" }), "conflict");
     expect(await readTask(taskId)).toMatchObject({ status: "READY", version: 6 });
-    const [saved] = await testDb.db.select().from(outboxEvent).where(eq(outboxEvent.id, decision.id));
+    const [saved] = await testDb.db
+      .select()
+      .from(outboxEvent)
+      .where(eq(outboxEvent.id, decision.id));
     expect(saved).toMatchObject({
       actorAgentId: claude.agentId,
       reviewRequestId: request.id,
-      payload: { taskId, reviewRequestId: request.id, revision: 2, message: "Add regression coverage." },
+      payload: {
+        taskId,
+        reviewRequestId: request.id,
+        revision: 2,
+        message: "Add regression coverage.",
+      },
     });
 
     const second = await askForReview("Regression coverage added.");

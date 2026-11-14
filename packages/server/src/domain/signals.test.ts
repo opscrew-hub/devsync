@@ -131,8 +131,14 @@ describe("a member's message to an agent", () => {
     ]);
     expect((await agentProjectState(host, actor)).project.id).toBe(project.projectId);
 
-    expect(await acknowledgeSignal(host, actor, sent.id)).toEqual({ id: sent.id, acknowledged: true });
-    expect(await acknowledgeSignal(host, actor, sent.id)).toEqual({ id: sent.id, acknowledged: true });
+    expect(await acknowledgeSignal(host, actor, sent.id)).toEqual({
+      id: sent.id,
+      acknowledged: true,
+    });
+    expect(await acknowledgeSignal(host, actor, sent.id)).toEqual({
+      id: sent.id,
+      acknowledged: true,
+    });
     expect(await pendingSignals(host, actor)).toEqual([]);
     await refusal(acknowledgeSignal(host, actor, crypto.randomUUID()), "not-found");
     await refusal(acknowledgeSignal(host, actor, "not-a-uuid"), "not-found");

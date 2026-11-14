@@ -34,10 +34,14 @@ async function setup() {
     projects: [project, other],
   });
   const register = async (name: string, on = project) => {
-    const { token } = await registerAgent(host, { project: on, member: owner }, {
-      name,
-      kind: "CODEX",
-    });
+    const { token } = await registerAgent(
+      host,
+      { project: on, member: owner },
+      {
+        name,
+        kind: "CODEX",
+      },
+    );
     return authenticateAgent(host, token);
   };
   const agents = [await register("Codex"), await register("Claude")] as const;
@@ -86,10 +90,7 @@ describe("task claims", () => {
     // Not Ready yet.
     await refusal(claimTask(host, agents[0], { taskId, claimId: crypto.randomUUID() }), "conflict");
     await testDb.db.update(task).set({ status: "READY" }).where(eq(task.id, taskId));
-    await refusal(
-      claimTask(host, outsider, { taskId, claimId: crypto.randomUUID() }),
-      "not-found",
-    );
+    await refusal(claimTask(host, outsider, { taskId, claimId: crypto.randomUUID() }), "not-found");
 
     const claimIds = [crypto.randomUUID(), crypto.randomUUID()] as const;
     const results = await Promise.allSettled(
@@ -146,10 +147,16 @@ describe("task claims", () => {
     const recovered = await claimTask(host, loserAgent, loserClaim);
     expect(recovered).toMatchObject({ claimId: loserClaim.claimId, revision: 2, version: 4 });
     await refusal(releaseTask(host, winnerAgent, winnerClaim), "conflict");
-    await refusal(claimTask(host, winnerAgent, { taskId, claimId: crypto.randomUUID() }), "conflict");
+    await refusal(
+      claimTask(host, winnerAgent, { taskId, claimId: crypto.randomUUID() }),
+      "conflict",
+    );
 
     setClock(host, start + 6 * MINUTE + LEASE);
-    expect(await releaseTask(host, loserAgent, loserClaim)).toEqual({ id: taskId, status: "READY" });
+    expect(await releaseTask(host, loserAgent, loserClaim)).toEqual({
+      id: taskId,
+      status: "READY",
+    });
     expect(await readTask(taskId)).toMatchObject({
       status: "READY",
       claimAgentId: null,
@@ -164,7 +171,10 @@ describe("task claims", () => {
   it("refuses another project's task, an unknown task and invalid ids", async () => {
     const { host, agents, outsider } = await setup();
     const claimId = crypto.randomUUID();
-    await refusal(claimTask(host, agents[0], { taskId: crypto.randomUUID(), claimId }), "not-found");
+    await refusal(
+      claimTask(host, agents[0], { taskId: crypto.randomUUID(), claimId }),
+      "not-found",
+    );
     const elsewhere = await testDb.db
       .insert(task)
       .values({

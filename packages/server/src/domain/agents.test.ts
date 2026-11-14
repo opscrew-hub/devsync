@@ -4,7 +4,14 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agent } from "../db";
 import { DevSyncError, type ErrorCode, type ProjectContext, type ProjectRef } from "../host";
-import { createTestDb, FAKE_NOW, type FakeHost, fakeHost, fakeToken, type TestDb } from "../testing";
+import {
+  createTestDb,
+  FAKE_NOW,
+  type FakeHost,
+  fakeHost,
+  fakeToken,
+  type TestDb,
+} from "../testing";
 import { authenticateAgent, listAgents, registerAgent, revokeAgent, rotateAgent } from "./agents";
 
 const HOUR = 60 * 60 * 1000;
@@ -170,7 +177,9 @@ describe("authenticateAgent", () => {
       project,
     });
     const [row] = await testDb.db.select().from(agent).where(eq(agent.id, registered.id));
-    expect(row?.lastSeenAt?.toISOString()).toBe(new Date(Date.parse(FAKE_NOW) + HOUR).toISOString());
+    expect(row?.lastSeenAt?.toISOString()).toBe(
+      new Date(Date.parse(FAKE_NOW) + HOUR).toISOString(),
+    );
   });
 
   it("refuses a malformed, unknown, expired or revoked token, or one whose project is off, alike", async () => {
