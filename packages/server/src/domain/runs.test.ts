@@ -19,6 +19,7 @@ import {
   DISPATCH_RETRY_MS,
   failureMessage,
   listRuns,
+  RESULT_RETRY_MS,
   RUN_TIMEOUT_MS,
   rejectRun,
   requestRun,
@@ -529,6 +530,46 @@ describe("dispatchRun (devsync.runs)", () => {
     expect((await rowOf(asked.id)).status).toBe("QUEUED");
   });
 
+  it("claims the run and commits the claim before calling GitHub, outside any transaction", async () => {
+    const s = setup();
+    const asked = await requestRun(s.host, s.ctx("developer"), (await readyTask(s)).id);
+    await approveRun(s.host, s.ctx("owner"), asked.id);
+    const dispatch = s.host.github.dispatch.bind(s.host.github);
+    const seen: Pick<RunRow, "status" | "startedAt">[] = [];
+    s.host.github.dispatch = async (...args) => {
+      // Read through the database itself: PGlite would wait here for a transaction left open.
+      const { status, startedAt } = await rowOf(asked.id);
+      seen.push({ status, startedAt });
+      return dispatch(...args);
+    };
+    await jobs["devsync.runs"].handler({ projectId: s.project.projectId, runId: asked.id }, s.host);
+    expect(seen).toEqual([{ status: "QUEUED", startedAt: new Date(FAKE_NOW) }]);
+    expect(await rowOf(asked.id)).toMatchObject({
+      status: "RUNNING",
+      startedAt: new Date(FAKE_NOW),
+    });
+  });
+
+  it("never dispatches a claimed run again, even when its dispatch broke off", async () => {
+    const s = setup();
+    const asked = await requestRun(s.host, s.ctx("developer"), (await readyTask(s)).id);
+    await approveRun(s.host, s.ctx("owner"), asked.id);
+    let calls = 0;
+    s.host.github.dispatch = async () => {
+      calls++;
+      throw new Error("The worker stopped mid-call.");
+    };
+    const job = { projectId: s.project.projectId, runId: asked.id };
+    await expect(jobs["devsync.runs"].handler(job, s.host)).rejects.toThrow("mid-call");
+    await jobs["devsync.runs"].handler(job, s.host);
+    expect(calls).toBe(1);
+    expect(await rowOf(asked.id)).toMatchObject({
+      status: "QUEUED",
+      startedAt: new Date(FAKE_NOW),
+      githubRunId: null,
+    });
+  });
+
   it.each([
     "not-found",
     "unavailable",
@@ -547,7 +588,8 @@ describe("dispatchRun (devsync.runs)", () => {
     expect(ended).toMatchObject({
       status: "FAILED",
       failure: { code: failure, message: failureMessage(failure, asked.id) },
-      startedAt: null,
+      // When its dispatch was claimed.
+      startedAt: FAKE_NOW,
       finishedAt: FAKE_NOW,
       githubRunUrl: null,
       usage: null,
@@ -791,13 +833,10 @@ describe("a workflow_run fact (devsync.github)", () => {
     });
   });
 
-  it("changes nothing for a repeated delivery, or for a run of another project", async () => {
+  it("changes nothing for a repeated delivery", async () => {
     const s = setup();
     const ready = await readyTask(s);
     const started = await startedRun(s, ready.id);
-    await complete(s, started, { result: resultOf(started.id) }, s.other);
-    expect((await rowOf(started.id)).status).toBe("RUNNING");
-
     await complete(s, started, { result: resultOf(started.id) });
     const ended = await rowOf(started.id);
     await complete(s, started, {
@@ -806,10 +845,25 @@ describe("a workflow_run fact (devsync.github)", () => {
     expect(await rowOf(started.id)).toEqual(ended);
     expect(auditsOf(s.host, "devsync.run.finished")).toHaveLength(1);
     expect(s.host.github.deleted).toHaveLength(2);
+  });
 
-    // A run DevSync doesn't know.
-    await complete(s, { githubRunId: 1 }, { result: resultOf(started.id) });
-    expect(auditsOf(s.host, "devsync.run.finished")).toHaveLength(1);
+  it("fails the job, to be retried, for a run the project doesn't have (yet)", async () => {
+    const s = setup();
+    const ready = await readyTask(s);
+    const started = await startedRun(s, ready.id);
+    // GitHub's run id is of another project's run, or of one whose start isn't recorded yet.
+    for (const [on, githubRunId] of [
+      [s.other, started.githubRunId],
+      [s.project, started.githubRunId + 1000],
+    ] as const) {
+      await expect(
+        complete(s, { githubRunId }, { result: resultOf(started.id) }, on),
+      ).rejects.toThrow(
+        `DevSync has no run with GitHub run id ${githubRunId} in this project yet; the job is retried.`,
+      );
+    }
+    expect((await rowOf(started.id)).status).toBe("RUNNING");
+    expect(auditsOf(s.host, "devsync.run.finished")).toEqual([]);
   });
 
   it("fails the job while GitHub doesn't answer, and ends the run once it does", async () => {
@@ -893,7 +947,7 @@ describe("sweepRuns (devsync.runs on its schedule)", () => {
   it("ends a run still in GitHub six hours after it started, reading its result once more", async () => {
     const s = setup(own.db);
     const runs = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       const ready = await readyTask(s);
       const asked = await requestRun(s.host, s.ctx("developer"), ready.id);
       await approveRun(s.host, s.ctx("owner"), asked.id);
@@ -903,7 +957,12 @@ describe("sweepRuns (devsync.runs on its schedule)", () => {
       );
       runs.push(await ownRow(asked.id));
     }
-    const [withResult, withoutResult, unreadable] = runs as [RunRow, RunRow, RunRow];
+    const [withResult, withoutResult, unavailable, forbidden] = runs as [
+      RunRow,
+      RunRow,
+      RunRow,
+      RunRow,
+    ];
     s.host.github.artifacts.push({
       githubRunId: withResult.githubRunId as number,
       name: "devsync-result",
@@ -914,19 +973,29 @@ describe("sweepRuns (devsync.runs on its schedule)", () => {
     await jobs["devsync.runs"].handler({}, s.host);
     for (const row of runs) expect((await ownRow(row.id)).status).toBe("RUNNING");
 
-    setClock(s.host, START + RUN_TIMEOUT_MS);
     const artifact = s.host.github.artifact.bind(s.host.github);
-    s.host.github.artifact = async (projectId, githubRunId, name) =>
-      githubRunId === unreadable.githubRunId
-        ? { ok: false, failure: "unavailable" }
-        : artifact(projectId, githubRunId, name);
+    s.host.github.artifact = async (projectId, githubRunId, name) => {
+      if (githubRunId === unavailable.githubRunId) return { ok: false, failure: "unavailable" };
+      if (githubRunId === forbidden.githubRunId) return { ok: false, failure: "forbidden" };
+      return artifact(projectId, githubRunId, name);
+    };
+    setClock(s.host, START + RUN_TIMEOUT_MS);
     await jobs["devsync.runs"].handler(null, s.host);
 
     expect((await ownRow(withResult.id)).status).toBe("SUCCEEDED");
-    for (const row of [withoutResult, unreadable]) {
+    for (const row of [withoutResult, forbidden]) {
       expect(await ownRow(row.id)).toMatchObject({ status: "FAILED", failure: "no-result" });
     }
-    expect(auditsOf(s.host, "devsync.run.finished")).toHaveLength(3);
+    // GitHub not answering: tried again by each sweep, until a day after the dispatch.
+    expect((await ownRow(unavailable.id)).status).toBe("RUNNING");
+    setClock(s.host, START + RESULT_RETRY_MS - 1);
+    await sweepRuns(s.host);
+    expect((await ownRow(unavailable.id)).status).toBe("RUNNING");
+    setClock(s.host, START + RESULT_RETRY_MS);
+    await sweepRuns(s.host);
+    expect(await ownRow(unavailable.id)).toMatchObject({ status: "FAILED", failure: "no-result" });
+
+    expect(auditsOf(s.host, "devsync.run.finished")).toHaveLength(4);
     expect(s.host.errors).toEqual([]);
   });
 
@@ -943,19 +1012,59 @@ describe("sweepRuns (devsync.runs on its schedule)", () => {
     expect(s.host.github.deleted).toEqual([]);
   });
 
-  it("dispatches an approved run whose dispatch didn't happen within ten minutes", async () => {
+  it("queues the dispatch of an approved run not claimed within ten minutes", async () => {
     const s = setup(own.db);
     const ready = await readyTask(s);
     const asked = await requestRun(s.host, s.ctx("developer"), ready.id);
     await approveRun(s.host, s.ctx("owner"), asked.id);
+    const job = {
+      queue: "devsync.runs",
+      payload: { projectId: s.project.projectId, runId: asked.id },
+    };
+    expect(s.host.enqueued.filter((j) => j.queue === "devsync.runs")).toEqual([job]);
 
     setClock(s.host, START + DISPATCH_RETRY_MS - 1);
     await sweepRuns(s.host);
-    expect(s.host.github.dispatches).toEqual([]);
+    expect(s.host.enqueued.filter((j) => j.queue === "devsync.runs")).toEqual([job]);
 
     setClock(s.host, START + DISPATCH_RETRY_MS);
     await sweepRuns(s.host);
+    expect(s.host.enqueued.filter((j) => j.queue === "devsync.runs")).toEqual([job, job]);
+    expect(s.host.github.dispatches).toEqual([]);
+    await jobs["devsync.runs"].handler(job.payload, s.host);
     expect(s.host.github.dispatches.map((d) => d.inputs.run_id)).toEqual([asked.id]);
     expect(await ownRow(asked.id)).toMatchObject({ status: "RUNNING" });
+  });
+
+  it("ends unavailable a run claimed for its dispatch but not recorded within ten minutes", async () => {
+    const s = setup(own.db);
+    const ready = await readyTask(s);
+    const asked = await requestRun(s.host, s.ctx("developer"), ready.id);
+    await approveRun(s.host, s.ctx("owner"), asked.id);
+    let calls = 0;
+    s.host.github.dispatch = async () => {
+      calls++;
+      throw new Error("The worker stopped mid-call.");
+    };
+    const job = { projectId: s.project.projectId, runId: asked.id };
+    await expect(jobs["devsync.runs"].handler(job, s.host)).rejects.toThrow("mid-call");
+
+    setClock(s.host, START + DISPATCH_RETRY_MS - 1);
+    await sweepRuns(s.host);
+    expect((await ownRow(asked.id)).status).toBe("QUEUED");
+
+    setClock(s.host, START + DISPATCH_RETRY_MS);
+    await sweepRuns(s.host);
+    expect(await ownRow(asked.id)).toMatchObject({
+      status: "FAILED",
+      failure: "unavailable",
+      finishedAt: new Date(START + DISPATCH_RETRY_MS),
+    });
+    expect(failureMessage("unavailable", asked.id)).toContain("Actions tab");
+    expect(auditsOf(s.host, "devsync.run.finished")).toHaveLength(1);
+    // Neither the sweep nor another job dispatches it again.
+    await jobs["devsync.runs"].handler(job, s.host);
+    expect(calls).toBe(1);
+    expect(s.host.enqueued.filter((j) => j.queue === "devsync.runs")).toHaveLength(1);
   });
 });

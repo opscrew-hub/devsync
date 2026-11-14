@@ -271,7 +271,10 @@ export const run = devsyncSchema.table(
     status: text("status", { enum: runStatuses }).notNull().default("REQUESTED"),
     createdAt: createdAt(),
     decidedAt: tstz("decided_at"),
-    /** When GitHub started it: the six-hour sweep counts from here. */
+    /**
+     * When its dispatch was claimed, just before GitHub is asked to start it: set once, so a run is
+     * dispatched at most once. The sweep counts from here.
+     */
     startedAt: tstz("started_at"),
     finishedAt: tstz("finished_at"),
     /** A failed run's `RunFailure`. */

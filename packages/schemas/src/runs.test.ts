@@ -97,6 +97,17 @@ describe("checkRunResult", () => {
     expect(checkRunResult(result({ changedFiles: [""] }), { runId, fullName }).ok).toBe(false);
   });
 
+  it("refuses a NUL or a lone surrogate in a changed path or a model's name, as jsonb does", () => {
+    const check = (fields: Record<string, unknown>) =>
+      checkRunResult(result(fields), { runId, fullName }).ok;
+    for (const bad of ["src/a\u0000.ts", "src/\ud800.ts", "src/\udfff.ts", "\udc00\ud800"]) {
+      expect(check({ changedFiles: ["src/ok.ts", bad] }), JSON.stringify(bad)).toBe(false);
+      expect(check({ models: [bad] }), JSON.stringify(bad)).toBe(false);
+    }
+    // A surrogate pair is one character, which jsonb keeps.
+    expect(check({ changedFiles: ["src/\u{1F600}.ts"], models: ["claude-\u{1F600}"] })).toBe(true);
+  });
+
   it("refuses a negative, fractional or missing figure", () => {
     const usage = result().usage;
     for (const changed of [
@@ -137,6 +148,17 @@ describe("pullRequestNumberOf", () => {
   it("reads a pull request of the repository, in any case", () => {
     expect(pullRequestNumberOf("https://github.com/ACME/shop/pull/7", "acme/Shop")).toBe(7);
     expect(pullRequestNumberOf("https://github.com/acme/shop.js/pull/7", "acme/shop.js")).toBe(7);
+    expect(
+      pullRequestNumberOf("https://github.com/octocat_acme/shop/pull/7", "octocat_acme/shop"),
+    ).toBe(7);
+    for (const url of [
+      "https://github.com/octocat_acme/shop/pull/7?tab=files",
+      "https://github.com/octocat_acme/shop/pull/7#top",
+      "https://github.com/octocat acme/shop/pull/7",
+      "https://github.com/octocat_acme/shop/extra/pull/7",
+    ]) {
+      expect(pullRequestNumberOf(url, "octocat_acme/shop"), url).toBeNull();
+    }
     expect(pullRequestNumberOf("https://github.com/acme/shop/pull/7", "acme/shop.js")).toBeNull();
   });
 });

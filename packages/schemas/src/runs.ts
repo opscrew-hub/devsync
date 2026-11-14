@@ -81,6 +81,7 @@ export const Run = z.object({
   decidedBy: Author.nullable(),
   createdAt: Timestamp,
   decidedAt: Timestamp.nullable(),
+  /** When OpsCrew asked GitHub to start it. */
   startedAt: Timestamp.nullable(),
   finishedAt: Timestamp.nullable(),
   /** A failed run's reason, and what to do about it in plain English. */
@@ -111,6 +112,21 @@ export type RunSetup = z.infer<typeof RunSetup>;
 /** The limits on a result's lists. */
 export const RESULT_LIMITS = { changedFiles: 1000, path: 400, models: 20, model: 200 } as const;
 
+/** A lone surrogate: with the `u` flag, a proper pair is one character and doesn't match. */
+const LONE_SURROGATE = /[\ud800-\udfff]/u;
+
+/**
+ * A result's text of 1 to `max` characters that PostgreSQL's `jsonb` keeps: no NUL and no lone
+ * surrogate, which it refuses.
+ */
+function storable(max: number) {
+  return z
+    .string()
+    .min(1)
+    .max(max)
+    .refine((text) => !text.includes("\u0000") && !LONE_SURROGATE.test(text));
+}
+
 /** `result.json` in the run's `devsync-result` artifact, schema version 1 (docs/managed-runs.md). */
 export const RunResult = z
   .object({
@@ -118,9 +134,7 @@ export const RunResult = z
     runId: Id,
     status: z.enum(["succeeded", "failed"]),
     failure: WorkflowFailure.nullable(),
-    changedFiles: z
-      .array(z.string().min(1).max(RESULT_LIMITS.path))
-      .max(RESULT_LIMITS.changedFiles),
+    changedFiles: z.array(storable(RESULT_LIMITS.path)).max(RESULT_LIMITS.changedFiles),
     usage: z.object({
       inputTokens: Tokens,
       outputTokens: Tokens,
@@ -128,7 +142,7 @@ export const RunResult = z
       cacheReadInputTokens: Tokens,
       costUsd: Cost,
     }),
-    models: z.array(z.string().min(1).max(RESULT_LIMITS.model)).max(RESULT_LIMITS.models),
+    models: z.array(storable(RESULT_LIMITS.model)).max(RESULT_LIMITS.models),
     pullRequestUrl: z.string().max(2048).nullable(),
     branch: z.string().max(255).nullable(),
   })
@@ -145,12 +159,14 @@ const MAX_PULL_REQUEST = 2_147_483_647;
 /**
  * The number of the pull request at `url` when it is one of the repository `fullName`'s
  * (`https://github.com/<owner>/<repo>/pull/<number>`, owner and repository in any case), else null.
+ * The comparison with `fullName` is the check; the pattern only splits the address.
  */
 export function pullRequestNumberOf(url: string, fullName: string): number | null {
-  const match =
-    /^https:\/\/github\.com\/([A-Za-z0-9-]+\/[A-Za-z0-9._-]+)\/pull\/([1-9][0-9]{0,9})$/.exec(url);
-  if (!match || match[1]?.toLowerCase() !== fullName.toLowerCase()) return null;
-  const number = Number(match[2]);
+  const match = /^https:\/\/github\.com\/([^/?#\s]+)\/([^/?#\s]+)\/pull\/([1-9][0-9]{0,9})$/.exec(
+    url,
+  );
+  if (!match || `${match[1]}/${match[2]}`.toLowerCase() !== fullName.toLowerCase()) return null;
+  const number = Number(match[3]);
   return number <= MAX_PULL_REQUEST ? number : null;
 }
 

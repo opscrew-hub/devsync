@@ -249,12 +249,15 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
   DevSync keeps the pull request's latest state and sends the project's agents branch-updated,
   pull-request-opened and pull-request-merged signals, once per delivery. A `workflow_run` fact,
   which the host sends only for a completed run DevSync started, ends that run (see Managed runs);
-  a repeated delivery changes nothing.
-- `devsync.runs`: `{ projectId, runId }` dispatches an approved run, enqueued once its approval
-  commits. Every ten minutes (`*/10 * * * *`), with an empty payload, it sweeps every project's
-  runs: it dispatches an approved run still waiting ten minutes after its approval, and reads a run
-  still in GitHub six hours after it started once more, ending it `FAILED` (`no-result`) without a
-  result.
+  a repeated delivery changes nothing, and a fact for a run the project doesn't have yet fails the
+  job, so the host retries it.
+- `devsync.runs`: `{ projectId, runId }` dispatches an approved run, at most once, enqueued once
+  its approval commits. Every ten minutes (`*/10 * * * *`), with an empty payload, it sweeps every
+  project's runs: it enqueues the dispatch of an approved run not claimed ten minutes after its
+  approval; it ends `FAILED` (`unavailable`) a run claimed ten minutes ago whose dispatch was never
+  recorded, without dispatching it again; and it reads a run still in GitHub six hours after its
+  dispatch once more, ending it `FAILED` (`no-result`) without a result (while GitHub doesn't
+  answer, it tries again at each sweep until a day after the dispatch).
 
 ## Migrations and removal
 
@@ -306,9 +309,16 @@ throw GitHub's errors:
 | Call | When | What DevSync does with the answer |
 |---|---|---|
 | `setup(projectId, "devsync.yml")` | `GET /runs/setup`, and before a run is asked for | `workflow`, and whether `secrets` holds `ANTHROPIC_API_KEY`, give `RunSetup`; asking for a run while either is missing answers 409 with `missing`'s words |
-| `dispatch(projectId, "devsync.yml", { run_id, task })` | `devsync.runs`, once per approved run | `run_id` is the run's id; `task` is `{ "title", "description", "acceptanceCriteria" }` of the requested revision as JSON, at most 60,000 characters (a longer task is refused when the run is asked for). The run is then `RUNNING` with `githubRunId`; a failure ends it `FAILED` with that failure as its reason |
-| `artifact(projectId, githubRunId, "devsync-result")` | a `workflow_run` fact, and the six-hour sweep | `result.json` (schema version 1, `RunResult` in `@devsync/schemas`) is checked (the run's own id, a pull request of the project's own repository, at most 1,000 changed paths of at most 400 characters, every figure non-negative) and kept; a result that fails a check ends the run `bad-result`, none `no-result`. A failure fails the fact's job, so the host retries it |
+| `dispatch(projectId, "devsync.yml", { run_id, task })` | `devsync.runs`, at most once per approved run | `run_id` is the run's id; `task` is `{ "title", "description", "acceptanceCriteria" }` of the requested revision as JSON, at most 60,000 characters (a longer task is refused when the run is asked for). The run is then `RUNNING` with `githubRunId`; a failure ends it `FAILED` with that failure as its reason |
+| `artifact(projectId, githubRunId, "devsync-result")` | a `workflow_run` fact, and the six-hour sweep | `result.json` (schema version 1, `RunResult` in `@devsync/schemas`) is checked (the run's own id, a pull request of the project's own repository, at most 1,000 changed paths of at most 400 characters with no NUL or lone surrogate, every figure non-negative) and kept; a result that fails a check ends the run `bad-result`, none `no-result`. A failure fails the fact's job, so the host retries it |
 | `deleteArtifact(projectId, githubRunId, name)` | once the run has ended | both `devsync-result` and `devsync-patch`; a failure is logged, and GitHub removes them when they expire |
+
+A dispatch never holds a transaction open while GitHub is asked. It first claims the run, setting
+its `started_at` while it is `QUEUED` and has none, in one statement that commits on its own; only a
+job that claimed the run calls `dispatch`, and a second short transaction then records GitHub's
+answer. A run is thus dispatched at most once: if a dispatch breaks off between the claim and the
+answer, GitHub may have started the run, so the sweep ends it `FAILED` (`unavailable`, telling the
+user to look for it in the repository's Actions) instead of dispatching it again.
 
 A run whose `workflow_run` conclusion is `cancelled` ends `FAILED` (`cancelled`), whatever its
 result says. A succeeded run's draft pull request is linked to the task when the task has none

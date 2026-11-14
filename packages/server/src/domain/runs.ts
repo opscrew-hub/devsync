@@ -3,10 +3,10 @@
  * Approver approves or rejects it, and its requester (or one of them) may cancel it while it waits.
  * The `devsync.runs` queue dispatches an approved run to the project's own `devsync.yml` through
  * `host.github`; when GitHub reports the run completed (a `workflow_run` fact on `devsync.github`),
- * its `devsync-result` artifact is read, checked and kept, and its artifacts deleted. The queue's
- * schedule reads a run still in GitHub six hours after it started once more, and ends it without a
- * result. Every change is on the task's timeline (an outbox event) and audited, in its transaction.
- * Every query filters by the project.
+ * its `devsync-result` artifact is read, checked and kept, and its artifacts deleted. A run is
+ * dispatched at most once (`dispatchRun`). The queue's schedule reads a run still in GitHub six
+ * hours after its dispatch once more, and ends it without a result. Every change is on the task's
+ * timeline (an outbox event) and audited, in its transaction. Every query filters by the project.
  */
 import {
   can,
@@ -20,7 +20,7 @@ import {
   RunUsage,
   UNENDED_RUN_STATUSES,
 } from "@devsync/schemas";
-import { and, asc, desc, eq, inArray, lte, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { type RunRow, run, type TaskRow, task, taskRevision } from "../db";
 import {
@@ -48,9 +48,21 @@ import { writePullRequestLink } from "./tasks";
 
 /** The most characters the `task` input holds: GitHub takes 65,535 for all of a run's inputs. */
 export const TASK_INPUT_LIMIT = 60_000;
-/** How long a run may stay in GitHub before the schedule reads it once more and ends it. */
+/**
+ * How long after its dispatch a run may stay in GitHub before the schedule reads it once more and
+ * ends it.
+ */
 export const RUN_TIMEOUT_MS = 6 * 60 * 60 * 1000;
-/** How long an approved run may wait for its dispatch before the schedule dispatches it. */
+/**
+ * How long after its dispatch the schedule keeps reading the result of a run GitHub doesn't answer
+ * for, before it ends the run without one.
+ */
+export const RESULT_RETRY_MS = 24 * 60 * 60 * 1000;
+/**
+ * How long an approved run may wait to be claimed for its dispatch before the schedule queues it
+ * again, and how long a claimed one may wait for GitHub's answer to be recorded before the schedule
+ * ends it.
+ */
 export const DISPATCH_RETRY_MS = 10 * 60 * 1000;
 /** How many runs `GET /tasks/:taskId/runs` answers. */
 const LIST_LIMIT = 50;
@@ -124,7 +136,7 @@ export function failureMessage(failure: RunFailure, runId: string): string {
     "not-found":
       "OpsCrew couldn't reach the project's repository: it isn't connected, or DevSync is off for it. Reconnect it or switch DevSync on, then ask for a new run.",
     unavailable:
-      "GitHub didn't answer, so the run didn't start. Ask for a new run in a few minutes; if it keeps failing, tell OpsCrew's support.",
+      "GitHub didn't answer when OpsCrew started the run. Check the repository's Actions tab: a run may have started anyway, and you can cancel it there. Then ask for a new run; if it keeps failing, tell OpsCrew's support.",
     "workflow-missing": `The repository's default branch has no ${WORKFLOW_PATH}. Add it from the runs section, then ask for a new run.`,
     "workflow-disabled": `GitHub refused to start ${WORKFLOW_PATH}: it is disabled, or it doesn't take DevSync's inputs. Enable it in the repository's Actions tab and replace it with the file from the runs section, then ask for a new run.`,
     forbidden:
@@ -570,49 +582,75 @@ export async function cancelRun(
 // --- The queue: dispatch, completion, sweep -----------------------------------------------------
 
 /**
- * `devsync.runs` for one approved run: starts the project's `devsync.yml` with the run's id and the
- * requested revision's requirements, and the run is then in GitHub (`RUNNING`, with GitHub's run
- * id); GitHub's refusal ends it `FAILED`, saying what to do. The run's row stays locked during the
- * call, so another job for the same run skips it, and finds it started afterwards.
+ * `devsync.runs` for one approved run, dispatched at most once, with no transaction open while
+ * GitHub is asked:
+ *
+ * 1. the run is claimed: its `started_at` set while it is `QUEUED` and has none (one statement);
+ * 2. GitHub starts the project's `devsync.yml` with the run's id and the requested revision's
+ *    requirements;
+ * 3. the run is then in GitHub (`RUNNING`, with GitHub's run id), or `FAILED` with GitHub's
+ *    refusal, saying what to do.
+ *
+ * A claimed run is never dispatched again: one whose dispatch broke off before step 3 is ended by
+ * the sweep (`sweepRuns`), as GitHub may have started it.
  */
 export async function dispatchRun(
   host: DevSyncHost,
   job: { projectId: string; runId: string },
 ): Promise<void> {
+  const [requested] = await host.db
+    .select({
+      title: taskRevision.title,
+      description: taskRevision.description,
+      acceptanceCriteria: taskRevision.acceptanceCriteria,
+    })
+    .from(run)
+    .innerJoin(
+      taskRevision,
+      and(
+        eq(taskRevision.taskId, run.taskId),
+        eq(taskRevision.projectId, run.projectId),
+        eq(taskRevision.number, run.revision),
+      ),
+    )
+    .where(and(eq(run.id, job.runId), eq(run.projectId, job.projectId)));
+  if (!requested) return;
+
+  const [claimed] = await host.db
+    .update(run)
+    .set({ startedAt: host.clock.now() })
+    .where(
+      and(
+        eq(run.id, job.runId),
+        eq(run.projectId, job.projectId),
+        eq(run.status, "QUEUED"),
+        isNull(run.startedAt),
+      ),
+    )
+    .returning();
+  if (!claimed) return;
+
+  const answer = await host.github.dispatch(claimed.projectId, WORKFLOW_FILE, {
+    run_id: claimed.id,
+    task: taskInput(requested),
+  });
+
+  const at = host.clock.now();
   const changed = await host.db.transaction(async (tx) => {
     const [current] = await tx
       .select()
       .from(run)
-      .where(and(eq(run.id, job.runId), eq(run.projectId, job.projectId), eq(run.status, "QUEUED")))
-      .for("update", { skipLocked: true });
+      .where(and(runIn(claimed, claimed.id), eq(run.status, "QUEUED")))
+      .for("update");
+    // The sweep ended it meanwhile.
     if (!current) return false;
-    const [requirements] = await tx
-      .select({
-        title: taskRevision.title,
-        description: taskRevision.description,
-        acceptanceCriteria: taskRevision.acceptanceCriteria,
-      })
-      .from(taskRevision)
-      .where(
-        and(
-          eq(taskRevision.taskId, current.taskId),
-          eq(taskRevision.projectId, current.projectId),
-          eq(taskRevision.number, current.revision),
-        ),
-      );
-    if (!requirements) throw new Error(`Run ${current.id}'s requirements revision is missing.`);
-    const answer = await host.github.dispatch(current.projectId, WORKFLOW_FILE, {
-      run_id: current.id,
-      task: taskInput(requirements),
-    });
-    const at = host.clock.now();
     if (!answer.ok) {
       await recordEnd(host, tx, current, failed(answer.failure), at);
       return true;
     }
     const [started] = await tx
       .update(run)
-      .set({ status: "RUNNING", githubRunId: answer.githubRunId, startedAt: at })
+      .set({ status: "RUNNING", githubRunId: answer.githubRunId })
       .where(runIn(current, current.id))
       .returning();
     if (!started) throw new Error(`Run ${current.id} wasn't saved.`);
@@ -699,9 +737,10 @@ async function finishRun(
 /**
  * A `workflow_run` fact on `devsync.github`: GitHub completed one of the project's runs. The run's
  * result is read, checked and kept, and the run ended; a run cancelled in GitHub ends `cancelled`,
- * whatever its result says. A repeated delivery changes nothing. When GitHub doesn't answer, the
- * job fails, so the host retries it; the schedule ends the run at the latest six hours after it
- * started.
+ * whatever its result says. A repeated delivery (the run no longer `RUNNING`) changes nothing.
+ * The job fails, so the host retries it, for a run the project doesn't have yet (the fact can come
+ * before the dispatch records GitHub's run id) and while GitHub doesn't answer; the schedule ends
+ * the run at the latest six hours after its dispatch.
  */
 export async function applyWorkflowRun(
   host: DevSyncHost,
@@ -718,7 +757,12 @@ export async function applyWorkflowRun(
         eq(run.githubRunId, fact.githubRunId),
       ),
     );
-  if (row?.status !== "RUNNING") return;
+  if (!row) {
+    throw new Error(
+      `DevSync has no run with GitHub run id ${fact.githubRunId} in this project yet; the job is retried.`,
+    );
+  }
+  if (row.status !== "RUNNING") return;
   if (fact.conclusion === "cancelled") return finishRun(host, project, row, failed("cancelled"));
   const read = await readResult(host, project, row);
   if (read.kind === "unreadable") {
@@ -742,20 +786,55 @@ async function sweepStep(host: DevSyncHost, runId: string, step: () => Promise<v
 }
 
 /**
- * `devsync.runs` on its schedule: dispatches approved runs whose dispatch didn't happen within ten
- * minutes, and reads the result of each run still in GitHub six hours after it started once more,
- * ending it `FAILED` (`no-result`) without one. Every project's runs, a batch of each at a time.
+ * Ends a run claimed for its dispatch whose dispatch broke off before GitHub's answer was recorded:
+ * GitHub may have started it, so it is never dispatched again, and ends `FAILED` (`unavailable`,
+ * whose message sends the user to the repository's Actions).
+ */
+async function abandonDispatch(host: DevSyncHost, row: RunRow): Promise<void> {
+  const at = host.clock.now();
+  const ended = await host.db.transaction(async (tx) => {
+    const [current] = await tx
+      .select()
+      .from(run)
+      .where(and(runIn(row, row.id), eq(run.status, "QUEUED"), isNotNull(run.startedAt)))
+      .for("update");
+    if (!current) return false;
+    await recordEnd(host, tx, current, failed("unavailable"), at);
+    return true;
+  });
+  if (ended) await outbox.wake(host, row.projectId);
+}
+
+/**
+ * `devsync.runs` on its schedule, over every project's runs, a batch of each kind at a time:
+ *
+ * - an approved run not claimed for its dispatch ten minutes after its approval (its job was lost)
+ *   gets its dispatch queued again;
+ * - a run claimed ten minutes ago whose dispatch was never recorded is ended (`abandonDispatch`);
+ * - a run still in GitHub six hours after its dispatch has its result read once more, and ends
+ *   `FAILED` (`no-result`) without one. While GitHub doesn't answer, it is tried again by each
+ *   sweep until a day after its dispatch.
  */
 export async function sweepRuns(host: DevSyncHost): Promise<void> {
   const now = host.clock.now().getTime();
-  const queued = await host.db
+  const waitedSince = new Date(now - DISPATCH_RETRY_MS);
+  const unclaimed = await host.db
     .select({ id: run.id, projectId: run.projectId })
     .from(run)
-    .where(and(eq(run.status, "QUEUED"), lte(run.decidedAt, new Date(now - DISPATCH_RETRY_MS))))
+    .where(and(eq(run.status, "QUEUED"), isNull(run.startedAt), lte(run.decidedAt, waitedSince)))
     .orderBy(asc(run.decidedAt), asc(run.id))
     .limit(SWEEP_BATCH);
-  for (const { id, projectId } of queued) {
-    await sweepStep(host, id, () => dispatchRun(host, { projectId, runId: id }));
+  for (const { id, projectId } of unclaimed) {
+    await host.enqueue("devsync.runs", { projectId, runId: id });
+  }
+  const brokenOff = await host.db
+    .select()
+    .from(run)
+    .where(and(eq(run.status, "QUEUED"), lte(run.startedAt, waitedSince)))
+    .orderBy(asc(run.startedAt), asc(run.id))
+    .limit(SWEEP_BATCH);
+  for (const row of brokenOff) {
+    await sweepStep(host, row.id, () => abandonDispatch(host, row));
   }
   const stale = await host.db
     .select()
@@ -768,8 +847,10 @@ export async function sweepRuns(host: DevSyncHost): Promise<void> {
       const found = await host.project(row.projectId);
       const project = found?.workspaceId === row.workspaceId ? found : null;
       const read: Read = project ? await readResult(host, project, row) : { kind: "none" };
-      const ending = read.kind === "unreadable" ? failed("no-result") : endingOf(read);
-      await finishRun(host, project, row, ending);
+      if (read.kind !== "unreadable") return finishRun(host, project, row, endingOf(read));
+      const dispatchedAt = row.startedAt?.getTime() ?? 0;
+      if (read.failure === "unavailable" && now - dispatchedAt < RESULT_RETRY_MS) return;
+      await finishRun(host, project, row, failed("no-result"));
     });
   }
 }
