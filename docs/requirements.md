@@ -121,11 +121,11 @@ repository.
 1. **Given** a Ready task, **When** a member asks for a run, **Then** it waits for approval; an
    Owner, Admin or Approver approves or rejects it, and the requester may cancel it.
 2. **Given** an approved run, **Then** OpsCrew dispatches the project's DevSync workflow with the
-   run's id only; the workflow reads the task's requirements at the approved revision from OpsCrew,
-   authenticated by its GitHub OIDC token, and is refused if the task's requirements changed since.
+   run's id and the task's requirements at the approved revision; approving is refused if the
+   task's requirements changed since the run was asked for.
 3. **Given** a finished run, **Then** its result (succeeded or failed with why, changed files, token
-   use, the draft pull request's link) is accepted only from that repository's workflow, and shown
-   on the task.
+   use, the draft pull request's link) is read through the dashboard's GitHub App from the run
+   OpsCrew started in that repository, and from no other, checked, and shown on the task.
 4. **Given** a repository without the DevSync workflow or without the `ANTHROPIC_API_KEY` secret,
    **Then** asking for a run says exactly what to add and where, as the checks setup does.
 
@@ -154,7 +154,8 @@ repository.
   against a fake host; the dashboard plugs it in at a pinned commit through its deployment's
   configuration.
 - **R-8**: DevSync's managed runs MUST run in the project's own GitHub Actions on the workspace's
-  own Anthropic key, report back authenticated by GitHub OIDC, and leave opening the draft pull
+  own Anthropic key, report back through the run's artifact read by the dashboard's GitHub App
+  ([managed-runs.md](managed-runs.md)), and leave opening the draft pull
   request to the user's workflow: OpsCrew holds no AI key and no write token, and opens no pull request itself.
 - **R-9**: DevSync MUST run only inside the dashboard: it has no sign-in, projects or pages of its
   own.
@@ -175,7 +176,7 @@ table has `workspace_id` and `project_id` (except where noted), and every query 
 | `outbox_event` | `actor_user_id`?, `actor_agent_id`?, `task_id`?, `request_id`?, `review_request_id`? → outbox_event unique, `kind`, `payload` jsonb, `available_at`, `processed_at`?, `attempts`. As in legacy, it is also the task's timeline: agents' progress, blocker, review request and review decision reports are outbox events of the task | (`processed_at`, `available_at`); (`project_id`, `task_id`, `created_at`); unique (`project_id`, `actor_agent_id`, `request_id`) |
 | `pull_request` | `number`, `title`, `state` (open, closed, merged), `url`, `head_ref`, `head_sha`, `source_updated_at` | unique (`project_id`, `number`) |
 | `github_delivery` | `delivery_id` text, `received_at`: a delivery already applied to the project | pk (`delivery_id`, `project_id`) |
-| `run` (managed-runs phase) | `task_id`, `revision`, `requested_by_user_id`, `decided_by_user_id`?, `status` (REQUESTED, QUEUED, RUNNING, SUCCEEDED, FAILED, REJECTED, CANCELLED), `decided_at`?, `started_at`?, `finished_at`?, `failure`?, `token_usage` jsonb?, `changed_files` jsonb?, `base_commit`?, `draft_pull_request_url`?, `github_run_id` bigint? | (`project_id`, `created_at`) |
+| `run` | `task_id` → task cascade, `revision`, `requested_by_user_id`, `decided_by_user_id`?, `status` (REQUESTED, QUEUED, RUNNING, SUCCEEDED, FAILED, REJECTED, CANCELLED), `decided_at`?, `started_at`?, `finished_at`?, `failure`?, `token_usage` jsonb? (the result's `usage` and `models`), `changed_files` jsonb?, `draft_pull_request_url`?, `github_run_id` bigint? | (`project_id`, `created_at`); (`task_id`, `created_at`); unique (`task_id`) where `status` in (REQUESTED, QUEUED, RUNNING); unique (`project_id`, `github_run_id`) |
 
 The legacy tables `User`, `Project`, `ProjectMember`, `AuditLog`, `ProjectRealtime`, `GithubEvent`
 (raw payloads) and `GithubRepository` have no successor: the host holds users, projects, roles and
