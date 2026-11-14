@@ -12,7 +12,6 @@ import {
 } from "../host";
 import { createTestDb, type FakeHost, fakeHost, fakeToken, type TestDb } from "../testing";
 import {
-  assignTask,
   commentOnTask,
   createTask,
   getTask,
@@ -242,7 +241,7 @@ describe("every role", () => {
       title: "Ship it",
       status: "READY",
     });
-    const assigned = await assignTask(host, ctx, created.id, {
+    const assigned = await updateTask(host, ctx, created.id, {
       version: edited.version,
       assigneeUserId: member.userId,
     });
@@ -264,7 +263,7 @@ describe("listTasks", () => {
     tick();
     await createTask(host, as(owner, projectB), { ...fields, title: "Elsewhere" });
     tick();
-    await assignTask(host, as(owner), one.id, { version: 1, assigneeUserId: developer.userId });
+    await updateTask(host, as(owner), one.id, { version: 1, assigneeUserId: developer.userId });
     tick();
     await updateTask(host, as(owner), two.id, { version: 1, status: "READY" });
 
@@ -470,7 +469,9 @@ describe("updateTask", () => {
     expect((await getTask(host, as(owner), created.id)).title).toBe("First");
   });
 
-  it("holds the version check under two simultaneous edits: one saves, the other is refused", async () => {
+  // PGlite has one connection, so these edits run one after the other: real concurrency is held at
+  // the database level by the row lock and the UPDATE conditional on the version read.
+  it("refuses the second of two edits made from the same version, saving only the first", async () => {
     const created = await createTask(host, as(owner), fields);
     const results = await Promise.allSettled([
       updateTask(host, as(owner), created.id, { version: 1, title: "From Olga" }),
@@ -533,6 +534,77 @@ describe("updateTask", () => {
     expect(row).toMatchObject({ claimAgentId: null, claimId: null, claimExpiresAt: null });
   });
 
+  it("lets a member move a task whose claim expired or whose agent was revoked, ending the claim", async () => {
+    const builder = await seedAgent(projectA);
+    const claim = async (taskId: string, expiresAt: number) =>
+      testDb.db
+        .update(task)
+        .set({
+          status: "CLAIMED",
+          claimAgentId: builder.agentId,
+          claimId: randomUUID(),
+          claimExpiresAt: new Date(expiresAt),
+        })
+        .where(eq(task.id, taskId));
+
+    const expired = await createTask(host, as(owner), fields);
+    await claim(expired.id, clock);
+    const ready = await updateTask(host, as(owner), expired.id, { version: 1, status: "READY" });
+    expect(ready).toMatchObject({ status: "READY", claim: null });
+    const [row] = await testDb.db.select().from(task).where(eq(task.id, expired.id));
+    expect(row).toMatchObject({ claimAgentId: null, claimId: null, claimExpiresAt: null });
+
+    const revoked = await createTask(host, as(owner), fields);
+    await claim(revoked.id, clock + 900_000);
+    await testDb.db
+      .update(agent)
+      .set({ revokedAt: new Date(clock) })
+      .where(eq(agent.id, builder.agentId));
+    const moved = await updateTask(host, as(owner), revoked.id, {
+      version: 1,
+      status: "IN_PROGRESS",
+    });
+    expect(moved).toMatchObject({ status: "IN_PROGRESS", claim: null });
+  });
+
+  it("records legacy's event for an edit changing several things", async () => {
+    const created = await createTask(host, as(owner), fields);
+    // A move and an assignment: the assignment.
+    const assigned = await updateTask(host, as(owner), created.id, {
+      version: 1,
+      status: "READY",
+      assigneeUserId: admin.userId,
+    });
+    const working = await updateTask(host, as(owner), created.id, {
+      version: assigned.version,
+      status: "IN_PROGRESS",
+    });
+    const blocked = await updateTask(host, as(owner), created.id, {
+      version: working.version,
+      status: "BLOCKED",
+    });
+    // A Blocked task's assignment: still a blocked event, as legacy.
+    const reassigned = await updateTask(host, as(owner), created.id, {
+      version: blocked.version,
+      assigneeUserId: approver.userId,
+    });
+    // A requirements change wins over a move and an assignment.
+    await updateTask(host, as(owner), created.id, {
+      version: reassigned.version,
+      title: "Ship it",
+      status: "READY",
+      assigneeUserId: null,
+    });
+    expect((await events(created.id)).map((e) => e.kind)).toEqual([
+      "task.created",
+      "task.assigned",
+      "task.updated",
+      "task.blocked",
+      "task.blocked",
+      "requirements.changed",
+    ]);
+  });
+
   it("lets an agent edit only the tasks it created, and move them to Backlog or Ready only", async () => {
     const builder = await seedAgent(projectA, "builder");
     const reviewer = await seedAgent(projectA, "reviewer");
@@ -576,15 +648,15 @@ describe("updateTask", () => {
   });
 });
 
-describe("assignTask", () => {
+describe("an edit's assignment", () => {
   it("assigns a member of the workspace and unassigns, recording each", async () => {
     const created = await createTask(host, as(owner), fields);
-    const assigned = await assignTask(host, as(admin), created.id, {
+    const assigned = await updateTask(host, as(admin), created.id, {
       version: 1,
       assigneeUserId: approver.userId,
     });
     expect(assigned.assigneeUserId).toBe(approver.userId);
-    const unassigned = await assignTask(host, as(admin), created.id, {
+    const unassigned = await updateTask(host, as(admin), created.id, {
       version: 2,
       assigneeUserId: null,
     });
@@ -605,7 +677,7 @@ describe("assignTask", () => {
   it("refuses someone outside the workspace", async () => {
     const created = await createTask(host, as(owner), fields);
     const error = await refusal(
-      assignTask(host, as(owner), created.id, { version: 1, assigneeUserId: outsiderId }),
+      updateTask(host, as(owner), created.id, { version: 1, assigneeUserId: outsiderId }),
     );
     expect(error.code).toBe("invalid");
     expect(error.fields).toEqual(["assigneeUserId"]);

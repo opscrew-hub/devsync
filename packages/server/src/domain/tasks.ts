@@ -50,17 +50,17 @@ import {
   type ProjectRef,
   type WorkspaceContext,
 } from "../host";
+import { lockAgentRow, parse, REFUSAL, requireWritable } from "./common";
 import { type OutboxActor, outbox } from "./outbox";
 
 /** Who acts on a task: a member on a project route, or an agent through MCP. */
 export type TaskActor = ProjectContext | AgentActor;
 
 /** The name shown for a member who has left the workspace. */
-export const FORMER_MEMBER = "Former member";
+const FORMER_MEMBER = "Former member";
 /** The name shown for an agent whose row is gone. */
-export const REMOVED_AGENT = "Removed agent";
+const REMOVED_AGENT = "Removed agent";
 
-const NO_SUCH_TASK = "There's no such task in this project.";
 const TASK_CHANGED = "This task changed. Reload it and try again.";
 /** How many of a task's latest events its timeline shows, as legacy's activity list. */
 const TIMELINE_LIMIT = 100;
@@ -69,7 +69,7 @@ const TIMELINE_LIMIT = 100;
 const AgentUpdateFields = AgentTaskUpdate.omit({ taskId: true });
 export type AgentUpdateFields = z.infer<typeof AgentUpdateFields>;
 
-export function isAgent(actor: TaskActor): actor is AgentActor {
+function isAgent(actor: TaskActor): actor is AgentActor {
   return "kind" in actor && actor.kind === "agent";
 }
 
@@ -130,26 +130,9 @@ function requiredAuthor(names: Names, userId: string | null, agentId: string | n
 
 // --- Checks -------------------------------------------------------------------------------------
 
-/** Parses `input` with `schema`, refusing it as `invalid` with the fields' names (never values). */
-function parse<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {
-  const result = schema.safeParse(input);
-  if (result.success) return result.data;
-  const fields = [...new Set(result.error.issues.map((issue) => issue.path.join(".") || "body"))];
-  throw new DevSyncError(
-    "invalid",
-    `Check ${fields.length === 1 ? "this field" : "these fields"} and try again: ${fields.join(", ")}.`,
-    fields,
-  );
-}
-
 /** Refuses a write to a read-only project, and a member whose role may not change tasks. */
 function requireWrite(actor: TaskActor): void {
-  if (actor.project.readOnly) {
-    throw new DevSyncError(
-      "forbidden",
-      "This project is read-only because its workspace is past its plan. Upgrade the plan to change its tasks.",
-    );
-  }
+  requireWritable(actor.project);
   if (!isAgent(actor) && !can(actor.member.role, "task.write")) {
     throw new DevSyncError(
       "forbidden",
@@ -159,7 +142,7 @@ function requireWrite(actor: TaskActor): void {
 }
 
 function noSuchTask(): DevSyncError {
-  return new DevSyncError("not-found", NO_SUCH_TASK);
+  return new DevSyncError("not-found", REFUSAL.noSuchTask);
 }
 
 /** A task id from a path or a tool: anything but a UUID is no task of the project's. */
@@ -197,8 +180,11 @@ function moveRefusal(from: TaskStatus, to: TaskStatus): DevSyncError {
 
 // --- Reads --------------------------------------------------------------------------------------
 
-/** The project's tasks matching `where`, with their claiming agents' names. */
-function selectTasks(db: DevSyncDb, where: SQL | undefined) {
+/**
+ * The tasks matching `where` with their claiming agents' names, most recently updated first: every
+ * list of tasks DevSync answers, an agent's project state's too.
+ */
+export function selectTasks(db: DevSyncDb, where: SQL | undefined) {
   return db
     .select({ task, claimAgentName: agent.name })
     .from(task)
@@ -408,26 +394,23 @@ export async function createTask(
 ): Promise<Task> {
   requireWrite(actor);
   const { project } = actor;
-  const agentId = isAgent(actor) ? actor.agentId : null;
-  const { requestId, ...fields } = agentId
+  const agentActor = isAgent(actor) ? actor : null;
+  const agentId = agentActor?.agentId ?? null;
+  const { requestId, ...fields } = agentActor
     ? parse(AgentTaskInput, input)
     : { requestId: null, ...parse(TaskInput, input) };
   const at = host.clock.now();
   const creator = actorIds(actor);
 
   const result = await host.db.transaction(async (tx) => {
-    if (agentId && requestId) {
+    if (agentActor && requestId) {
       // One create per agent at a time, so a retry finds what the first attempt saved.
-      await tx
-        .select({ id: agent.id })
-        .from(agent)
-        .where(and(eq(agent.id, agentId), eq(agent.projectId, project.projectId)))
-        .for("no key update");
+      await lockAgentRow(tx, agentActor);
       const [existing] = await selectTasks(
         tx,
         and(
           eq(task.projectId, project.projectId),
-          eq(task.creatorAgentId, agentId),
+          eq(task.creatorAgentId, agentActor.agentId),
           eq(task.createRequestId, requestId),
         ),
       );
@@ -495,21 +478,34 @@ export async function createTask(
   return result.task;
 }
 
-/** The event a saved edit records, as legacy chose it, and its plain-English message. */
+/**
+ * The event a saved edit records, in legacy's order (`saveTaskEdit`), and its plain-English
+ * message: none unless the requirements, the status or the assignee changed; then a requirements
+ * change, else a Blocked task (whatever else changed), else an assignment, else a move.
+ */
 function editEvent(before: TaskRow, after: TaskRow, revised: boolean) {
+  const reassigned = after.assigneeUserId !== before.assigneeUserId;
   if (revised) return { kind: "requirements.changed", label: "Requirements changed" };
-  if (after.status !== before.status) {
-    return after.status === "BLOCKED"
-      ? { kind: "task.blocked", label: "Task blocked" }
-      : { kind: "task.updated", label: `Task moved to ${STATUS_LABEL[after.status]}` };
-  }
-  if (after.assigneeUserId !== before.assigneeUserId) {
+  if (after.status === before.status && !reassigned) return null;
+  if (after.status === "BLOCKED") return { kind: "task.blocked", label: "Task blocked" };
+  if (reassigned) {
     return {
       kind: "task.assigned",
       label: after.assigneeUserId ? "Task assigned" : "Task unassigned",
     };
   }
-  return null;
+  return { kind: "task.updated", label: `Task moved to ${STATUS_LABEL[after.status]}` };
+}
+
+/** Whether a claimed task's claim still holds: it hasn't expired and its agent isn't revoked. */
+async function claimHolds(tx: DevSyncDb, row: TaskRow, now: Date): Promise<boolean> {
+  if (!row.claimAgentId || !row.claimExpiresAt) return false;
+  if (row.claimExpiresAt.getTime() <= now.getTime()) return false;
+  const [holder] = await tx
+    .select({ revokedAt: agent.revokedAt })
+    .from(agent)
+    .where(and(eq(agent.id, row.claimAgentId), eq(agent.projectId, row.projectId)));
+  return holder !== undefined && holder.revokedAt === null;
 }
 
 /**
@@ -533,6 +529,9 @@ export async function updateTask(
   const { version, status, assigneeUserId } = update;
   const id = taskIdOf(taskId);
 
+  // Checked before the transaction: a removal committing in between (`removeMember`) won't unassign
+  // this task, as it only unassigns tasks already assigned. Re-checking after the row lock wouldn't
+  // close that window either, since the removal doesn't wait on this row; accepted as is.
   if (assigneeUserId) {
     const members = await host.members(project.workspaceId);
     if (!members.some((m) => m.userId === assigneeUserId)) {
@@ -555,10 +554,18 @@ export async function updateTask(
       );
     }
     if (version !== current.version) throw new DevSyncError("conflict", TASK_CHANGED);
-    if (current.status === "CLAIMED" && status && status !== "CLAIMED" && status !== "CANCELLED") {
+    // A live claim's task moves only through the claim or by cancelling it; one whose claim expired
+    // or whose agent was revoked moves as any other, its claim ended.
+    if (
+      current.status === "CLAIMED" &&
+      status &&
+      status !== "CLAIMED" &&
+      status !== "CANCELLED" &&
+      (await claimHolds(tx, current, at))
+    ) {
       throw new DevSyncError(
         "conflict",
-        "An agent has claimed this task, so its status changes only through the claim. Wait for the agent to release it, or cancel the task.",
+        "An agent has claimed this task, so its status changes only through the claim. Wait for the agent to release it or for its claim to expire, or cancel the task.",
       );
     }
     if (status && status !== current.status && !TRANSITIONS[current.status].includes(status)) {
@@ -580,7 +587,7 @@ export async function updateTask(
         ...fields,
         ...(status ? { status } : {}),
         ...(assigneeUserId !== undefined ? { assigneeUserId } : {}),
-        ...(status === "CANCELLED"
+        ...(status && status !== "CLAIMED"
           ? { claimAgentId: null, claimId: null, claimExpiresAt: null }
           : {}),
         version: current.version + 1,
@@ -625,19 +632,6 @@ export async function updateTask(
   });
   if (result.recorded) await outbox.wake(host, project.projectId);
   return result.task;
-}
-
-/** Assigns the task to a member of the workspace, or unassigns it (`null`): an edit's assignment. */
-export function assignTask(
-  host: DevSyncHost,
-  ctx: ProjectContext,
-  taskId: string,
-  input: { version: number; assigneeUserId: string | null },
-): Promise<Task> {
-  return updateTask(host, ctx, taskId, {
-    version: input.version,
-    assigneeUserId: input.assigneeUserId,
-  });
 }
 
 /** `POST /tasks/:taskId/comments`: a member's comment, newest first on the task. */

@@ -13,7 +13,6 @@ import {
   Id,
 } from "@devsync/schemas";
 import { and, desc, eq, gt, isNull } from "drizzle-orm";
-import type { z } from "zod";
 import { type AgentRow, agent } from "../db";
 import {
   type AgentActor,
@@ -22,6 +21,7 @@ import {
   type DevSyncHost,
   type ProjectContext,
 } from "../host";
+import { parse, REFUSAL } from "./common";
 
 /** How long a token lasts from its registration or rotation. */
 export const AGENT_TOKEN_LIFETIME_MS = 24 * 60 * 60 * 1000;
@@ -29,49 +29,6 @@ export const AGENT_TOKEN_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const RECENTLY_ACTIVE_MS = 2 * 60 * 1000;
 /** 32 random bytes, base64url. */
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{43}$/;
-
-const UNAUTHENTICATED =
-  "The token is invalid, expired or revoked. Ask an Owner or Admin for a new one.";
-const DEVSYNC_OFF = "DevSync is off for this project. Ask an Owner or Admin to switch it on.";
-const NO_SUCH_AGENT = "There's no such agent in this project. Reload the agents list.";
-
-/**
- * Parses `input` with `schema`, refusing it as `invalid` with the fields' names (never values): the
- * agents' domain's inputs (agents, signals, claims, activity).
- */
-export function parseOrRefuse<T extends z.ZodType>(schema: T, input: unknown): z.output<T> {
-  const result = schema.safeParse(input);
-  if (result.success) return result.data;
-  const fields = [...new Set(result.error.issues.map((issue) => issue.path.join(".") || "body"))];
-  throw new DevSyncError(
-    "invalid",
-    `Check ${fields.length === 1 ? "this field" : "these fields"} and try again: ${fields.join(", ")}.`,
-    fields,
-  );
-}
-
-/** Refuses an agent's write to a read-only project (past its workspace's plan). */
-export function requireAgentWrite(actor: AgentActor): void {
-  if (actor.project.readOnly) {
-    throw new DevSyncError(
-      "forbidden",
-      "This project is read-only because its workspace is past its plan: agents can read it but not change it. Ask an Owner to upgrade the plan.",
-    );
-  }
-}
-
-/**
- * Locks the agent's row in `tx` (`FOR NO KEY UPDATE`), so one agent's idempotent writes and its
- * signal limits are checked one at a time, as legacy does.
- */
-export async function lockAgentRow(tx: DevSyncDb, actor: AgentActor): Promise<void> {
-  const [row] = await tx
-    .select({ id: agent.id })
-    .from(agent)
-    .where(and(eq(agent.id, actor.agentId), eq(agent.projectId, actor.project.projectId)))
-    .for("no key update");
-  if (!row) throw new DevSyncError("unauthenticated", UNAUTHENTICATED);
-}
 
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
@@ -88,7 +45,7 @@ function requireManage(ctx: ProjectContext): void {
 
 /** An agent id from a path: anything but a UUID is no agent of the project's. */
 function agentIdOf(agentId: string): string {
-  if (!Id.safeParse(agentId).success) throw new DevSyncError("not-found", NO_SUCH_AGENT);
+  if (!Id.safeParse(agentId).success) throw new DevSyncError("not-found", REFUSAL.noSuchAgent);
   return agentId;
 }
 
@@ -152,7 +109,7 @@ export async function registerAgent(
   input: AgentInput,
 ): Promise<AgentWithToken> {
   requireManage(ctx);
-  const fields = parseOrRefuse(AgentInput, input);
+  const fields = parse(AgentInput, input);
   const now = host.clock.now();
   const { token, tokenHash, expiresAt } = newToken(now);
   const row = await host.db.transaction(async (tx) => {
@@ -195,7 +152,7 @@ export async function rotateAgent(
       .set({ tokenHash, expiresAt, revokedAt: null, lastSeenAt: null })
       .where(where)
       .returning();
-    if (!updated) throw new DevSyncError("not-found", NO_SUCH_AGENT);
+    if (!updated) throw new DevSyncError("not-found", REFUSAL.noSuchAgent);
     await audit(host, tx, ctx, "devsync.agent.rotated", updated);
     return updated;
   });
@@ -222,7 +179,7 @@ export async function revokeAgent(
       .returning();
     if (revoked) return audit(host, tx, ctx, "devsync.agent.revoked", revoked);
     const [found] = await tx.select({ id: agent.id }).from(agent).where(where);
-    if (!found) throw new DevSyncError("not-found", NO_SUCH_AGENT);
+    if (!found) throw new DevSyncError("not-found", REFUSAL.noSuchAgent);
   });
 }
 
@@ -244,7 +201,7 @@ export async function listAgents(host: DevSyncHost, ctx: ProjectContext): Promis
  * when the agent was last seen.
  */
 export async function authenticateAgent(host: DevSyncHost, token: string): Promise<AgentActor> {
-  const refused = () => new DevSyncError("unauthenticated", UNAUTHENTICATED);
+  const refused = () => new DevSyncError("unauthenticated", REFUSAL.unauthenticated);
   if (typeof token !== "string" || !TOKEN_SHAPE.test(token)) throw refused();
   const now = host.clock.now();
   const live = and(
@@ -263,7 +220,7 @@ export async function authenticateAgent(host: DevSyncHost, token: string): Promi
     project.projectId !== found.projectId ||
     project.workspaceId !== found.workspaceId
   ) {
-    throw new DevSyncError("forbidden", DEVSYNC_OFF);
+    throw new DevSyncError("forbidden", REFUSAL.devSyncOff);
   }
   const [seen] = await host.db
     .update(agent)

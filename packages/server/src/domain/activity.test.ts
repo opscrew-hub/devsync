@@ -324,7 +324,9 @@ describe("submitReview", () => {
       .set({ version: sql`${task.version} + 1` })
       .where(eq(task.id, taskId));
     const changed = await refusal(submitReview(host, claude, input), "conflict");
-    expect(changed.message).toMatch(/new review/);
+    expect(changed.message).toBe(
+      "The task changed since the review was requested. Ask a member to move the task back to Ready so it can be claimed again.",
+    );
     await moveTask(taskId, "BACKLOG");
     await refusal(submitReview(host, claude, input), "conflict");
   });

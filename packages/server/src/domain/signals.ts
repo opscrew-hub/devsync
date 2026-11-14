@@ -13,11 +13,11 @@ import {
   SignalKind,
   type Task,
 } from "@devsync/schemas";
-import { and, asc, count, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { agent, type SignalRow, signal, task } from "../db";
 import { type AgentActor, DevSyncError, type DevSyncHost, type ProjectContext } from "../host";
-import { lockAgentRow, parseOrRefuse, requireAgentWrite } from "./agents";
-import { toTask } from "./tasks";
+import { lockAgentRow, parse, REFUSAL, requireWritable } from "./common";
+import { selectTasks, toTask } from "./tasks";
 
 /** How many signals an agent may send in a minute. */
 const SIGNALS_PER_MINUTE = 20;
@@ -26,13 +26,6 @@ const MAX_HOPS = 4;
 /** How many signals `pendingSignals` answers, and tasks `agentProjectState`. */
 const PAGE = 100;
 
-/** A recipient not found, told to a member, and to an agent. */
-const NO_SUCH_AGENT =
-  "There's no such agent in this project, or it was revoked. Reload the agents list.";
-const NO_SUCH_PEER =
-  "There's no such agent in this project, or it was revoked. Check the agent's id with get_project_state.";
-const NO_SUCH_SIGNAL =
-  "There's no such signal in your inbox. Check its id with get_pending_signals.";
 const KEY_REUSED =
   "This idempotency key was already used for another signal. Send the signal with a new key.";
 
@@ -102,15 +95,16 @@ export async function publishSignal(
       "Your role can't message agents. Ask an Owner or Admin for a role that can.",
     );
   }
-  const fields = parseOrRefuse(AgentMessage, input);
-  if (!Id.safeParse(agentId).success) throw new DevSyncError("not-found", NO_SUCH_AGENT);
+  const fields = parse(AgentMessage, input);
+  if (!Id.safeParse(agentId).success) throw new DevSyncError("not-found", REFUSAL.noSuchRecipient);
   const { workspaceId, projectId } = ctx.project;
   const senderUserId = ctx.member.userId;
   const [recipient] = await host.db
     .select({ revokedAt: agent.revokedAt })
     .from(agent)
     .where(and(eq(agent.id, agentId), eq(agent.projectId, projectId)));
-  if (!recipient || recipient.revokedAt) throw new DevSyncError("not-found", NO_SUCH_AGENT);
+  if (!recipient || recipient.revokedAt)
+    throw new DevSyncError("not-found", REFUSAL.noSuchRecipient);
 
   await host.db
     .insert(signal)
@@ -157,8 +151,8 @@ export async function publishAgentSignal(
   actor: AgentActor,
   input: PublishSignalInput,
 ): Promise<InboxSignal> {
-  requireAgentWrite(actor);
-  const fields = parseOrRefuse(PublishSignalInput, input);
+  requireWritable(actor.project);
+  const fields = parse(PublishSignalInput, input);
   if (fields.recipientId === actor.agentId) {
     throw new DevSyncError(
       "invalid",
@@ -192,7 +186,7 @@ export async function publishAgentSignal(
       .select({ revokedAt: agent.revokedAt })
       .from(agent)
       .where(and(eq(agent.id, fields.recipientId), eq(agent.projectId, projectId)));
-    if (!recipient || recipient.revokedAt) throw new DevSyncError("not-found", NO_SUCH_PEER);
+    if (!recipient || recipient.revokedAt) throw new DevSyncError("not-found", REFUSAL.noSuchPeer);
 
     // Only what the agent published counts: the kinds publish_signal allows, its payload
     // `{ message }`. The outbox's deliveries of the agent's reports (a review request's too) carry
@@ -228,7 +222,7 @@ export async function publishAgentSignal(
             eq(signal.recipientAgentId, actor.agentId),
           ),
         );
-      if (!parent) throw new DevSyncError("not-found", NO_SUCH_SIGNAL);
+      if (!parent) throw new DevSyncError("not-found", REFUSAL.noSuchSignal);
       if (parent.hopCount >= MAX_HOPS) {
         throw new DevSyncError(
           "conflict",
@@ -291,8 +285,8 @@ export async function acknowledgeSignal(
   actor: AgentActor,
   id: string,
 ): Promise<{ id: string; acknowledged: true }> {
-  requireAgentWrite(actor);
-  if (!Id.safeParse(id).success) throw new DevSyncError("not-found", NO_SUCH_SIGNAL);
+  requireWritable(actor.project);
+  if (!Id.safeParse(id).success) throw new DevSyncError("not-found", REFUSAL.noSuchSignal);
   const mine = and(
     eq(signal.id, id),
     eq(signal.projectId, actor.project.projectId),
@@ -303,7 +297,7 @@ export async function acknowledgeSignal(
     .set({ acknowledgedAt: host.clock.now() })
     .where(and(mine, isNull(signal.acknowledgedAt)));
   const [found] = await host.db.select({ id: signal.id }).from(signal).where(mine);
-  if (!found) throw new DevSyncError("not-found", NO_SUCH_SIGNAL);
+  if (!found) throw new DevSyncError("not-found", REFUSAL.noSuchSignal);
   return { id, acknowledged: true };
 }
 
@@ -319,13 +313,10 @@ export async function agentProjectState(
       .from(agent)
       .where(and(eq(agent.projectId, project.projectId), isNull(agent.revokedAt)))
       .orderBy(asc(agent.name), asc(agent.id)),
-    host.db
-      .select({ task, claimAgentName: agent.name })
-      .from(task)
-      .leftJoin(agent, and(eq(agent.id, task.claimAgentId), eq(agent.projectId, task.projectId)))
-      .where(eq(task.projectId, project.projectId))
-      .orderBy(desc(task.updatedAt), asc(task.id))
-      .limit(PAGE),
+    selectTasks(
+      host.db,
+      and(eq(task.projectId, project.projectId), eq(task.workspaceId, project.workspaceId)),
+    ).limit(PAGE),
   ]);
   return {
     project: { id: project.projectId, fullName: project.fullName, readOnly: project.readOnly },

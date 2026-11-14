@@ -15,8 +15,7 @@ import {
 import { authenticateAgent, listAgents, registerAgent, revokeAgent, rotateAgent } from "./agents";
 
 const HOUR = 60 * 60 * 1000;
-const REFUSED =
-  "The token is invalid, expired or revoked. Ask an Owner or Admin for a new one.";
+const REFUSED = "The token is invalid, expired or revoked. Ask an Owner or Admin for a new one.";
 const DEVSYNC_OFF = "DevSync is off for this project. Ask an Owner or Admin to switch it on.";
 
 let testDb: TestDb;

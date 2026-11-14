@@ -8,13 +8,10 @@ import { TaskClaimInput, type TaskStatus } from "@devsync/schemas";
 import { and, eq, gt, lte, ne, or, sql } from "drizzle-orm";
 import { task } from "../db";
 import { type AgentActor, DevSyncError, type DevSyncHost } from "../host";
-import { parseOrRefuse, requireAgentWrite } from "./agents";
+import { parse, REFUSAL, requireWritable } from "./common";
 
 /** How long a claim lasts from its claim or renewal. */
 export const CLAIM_LEASE_MS = 15 * 60 * 1000;
-
-const NOT_ACTIVE =
-  "This claim is no longer active: it expired, was released or ended with a report. Claim the task again if it is Ready.";
 
 /** A claim: `claim_task` and `renew_task_claim`'s answer, with the requirements' revision. */
 export interface TaskLease {
@@ -70,8 +67,8 @@ export async function claimTask(
   actor: AgentActor,
   input: TaskClaimInput,
 ): Promise<TaskLease> {
-  requireAgentWrite(actor);
-  const fields = parseOrRefuse(TaskClaimInput, input);
+  requireWritable(actor.project);
+  const fields = parse(TaskClaimInput, input);
   const now = host.clock.now();
   const [lease] = await host.db
     .update(task)
@@ -110,10 +107,7 @@ export async function claimTask(
     .from(task)
     .where(and(eq(task.id, fields.taskId), eq(task.projectId, actor.project.projectId)));
   if (!found) {
-    throw new DevSyncError(
-      "not-found",
-      "There's no such task in this project. Check its id with get_project_state.",
-    );
+    throw new DevSyncError("not-found", REFUSAL.noSuchTaskForAgent);
   }
   throw new DevSyncError(
     "conflict",
@@ -127,15 +121,15 @@ export async function renewTaskClaim(
   actor: AgentActor,
   input: TaskClaimInput,
 ): Promise<TaskLease> {
-  requireAgentWrite(actor);
-  const fields = parseOrRefuse(TaskClaimInput, input);
+  requireWritable(actor.project);
+  const fields = parse(TaskClaimInput, input);
   const now = host.clock.now();
   const [lease] = await host.db
     .update(task)
     .set({ claimExpiresAt: new Date(now.getTime() + CLAIM_LEASE_MS) })
     .where(heldBy(actor, fields, now))
     .returning(leaseColumns);
-  if (!lease) throw new DevSyncError("conflict", NOT_ACTIVE);
+  if (!lease) throw new DevSyncError("conflict", REFUSAL.claimNotActive);
   return toLease(lease);
 }
 
@@ -145,8 +139,8 @@ export async function releaseTask(
   actor: AgentActor,
   input: TaskClaimInput,
 ): Promise<{ id: string; status: TaskStatus }> {
-  requireAgentWrite(actor);
-  const fields = parseOrRefuse(TaskClaimInput, input);
+  requireWritable(actor.project);
+  const fields = parse(TaskClaimInput, input);
   const now = host.clock.now();
   const [released] = await host.db
     .update(task)
@@ -160,6 +154,6 @@ export async function releaseTask(
     })
     .where(heldBy(actor, fields, now))
     .returning({ id: task.id, status: task.status });
-  if (!released) throw new DevSyncError("conflict", NOT_ACTIVE);
+  if (!released) throw new DevSyncError("conflict", REFUSAL.claimNotActive);
   return released;
 }

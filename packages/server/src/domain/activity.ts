@@ -10,7 +10,7 @@ import { ReviewDecisionInput, TaskActivityInput } from "@devsync/schemas";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { type OutboxEventRow, outboxEvent, task } from "../db";
 import { type AgentActor, type DevSyncDb, DevSyncError, type DevSyncHost } from "../host";
-import { lockAgentRow, parseOrRefuse, requireAgentWrite } from "./agents";
+import { lockAgentRow, parse, REFUSAL, requireWritable } from "./common";
 import { outbox } from "./outbox";
 
 /** The reports an agent makes on its claim. */
@@ -25,7 +25,6 @@ export interface ActivityReceipt {
   kind: ActivityKind | ReviewKind;
 }
 
-const NO_SUCH_TASK = "There's no such task in this project. Check its id with get_project_state.";
 const REQUEST_REUSED =
   "This request ID was already used for another report. Send the report with a new request ID.";
 
@@ -36,7 +35,7 @@ async function lockTask(tx: DevSyncDb, actor: AgentActor, taskId: string) {
     .from(task)
     .where(and(eq(task.id, taskId), eq(task.projectId, actor.project.projectId)))
     .for("update");
-  if (!row) throw new DevSyncError("not-found", NO_SUCH_TASK);
+  if (!row) throw new DevSyncError("not-found", REFUSAL.noSuchTaskForAgent);
   return row;
 }
 
@@ -82,8 +81,8 @@ async function report(
   kind: ActivityKind,
   input: TaskActivityInput,
 ): Promise<ActivityReceipt> {
-  requireAgentWrite(actor);
-  const { taskId, claimId, revision, requestId, message } = parseOrRefuse(TaskActivityInput, input);
+  requireWritable(actor.project);
+  const { taskId, claimId, revision, requestId, message } = parse(TaskActivityInput, input);
   const now = host.clock.now();
   return inAgentTransaction(host, actor, async (tx) => {
     const existing = await recorded(tx, actor, requestId);
@@ -107,12 +106,7 @@ async function report(
       current.claimId === claimId &&
       current.claimExpiresAt !== null &&
       current.claimExpiresAt.getTime() > now.getTime();
-    if (!active) {
-      throw new DevSyncError(
-        "conflict",
-        "This claim is no longer active: it expired, was released or ended with a report. Claim the task again if it is Ready.",
-      );
-    }
+    if (!active) throw new DevSyncError("conflict", REFUSAL.claimNotActive);
     if (current.revision !== revision) {
       throw new DevSyncError(
         "conflict",
@@ -186,8 +180,8 @@ export async function submitReview(
   actor: AgentActor,
   input: ReviewDecisionInput,
 ): Promise<ActivityReceipt> {
-  requireAgentWrite(actor);
-  const { taskId, reviewRequestId, revision, requestId, decision, message } = parseOrRefuse(
+  requireWritable(actor.project);
+  const { taskId, reviewRequestId, revision, requestId, decision, message } = parse(
     ReviewDecisionInput,
     input,
   );
@@ -250,7 +244,7 @@ export async function submitReview(
     ) {
       throw new DevSyncError(
         "conflict",
-        "The task changed since the review was requested. Ask its agent to request a new review.",
+        "The task changed since the review was requested. Ask a member to move the task back to Ready so it can be claimed again.",
       );
     }
 
