@@ -1,0 +1,155 @@
+/* DevSync's layout beyond the dashboard's global classes, on the dashboard's own variables only. */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* The task list beside the open task. */
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.panel:focus {
+  outline: none;
+}
+.panel:focus-visible {
+  outline: 2px solid var(--c-gold-light);
+  outline-offset: 2px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.groupHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--c-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+}
+
+/* A task in a list: its title over a line of facts, the whole row clickable. */
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: var(--radius-inner);
+  text-align: left;
+  transition: background 0.2s ease;
+}
+.row:hover {
+  background: var(--c-gold-10);
+}
+.row[aria-current="true"] {
+  background: var(--c-surface-2);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* Fieldsets without the browser's frame. */
+.moves,
+.buttons {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.moves {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.moves legend {
+  padding: 0;
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+.buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.prose {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* The dashboard's field is a one-line pill; a textarea needs room. */
+.field textarea {
+  height: auto;
+  min-height: 96px;
+  padding: 10px 14px;
+  border-radius: var(--radius-inner);
+  font-family: var(--font-sans);
+  resize: vertical;
+}
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* A refusal's message wraps, unlike the dashboard's one-line status. */
+p.problem {
+  white-space: normal;
+}
+
+.token {
+  padding: 10px 14px;
+  border-radius: var(--radius-inner);
+  background: var(--c-step);
+  word-break: break-all;
+}
+
+.filters {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+}
