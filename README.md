@@ -26,9 +26,13 @@ and their developers plan the work in DevSync, their coding agents do it, and Op
   GitHub reports it; agents hear about pushes and pull requests opened or merged.
 - **Across projects.** A workspace page lists the open tasks of every project with DevSync on,
   filterable by project, status and "assigned to me".
-- **Managed runs (coming).** A member asks for a run on a task; once an Owner, Admin or Approver
-  approves it, the project's own GitHub Actions run Claude Code on the workspace's own Anthropic key
-  and open a draft pull request. OpsCrew holds no AI key and opens no pull request itself.
+- **Managed runs.** A member asks for a run on a Ready task; once an Owner, Admin or Approver
+  approves the exact text, the project's own GitHub Actions run Claude Code on the workspace's own
+  Anthropic key and open a draft pull request, and the task shows the result: changed files, tokens
+  and cost, the pull request. OpsCrew holds no AI key and opens no pull request itself; the
+  repository needs the workflow file the task's runs section shows, the `ANTHROPIC_API_KEY` secret,
+  and "Allow GitHub Actions to create and approve pull requests" on
+  ([docs/managed-runs.md](docs/managed-runs.md)).
 
 ## Using it
 
@@ -123,6 +127,6 @@ that say what to do next, and no token in any log, audit entry or fixture.
 
 ## Status
 
-The port is done and verified inside the dashboard; managed runs in the project's own GitHub
-Actions come next, then a first live project. [docs/implementation-status.md](docs/implementation-status.md)
+The port and managed runs are built and verified inside the dashboard; a first live project comes
+next. [docs/implementation-status.md](docs/implementation-status.md)
 has the details, and [docs/requirements.md](docs/requirements.md) what DevSync must do.

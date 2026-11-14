@@ -98,7 +98,7 @@ time.
   `env`, the patch with its changed files as one artifact, the result as `devsync-result`, the
   failures' names; tested for the inputs, the jobs' permissions, the key only in `agent`, and the
   artifact names.
-- [ ] **D3, the dashboard** (`packages/web/**`), after D1 and D2. The task panel's runs section: the
+- [x] **D3, the dashboard** (`packages/web/**`), after D1 and D2. The task panel's runs section: the
   setup's missing pieces (the workflow to copy), asking for a run on a Ready task, the runs with
   their state, approve and reject for the roles that may, cancel, and a run's result (changed files,
   tokens and cost, the models, the draft pull request, the GitHub run).

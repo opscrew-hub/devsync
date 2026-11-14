@@ -35,6 +35,13 @@ their findings fixed.
   build against DevSync's code, its migrations through the dashboard's release on PostgreSQL 17, and
   an end-to-end run: switch on, plan a task as a Developer, another workspace refused, an agent's
   token on MCP, the audit entry without the token, switch off.
+- **Managed runs** ([managed-runs.md](managed-runs.md), research in
+  [research/managed-runs.md](research/managed-runs.md)): asking, approving the exact text,
+  rejecting and cancelling; one dispatch per run, never repeated; the result read from the run's
+  artifact through the dashboard's GitHub App and checked; the draft pull request linked; the
+  six-hour sweep; the workflow file the user adds (the Anthropic key only in the agent's job, which
+  has no write token; a change holding the key never published); the task's runs section. Verified
+  through the dashboard's real host with a fake GitHub, end to end.
 
 What the standalone version had and the module drops, because the dashboard has it: its own sign-in,
 projects and project members, audit log, GitHub App, webhook intake and repository linking, live
@@ -42,12 +49,10 @@ updates over SSE (the dashboard polls), Redis, and the dedicated Codex and Claud
 
 ## Next
 
-1. **Managed runs** in the project's own GitHub Actions (story 4), in progress
-   ([managed-runs.md](managed-runs.md), research in
-   [research/managed-runs.md](research/managed-runs.md)): the runs' API, jobs and result checks and
-   the workflow file the user adds are built and reviewed; the task's runs section is being built.
-2. **A live test** on a real project, the inventory project first, with Claude Code and Codex
-   connected over MCP.
+1. **A live test** on a real project, the inventory project first: Claude Code and Codex connected
+   over MCP, and one managed run on a private test repository (what the research left to check
+   live: the CLI's flags together, the reads it refuses, GitHub's answer when pull requests from
+   Actions are off).
 
 ## Later
 
