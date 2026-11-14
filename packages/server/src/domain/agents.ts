@@ -31,7 +31,8 @@ const RECENTLY_ACTIVE_MS = 2 * 60 * 1000;
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{43}$/;
 
 const UNAUTHENTICATED =
-  "The token is invalid, expired or revoked, or DevSync is off for its project. Ask an Owner or Admin for a new one.";
+  "The token is invalid, expired or revoked. Ask an Owner or Admin for a new one.";
+const DEVSYNC_OFF = "DevSync is off for this project. Ask an Owner or Admin to switch it on.";
 const NO_SUCH_AGENT = "There's no such agent in this project. Reload the agents list.";
 
 /**
@@ -238,8 +239,9 @@ export async function listAgents(host: DevSyncHost, ctx: ProjectContext): Promis
 
 /**
  * The agent a bearer token belongs to, and its project as the host answers it now: refused alike
- * (`unauthenticated`) when the token is malformed, unknown, expired or revoked, or when DevSync is
- * off for its project. Records when the agent was last seen.
+ * (`unauthenticated`) when the token is malformed, unknown, expired or revoked, and `forbidden`
+ * when the token is live but its project is gone or has DevSync off (the spec's edge case). Records
+ * when the agent was last seen.
  */
 export async function authenticateAgent(host: DevSyncHost, token: string): Promise<AgentActor> {
   const refused = () => new DevSyncError("unauthenticated", UNAUTHENTICATED);
@@ -261,7 +263,7 @@ export async function authenticateAgent(host: DevSyncHost, token: string): Promi
     project.projectId !== found.projectId ||
     project.workspaceId !== found.workspaceId
   ) {
-    throw refused();
+    throw new DevSyncError("forbidden", DEVSYNC_OFF);
   }
   const [seen] = await host.db
     .update(agent)

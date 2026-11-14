@@ -16,7 +16,8 @@ import { authenticateAgent, listAgents, registerAgent, revokeAgent, rotateAgent 
 
 const HOUR = 60 * 60 * 1000;
 const REFUSED =
-  "The token is invalid, expired or revoked, or DevSync is off for its project. Ask an Owner or Admin for a new one.";
+  "The token is invalid, expired or revoked. Ask an Owner or Admin for a new one.";
+const DEVSYNC_OFF = "DevSync is off for this project. Ask an Owner or Admin to switch it on.";
 
 let testDb: TestDb;
 
@@ -182,8 +183,8 @@ describe("authenticateAgent", () => {
     );
   });
 
-  it("refuses a malformed, unknown, expired or revoked token, or one whose project is off, alike", async () => {
-    const { host, project, as } = setup();
+  it("refuses a malformed, unknown, expired or revoked token alike, as unauthenticated", async () => {
+    const { host, as } = setup();
     const owner = as("owner");
     const one = await registerAgent(host, owner, { name: "One", kind: "CODEX" });
     const two = await registerAgent(host, owner, { name: "Two", kind: "CLAUDE" });
@@ -194,17 +195,6 @@ describe("authenticateAgent", () => {
       await refusal(authenticateAgent(host, fakeToken()), "unauthenticated"),
       await refusal(authenticateAgent(host, two.token), "unauthenticated"),
     ];
-
-    // DevSync off for the project (or the project gone): the host answers null.
-    host.directory.projects = host.directory.projects.filter((p) => p !== project);
-    errors.push(await refusal(authenticateAgent(host, one.token), "unauthenticated"));
-    // The host answers the project under another workspace: refused too.
-    host.directory.projects.push({ ...project, workspaceId: crypto.randomUUID() });
-    errors.push(await refusal(authenticateAgent(host, one.token), "unauthenticated"));
-    host.directory.projects.pop();
-    host.directory.projects.push(project);
-    await authenticateAgent(host, one.token);
-
     // Expired: 24 hours after registration.
     setClock(host, Date.parse(FAKE_NOW) + 24 * HOUR);
     errors.push(await refusal(authenticateAgent(host, one.token), "unauthenticated"));
@@ -215,6 +205,28 @@ describe("authenticateAgent", () => {
     }
     const [row] = await testDb.db.select().from(agent).where(eq(agent.id, two.agent.id));
     expect(row?.lastSeenAt).toBeNull();
+  });
+
+  it("refuses a live token whose project is gone, has DevSync off or moved workspace as forbidden", async () => {
+    const { host, project, as } = setup();
+    const one = await registerAgent(host, as("owner"), { name: "One", kind: "CODEX" });
+
+    // DevSync off for the project (or the project gone): the host answers null.
+    host.directory.projects = host.directory.projects.filter((p) => p !== project);
+    const errors = [await refusal(authenticateAgent(host, one.token), "forbidden")];
+    // The host answers the project under another workspace: refused too.
+    host.directory.projects.push({ ...project, workspaceId: crypto.randomUUID() });
+    errors.push(await refusal(authenticateAgent(host, one.token), "forbidden"));
+    for (const error of errors) {
+      expect(error.message).toBe(DEVSYNC_OFF);
+      expect(error.message).not.toContain(one.token);
+    }
+    const [row] = await testDb.db.select().from(agent).where(eq(agent.id, one.agent.id));
+    expect(row?.lastSeenAt).toBeNull();
+
+    host.directory.projects.pop();
+    host.directory.projects.push(project);
+    await authenticateAgent(host, one.token);
   });
 });
 

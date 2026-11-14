@@ -29,9 +29,11 @@ import { describeError, errorHandler, INTERNAL_MESSAGE, noStore, refusalBody } f
 const FOREIGN_ORIGIN =
   "This request's origin isn't DevSync's, so it was refused. Connect your agent to the MCP endpoint directly, not from a web page.";
 
-/** A refusal before the MCP server runs: an agent's client reads `WWW-Authenticate`. */
+/** A refusal before the MCP server runs: an agent's client reads `WWW-Authenticate` on a 401. */
 function refuse(c: Context, error: DevSyncError): Response {
-  return c.json(refusalBody(error), ERROR_STATUS[error.code], { "WWW-Authenticate": "Bearer" });
+  const headers: Record<string, string> =
+    error.code === "unauthenticated" ? { "WWW-Authenticate": "Bearer" } : {};
+  return c.json(refusalBody(error), ERROR_STATUS[error.code], headers);
 }
 
 /**

@@ -126,7 +126,8 @@ async function setup() {
 
 async function refusedWith(response: Response, status: number, code: string) {
   expect(response.status).toBe(status);
-  expect(response.headers.get("www-authenticate")).toBe("Bearer");
+  // An agent client reads `WWW-Authenticate` on a 401 only.
+  expect(response.headers.get("www-authenticate")).toBe(status === 401 ? "Bearer" : null);
   expect(response.headers.get("cache-control")).toBe("no-store");
   const { error } = ErrorAnswer.parse(await response.json());
   expect(error.code).toBe(code);
@@ -143,7 +144,7 @@ describe("the MCP endpoint", () => {
       "unauthenticated",
     );
     expect(unauthenticated.message).toBe(
-      "The token is invalid, expired or revoked, or DevSync is off for its project. Ask an Owner or Admin for a new one.",
+      "The token is invalid, expired or revoked. Ask an Owner or Admin for a new one.",
     );
     await refusedWith(await list("invalid"), 401, "unauthenticated");
     await refusedWith(await list(fakeToken()), 401, "unauthenticated");
@@ -167,7 +168,10 @@ describe("the MCP endpoint", () => {
     host.directory.projects = host.directory.projects.filter(
       (p) => p.projectId !== other.projectId,
     );
-    await refusedWith(await list(outsider.token), 401, "unauthenticated");
+    const off = await refusedWith(await list(outsider.token), 403, "forbidden");
+    expect(off.message).toBe(
+      "DevSync is off for this project. Ask an Owner or Admin to switch it on.",
+    );
     await revokeAgent(host, member(), codex.id);
     await refusedWith(await list(codex.token), 401, "unauthenticated");
 
