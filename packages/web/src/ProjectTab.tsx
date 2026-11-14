@@ -1,4 +1,4 @@
-import { STATUS_LABEL, Task, TaskInput, TaskStatus } from "@devsync/schemas";
+import { type Member, STATUS_LABEL, Task, TaskInput, TaskStatus } from "@devsync/schemas";
 import { type FormEvent, useId, useState } from "react";
 import { Agents } from "./Agents";
 import styles from "./devsync.module.css";
@@ -110,7 +110,7 @@ function TaskList({ selectedTaskId, onSelectTask }: ProjectTabProps) {
 }
 
 /** `Ana Lima · claimed by Builder · #42`. */
-function describe(task: Task, members: Parameters<typeof memberName>[0]): string {
+function describe(task: Task, members: Member[] | undefined): string {
   return [
     task.assigneeUserId ? memberName(members, task.assigneeUserId) : "Unassigned",
     task.claim && `claimed by ${task.claim.agentName}`,
