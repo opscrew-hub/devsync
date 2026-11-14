@@ -10,9 +10,10 @@ import {
   can,
   Id,
   PublishSignalInput,
+  SignalKind,
   type Task,
 } from "@devsync/schemas";
-import { and, asc, count, desc, eq, gte, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { agent, type SignalRow, signal, task } from "../db";
 import { type AgentActor, DevSyncError, type DevSyncHost, type ProjectContext } from "../host";
 import { lockAgentRow, parseOrRefuse, requireAgentWrite } from "./agents";
@@ -193,6 +194,9 @@ export async function publishAgentSignal(
       .where(and(eq(agent.id, fields.recipientId), eq(agent.projectId, projectId)));
     if (!recipient || recipient.revokedAt) throw new DevSyncError("not-found", NO_SUCH_PEER);
 
+    // Only what the agent published counts: the kinds publish_signal allows, its payload
+    // `{ message }`. The outbox's deliveries of the agent's reports (a review request's too) carry
+    // their task, and don't count.
     const [recent] = await tx
       .select({ sent: count() })
       .from(signal)
@@ -200,6 +204,8 @@ export async function publishAgentSignal(
         and(
           eq(signal.projectId, projectId),
           eq(signal.senderAgentId, actor.agentId),
+          inArray(signal.kind, SignalKind.options),
+          sql`${signal.payload} -> 'taskId' is null`,
           gte(signal.createdAt, new Date(now.getTime() - 60_000)),
         ),
       );

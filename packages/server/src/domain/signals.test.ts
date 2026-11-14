@@ -11,6 +11,8 @@ import {
 } from "../host";
 import { createTestDb, FAKE_NOW, type FakeHost, fakeHost, type TestDb } from "../testing";
 import { authenticateAgent, registerAgent, revokeAgent, rotateAgent } from "./agents";
+import { deliverDue } from "./delivery";
+import { outbox } from "./outbox";
 import {
   acknowledgeSignal,
   agentProjectState,
@@ -18,6 +20,7 @@ import {
   publishAgentSignal,
   publishSignal,
 } from "./signals";
+import { createTask } from "./tasks";
 
 let testDb: TestDb;
 
@@ -286,6 +289,40 @@ describe("publishAgentSignal", () => {
     await send();
     await refusal(send(), "rate-limited");
     expect(await pendingSignals(host, claude.actor)).toHaveLength(21);
+  });
+
+  it("counts only the signals the agent published, not the deliveries of its reports", async () => {
+    const { host, codex, claude } = await setup();
+    const created = await createTask(host, codex.actor, {
+      title: "Ship it",
+      description: "",
+      acceptanceCriteria: "",
+      requestId: crypto.randomUUID(),
+    });
+    const { workspaceId, projectId } = codex.actor.project;
+    await testDb.db.transaction(async (tx) => {
+      for (let i = 0; i < 20; i++) {
+        await outbox.record(tx, {
+          workspaceId,
+          projectId,
+          actor: { agentId: codex.id },
+          taskId: created.id,
+          // A kind publish_signal allows too: its delivery still isn't the agent's own signal.
+          kind: "review.requested",
+          payload: { taskId: created.id, revision: 1, message: "Working" },
+          at: host.clock.now(),
+        });
+      }
+    });
+    await deliverDue(host);
+    expect(await pendingSignals(host, claude.actor)).toHaveLength(21);
+
+    await publishAgentSignal(host, codex.actor, {
+      recipientId: claude.id,
+      kind: "clarification.requested",
+      payload: { message: "Ping" },
+      idempotencyKey: crypto.randomUUID(),
+    });
   });
 });
 
