@@ -78,7 +78,9 @@ async function inboxOf(agentId: string) {
 }
 
 describe("deliverDue", () => {
-  it("delivers each due event once to the project's other live agents, across concurrent runs", async () => {
+  // PGlite has one connection, so the runs below take turns: real concurrency is held at the
+  // database level by the due events' row locks (FOR UPDATE SKIP LOCKED).
+  it("delivers each due event once to the project's other live agents, however many runs follow", async () => {
     const { host, project, owner, codex, claude, revoked, outsider, actor, register, record } =
       await setup();
     const created = await record(

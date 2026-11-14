@@ -84,7 +84,9 @@ async function readTask(id: string) {
 }
 
 describe("task claims", () => {
-  it("are exclusive, scoped, renewable and recoverable once expired", async () => {
+  // PGlite has one connection, so the two claims below run one after the other: real concurrency is
+  // held at the database level by claimTask's conditional UPDATE.
+  it("go to one agent of two claiming a task, are scoped, renewable and recoverable once expired", async () => {
     const { host, agents, outsider, taskId } = await setup();
     const start = Date.parse(FAKE_NOW);
     // Not Ready yet.
