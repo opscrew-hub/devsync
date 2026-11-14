@@ -2,6 +2,7 @@ import {
   Comment,
   CommentInput,
   LIMITS,
+  PullRequestLink,
   STATUS_LABEL,
   Task,
   type TaskDetail,
@@ -13,11 +14,9 @@ import {
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { DevSyncRequestError } from "./client";
 import styles from "./devsync.module.css";
-import { authorName, Field, formatTime, Problem, RequirementFields } from "./parts";
+import { authorName, Field, formatTime, Problem, RequirementFields, requirements } from "./parts";
 import { useDevSync } from "./provider";
 import { useChange, useMembers, usePullRequests, useTask } from "./queries";
-
-type Update = Omit<TaskUpdate, "version">;
 
 /** The open task: its requirements, status, assignee, pull request, revisions, comments and timeline. */
 export function TaskPanel({ taskId, onClose }: { taskId: string; onClose: () => void }) {
@@ -55,12 +54,12 @@ function TaskBody({ task }: { task: TaskDetail }) {
   const { may } = useDevSync();
   const write = may("task.write");
   const [editing, setEditing] = useState(false);
-  const update = useChange((api, body: TaskUpdate) =>
+  const update = useChange(TaskUpdate, (api, body) =>
     api.send("PATCH", `/tasks/${task.id}`, body, Task),
   );
   // Moves and assignments go with the version last read; a refusal reloads the task.
-  const change = (fields: Update) =>
-    update.mutate(TaskUpdate.parse({ ...fields, version: task.version }));
+  const change = (fields: Omit<TaskUpdate, "version">) =>
+    update.mutate({ ...fields, version: task.version });
 
   return (
     <>
@@ -132,20 +131,14 @@ function TaskBody({ task }: { task: TaskDetail }) {
 function EditRequirements({ task, onDone }: { task: TaskDetail; onDone: () => void }) {
   const [version, setVersion] = useState(task.version);
   const latest = useTask(task.id);
-  const save = useChange((api, body: TaskUpdate) =>
+  const save = useChange(TaskUpdate, (api, body) =>
     api.send("PATCH", `/tasks/${task.id}`, body, Task),
   );
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const body = TaskUpdate.safeParse({
-      version,
-      title: form.get("title"),
-      description: form.get("description"),
-      acceptanceCriteria: form.get("acceptanceCriteria"),
-    });
-    if (body.success) save.mutate(body.data, { onSuccess: onDone });
+    save.mutate({ ...requirements(form), version }, { onSuccess: onDone });
   }
 
   const conflict = save.error instanceof DevSyncRequestError && save.error.code === "conflict";
@@ -249,8 +242,8 @@ const PR_STATE = { open: "Open", closed: "Closed", merged: "Merged" } as const;
 function PullRequestPicker({ task }: { task: TaskDetail }) {
   const { ui, may } = useDevSync();
   const pulls = usePullRequests().data?.pullRequests ?? [];
-  const link = useChange((api, number: number | null) =>
-    api.send("PUT", `/tasks/${task.id}/pull-request`, { number }, Task),
+  const link = useChange(PullRequestLink, (api, body) =>
+    api.send("PUT", `/tasks/${task.id}/pull-request`, body, Task),
   );
   const linked = task.pullRequest;
   const current = task.pullRequestNumber;
@@ -277,7 +270,9 @@ function PullRequestPicker({ task }: { task: TaskDetail }) {
           className="field"
           value={current ?? ""}
           disabled={!may("task.write") || link.isPending}
-          onChange={(event) => link.mutate(event.target.value ? Number(event.target.value) : null)}
+          onChange={(event) =>
+            link.mutate({ number: event.target.value ? Number(event.target.value) : null })
+          }
         >
           <option value="">None</option>
           {!listed && <option value={current ?? ""}>#{current}</option>}
@@ -325,15 +320,14 @@ function Revisions({ task }: { task: TaskDetail }) {
 
 function Comments({ task }: { task: TaskDetail }) {
   const { ui, may } = useDevSync();
-  const post = useChange((api, body: CommentInput) =>
+  const post = useChange(CommentInput, (api, body) =>
     api.send("POST", `/tasks/${task.id}/comments`, body, Comment),
   );
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
-    const body = CommentInput.safeParse({ body: new FormData(form).get("body") });
-    if (body.success) post.mutate(body.data, { onSuccess: () => form.reset() });
+    post.mutate({ body: new FormData(form).get("body") }, { onSuccess: () => form.reset() });
   }
 
   return (

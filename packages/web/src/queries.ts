@@ -8,6 +8,8 @@ import {
   WorkspaceTaskList,
 } from "@devsync/schemas";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { z } from "zod";
+import { DevSyncRequestError } from "./client";
 import { useDevSync } from "./provider";
 
 /** Every 10 seconds while the page is visible (the dashboard refreshes by polling). */
@@ -47,14 +49,24 @@ export function useWorkspaceTasks(filters: {
   return useList(path, (api) => api.get(path, WorkspaceTaskList));
 }
 
-/** A change through the API; then everything under the mount point is read again. */
-export function useChange<V, R>(
-  change: (api: ReturnType<typeof useDevSync>["api"], vars: V) => Promise<R>,
+const INVALID = "Fill in the required fields and keep each within its limit, then try again.";
+
+/**
+ * A change through the API: what the page sends is parsed with `schema` first (a failure is the
+ * mutation's error, in plain English); then everything under the mount point is read again.
+ */
+export function useChange<S extends z.ZodType, R>(
+  schema: S,
+  change: (api: ReturnType<typeof useDevSync>["api"], input: z.infer<S>) => Promise<R>,
 ) {
   const { api, apiBase } = useDevSync();
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (vars: V) => change(api, vars),
+    mutationFn: (input: unknown) => {
+      const parsed = schema.safeParse(input);
+      if (!parsed.success) throw new DevSyncRequestError("invalid", INVALID, 0);
+      return change(api, parsed.data);
+    },
     onSettled: () => client.invalidateQueries({ queryKey: ["devsync", apiBase] }),
   });
 }

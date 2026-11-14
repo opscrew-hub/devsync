@@ -2,7 +2,7 @@ import { type Member, STATUS_LABEL, Task, TaskInput, TaskStatus } from "@devsync
 import { type FormEvent, useId, useState } from "react";
 import { Agents } from "./Agents";
 import styles from "./devsync.module.css";
-import { DialogButtons, memberName, Problem, RequirementFields } from "./parts";
+import { DialogButtons, memberName, Problem, RequirementFields, requirements } from "./parts";
 import { useDevSync } from "./provider";
 import { useChange, useMembers, useTasks } from "./queries";
 import { TaskPanel } from "./TaskPanel";
@@ -122,29 +122,18 @@ function describe(task: Task, members: Member[] | undefined): string {
 
 function NewTask({ onClose, onCreated }: { onClose: () => void; onCreated: (task: Task) => void }) {
   const { Dialog } = useDevSync().ui;
-  const create = useChange((api, input: TaskInput) => api.send("POST", "/tasks", input, Task));
-  const [invalid, setInvalid] = useState<Error | null>(null);
+  const create = useChange(TaskInput, (api, input) => api.send("POST", "/tasks", input, Task));
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const input = TaskInput.safeParse({
-      title: form.get("title"),
-      description: form.get("description"),
-      acceptanceCriteria: form.get("acceptanceCriteria"),
-    });
-    if (!input.success) {
-      setInvalid(new Error("Give the task a title, and keep each field within its limit."));
-      return;
-    }
-    setInvalid(null);
-    create.mutate(input.data, { onSuccess: onCreated });
+    create.mutate(requirements(form), { onSuccess: onCreated });
   }
 
   return (
     <Dialog title="New task" icon="plus" onSubmit={submit}>
       <RequirementFields />
-      <Problem error={invalid ?? create.error} />
+      <Problem error={create.error} />
       <DialogButtons label="Create the task" pending={create.isPending} onCancel={onClose} />
     </Dialog>
   );

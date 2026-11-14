@@ -5,6 +5,7 @@ import {
   AgentMessage,
   AgentMessageReceipt,
   AgentWithToken,
+  Id,
   LIMITS,
   SignalKind,
 } from "@devsync/schemas";
@@ -45,8 +46,8 @@ export function Agents() {
   const [open, setOpen] = useState<Open | null>(null);
   const heading = useId();
   const manage = may("agent.manage");
-  const rotate = useChange((api, agent: Agent) =>
-    api.send("POST", `/agents/${agent.id}/rotate`, undefined, AgentWithToken),
+  const rotate = useChange(Id, (api, agentId) =>
+    api.send("POST", `/agents/${agentId}/rotate`, undefined, AgentWithToken),
   );
   const close = () => setOpen(null);
   const showToken = (result: AgentWithToken) =>
@@ -118,7 +119,7 @@ export function Agents() {
                       className="btn btn-sm btn-secondary bordered"
                       type="button"
                       disabled={!manage || gone || rotate.isPending}
-                      onClick={() => rotate.mutate(agent, { onSuccess: showToken })}
+                      onClick={() => rotate.mutate(agent.id, { onSuccess: showToken })}
                     >
                       <Icon name="arrows-clockwise" className="i-sm" />
                       Rotate the token
@@ -155,15 +156,14 @@ function Register({
   onRegistered: (result: AgentWithToken) => void;
 }) {
   const { Dialog } = useDevSync().ui;
-  const create = useChange((api, input: AgentInput) =>
+  const create = useChange(AgentInput, (api, input) =>
     api.send("POST", "/agents", input, AgentWithToken),
   );
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const input = AgentInput.safeParse({ name: form.get("name"), kind: form.get("kind") });
-    if (input.success) create.mutate(input.data, { onSuccess: onRegistered });
+    create.mutate({ name: form.get("name"), kind: form.get("kind") }, { onSuccess: onRegistered });
   }
 
   return (
@@ -215,7 +215,7 @@ function Token({ agent, token, onClose }: { agent: Agent; token: string; onClose
 
 function Revoke({ agent, onClose }: { agent: Agent; onClose: () => void }) {
   const { Dialog } = useDevSync().ui;
-  const revoke = useChange((api, id: string) => api.send("DELETE", `/agents/${id}`));
+  const revoke = useChange(Id, (api, agentId) => api.send("DELETE", `/agents/${agentId}`));
   return (
     <Dialog
       title={`Revoke ${agent.name}`}
@@ -239,19 +239,17 @@ function Message({ agent, onClose }: { agent: Agent; onClose: () => void }) {
   const { Dialog } = useDevSync().ui;
   // One key per dialog: sending again after a lost answer reaches the agent once.
   const [idempotencyKey] = useState(() => crypto.randomUUID());
-  const send = useChange((api, body: AgentMessage) =>
+  const send = useChange(AgentMessage, (api, body) =>
     api.send("POST", `/agents/${agent.id}/messages`, body, AgentMessageReceipt),
   );
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const body = AgentMessage.safeParse({
-      kind: form.get("kind"),
-      message: form.get("message"),
-      idempotencyKey,
-    });
-    if (body.success) send.mutate(body.data, { onSuccess: onClose });
+    send.mutate(
+      { kind: form.get("kind"), message: form.get("message"), idempotencyKey },
+      { onSuccess: onClose },
+    );
   }
 
   return (

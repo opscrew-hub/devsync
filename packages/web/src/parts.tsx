@@ -71,6 +71,15 @@ export function memberName(members: Member[] | undefined, userId: string): strin
   return members.find((m) => m.userId === userId)?.name ?? "Former member";
 }
 
+/** What `RequirementFields` holds. */
+export function requirements(form: FormData) {
+  return {
+    title: form.get("title"),
+    description: form.get("description"),
+    acceptanceCriteria: form.get("acceptanceCriteria"),
+  };
+}
+
 /** A task's title, description and acceptance criteria, as a form's fields. */
 export function RequirementFields({
   initial,

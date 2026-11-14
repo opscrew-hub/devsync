@@ -115,6 +115,16 @@ describe("the task panel", () => {
     );
   });
 
+  it("checks a comment before sending it", async () => {
+    const { panel, sent } = await open();
+    await userEvent.type(within(panel).getByLabelText("Comment"), "   ");
+    await userEvent.click(within(panel).getByRole("button", { name: "Post the comment" }));
+    expect((await within(panel).findByRole("alert")).textContent).toBe(
+      "Fill in the required fields and keep each within its limit, then try again.",
+    );
+    expect(sent.filter((s) => s.method === "POST")).toEqual([]);
+  });
+
   it("links a pull request, and shows the linked one with its state", async () => {
     const { panel, sent } = await open(detail, {
       [`PUT /tasks/${detail.id}/pull-request`]: { body: { ...tasks[0], pullRequestNumber: 42 } },
