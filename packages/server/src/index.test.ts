@@ -18,6 +18,7 @@ describe("@devsync/server", () => {
       "removeProject",
       "removeWorkspace",
       "run",
+      "serverModule",
       "signal",
       "task",
       "taskComment",

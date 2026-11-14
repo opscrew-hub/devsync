@@ -2,6 +2,15 @@
   "name": "devsync",
   "private": true,
   "description": "DevSync: OpsCrew's module for planning a project's work with its people and coding agents.",
+  "opscrewModule": {
+    "id": "devsync",
+    "name": "DevSync",
+    "summary": "Plan each project's work as tasks with their requirements' history, and let your coding agents claim, report on and review them through MCP.",
+    "icon": "kanban",
+    "workspacePage": true,
+    "server": "packages/server/src/module.ts",
+    "web": "packages/web/src/module.tsx"
+  },
   "packageManager": "pnpm@10.29.1",
   "engines": {
     "node": ">=22.9"

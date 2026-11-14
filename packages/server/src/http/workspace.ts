@@ -1,6 +1,6 @@
 /**
  * A workspace's routes (docs/host.md, HTTP API), mounted by the host at `/api/w/<workspace>/m/devsync`
- * once DevSync is on for the workspace; its guard sets `c.var.devsync` with the projects that have
+ * once DevSync is on for the workspace; its guard sets `c.var.module` with the projects that have
  * DevSync on. Both are reads: every role may.
  */
 import { MemberList, WorkspaceTaskList, WorkspaceTaskListQuery } from "@devsync/schemas";
@@ -16,10 +16,10 @@ export function workspaceRoutes(host: DevSyncHost): Hono<WorkspaceEnv> {
 
   app.get("/tasks", async (c) => {
     const query = readQuery(c, WorkspaceTaskListQuery);
-    return answer(c, WorkspaceTaskList, await listWorkspaceTasks(host, c.get("devsync"), query));
+    return answer(c, WorkspaceTaskList, await listWorkspaceTasks(host, c.get("module"), query));
   });
   app.get("/members", async (c) => {
-    const members = await host.members(c.get("devsync").workspaceId);
+    const members = await host.members(c.get("module").workspaceId);
     return answer(c, MemberList, { members });
   });
 

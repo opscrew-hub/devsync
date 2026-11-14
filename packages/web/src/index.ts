@@ -1,6 +1,16 @@
-/** DevSync's pages for the host dashboard: DevSyncProvider, ProjectTab, WorkspacePage (T326). */
+/**
+ * DevSync's pages for the host dashboard: `webModule`, the entry the host loads (module.tsx), and
+ * DevSyncProvider, ProjectTab and WorkspacePage, which it wraps.
+ */
 
 export { DevSyncRequestError, type ErrorCode, type FetchLike } from "./client";
+export {
+  type ModuleProjectTabProps,
+  type ModuleUi,
+  type ModuleWorkspacePageProps,
+  type WebModule,
+  webModule,
+} from "./module";
 export { ProjectTab, type ProjectTabProps } from "./ProjectTab";
 export {
   type DevSyncDialogProps,

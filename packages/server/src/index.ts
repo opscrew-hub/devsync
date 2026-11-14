@@ -1,7 +1,7 @@
 /**
- * DevSync's server half, for its host (docs/host.md): the interface the host implements, the routes
- * it mounts, the queues its worker runs, the migrations it applies, the removal hooks it calls, and
- * the tables. Nothing else: the domain is reached through the routes and the queues, and tests
+ * DevSync's server half, for its host (docs/host.md): `serverModule`, the entry the host imports;
+ * the interface the host implements, the routes it mounts, the queues its worker runs, the
+ * migrations it applies, the removal hooks it calls, and the tables. Nothing else: the domain is reached through the routes and the queues, and tests
  * import internals from their own modules.
  */
 export {
@@ -35,4 +35,5 @@ export {
 } from "./host";
 export { projectRoutes, publicRoutes, workspaceRoutes } from "./http";
 export { type DevSyncJob, jobs } from "./jobs";
+export { type ServerModule, serverModule } from "./module";
 export { removeMember, removeProject, removeWorkspace } from "./removal";

@@ -1,7 +1,9 @@
 /**
  * What DevSync needs from its host, OpsCrew's dashboard (docs/host.md). DevSync never imports the
- * host's code: the host implements this interface and mounts DevSync's routes, queues, migrations
- * and removal hooks. Tests implement it with `fakeHost()` from `@devsync/server/testing`.
+ * host's code: the host's `ModuleHost`, which it builds for every module, satisfies this interface
+ * (the contract's wider `string` action and queue parameters accept DevSync's), and it mounts the
+ * routes, queues, migrations and removal hooks `serverModule` (module.ts) gives it. Tests implement
+ * it with `fakeHost()` from `@devsync/server/testing`.
  */
 import type { Role } from "@devsync/schemas";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
@@ -56,9 +58,9 @@ export interface AgentActor {
   project: ProjectRef;
 }
 
-/** The Hono environments of DevSync's routes: the host sets `devsync` before they run. */
-export type ProjectEnv = { Variables: { devsync: ProjectContext } };
-export type WorkspaceEnv = { Variables: { devsync: WorkspaceContext } };
+/** The Hono environments of DevSync's routes: the host's guard sets `module` before they run. */
+export type ProjectEnv = { Variables: { module: ProjectContext } };
+export type WorkspaceEnv = { Variables: { module: WorkspaceContext } };
 
 /** What the audit log records: names, ids and figures only, never a token. */
 export interface AuditEntry {

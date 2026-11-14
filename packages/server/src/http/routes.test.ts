@@ -73,7 +73,7 @@ async function send(fetch: Fetch, method: string, url: string, body?: unknown) {
 function projectClient(host: FakeHost, ctx: ProjectContext): Send {
   const app = new Hono<ProjectEnv>();
   app.use(`${PROJECT_MOUNT}/*`, async (c, next) => {
-    c.set("devsync", ctx);
+    c.set("module", ctx);
     await next();
   });
   app.route(PROJECT_MOUNT, projectRoutes(host));
@@ -86,7 +86,7 @@ function projectClient(host: FakeHost, ctx: ProjectContext): Send {
 function workspaceClient(host: FakeHost, ctx: WorkspaceContext): Send {
   const app = new Hono<WorkspaceEnv>();
   app.use(`${WORKSPACE_MOUNT}/*`, async (c, next) => {
-    c.set("devsync", ctx);
+    c.set("module", ctx);
     await next();
   });
   app.route(WORKSPACE_MOUNT, workspaceRoutes(host));
