@@ -52,9 +52,11 @@ interface Answer {
 
 type Send = (method: string, path: string, body?: unknown) => Promise<Answer>;
 
-/** Sends a request to `app`: `body` as JSON, or as it is when it's a string. */
-async function send(app: Hono<never>, method: string, url: string, body?: unknown) {
-  const response = await app.request(url, {
+type Fetch = (url: string, init: RequestInit) => Response | Promise<Response>;
+
+/** Sends a request through `fetch`: `body` as JSON, or as it is when it's a string. */
+async function send(fetch: Fetch, method: string, url: string, body?: unknown) {
+  const response = await fetch(url, {
     method,
     headers: body === undefined ? {} : { "content-type": "application/json" },
     body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
@@ -76,7 +78,8 @@ function projectClient(host: FakeHost, ctx: ProjectContext): Send {
   });
   app.route(PROJECT_MOUNT, projectRoutes(host));
   const base = `/api/w/${ctx.project.workspaceId}/projects/${ctx.project.projectId}/m/devsync`;
-  return (method, path, body) => send(app as Hono<never>, method, `${base}${path}`, body);
+  return (method, path, body) =>
+    send((url, init) => app.request(url, init), method, `${base}${path}`, body);
 }
 
 /** The workspace's routes mounted as the host mounts them. */
@@ -88,7 +91,8 @@ function workspaceClient(host: FakeHost, ctx: WorkspaceContext): Send {
   });
   app.route(WORKSPACE_MOUNT, workspaceRoutes(host));
   const base = `/api/w/${ctx.workspaceId}/m/devsync`;
-  return (method, path, body) => send(app as Hono<never>, method, `${base}${path}`, body);
+  return (method, path, body) =>
+    send((url, init) => app.request(url, init), method, `${base}${path}`, body);
 }
 
 /** A workspace with a member of each role and two projects with DevSync on. */
@@ -222,7 +226,11 @@ describe("project routes", () => {
     });
     expect(detail.revisions.map((r) => r.number)).toEqual([2, 1]);
     expect(detail.comments.map((c) => c.body)).toEqual(["On it."]);
-    expect(detail.timeline.map((e) => e.kind)).toEqual(["task.created", "requirements.changed"]);
+    // One time for both: the fake clock is fixed.
+    expect(detail.timeline.map((e) => e.kind).sort()).toEqual([
+      "requirements.changed",
+      "task.created",
+    ]);
 
     const unlinked = await developer("PUT", `/tasks/${task.id}/pull-request`, { number: null });
     expect(Task.parse(unlinked.body).pullRequestNumber).toBeNull();
@@ -238,9 +246,7 @@ describe("project routes", () => {
     const answer = await as("approver")("GET", "/pull-requests");
     expect(answer.status).toBe(200);
     const { pullRequests } = PullRequestList.parse(answer.body);
-    expect(pullRequests.map((p) => p.number)).toEqual(
-      Array.from({ length: 50 }, (_, i) => 52 - i),
-    );
+    expect(pullRequests.map((p) => p.number)).toEqual(Array.from({ length: 50 }, (_, i) => 52 - i));
     expect(pullRequests[0]).toEqual({
       number: 52,
       title: "Change 52",
@@ -315,9 +321,9 @@ describe("project routes", () => {
       }
 
       expect((await member("POST", "/tasks", newTask)).status).toBe(201);
-      expect((await member("PATCH", `/tasks/${task.id}`, { version: 1, title: "New" })).status).toBe(
-        200,
-      );
+      expect(
+        (await member("PATCH", `/tasks/${task.id}`, { version: 1, title: "New" })).status,
+      ).toBe(200);
       expect((await member("POST", `/tasks/${task.id}/comments`, { body: "Hi" })).status).toBe(201);
       expect((await member("PUT", `/tasks/${task.id}/pull-request`, { number: 1 })).status).toBe(
         200,
@@ -368,9 +374,17 @@ describe("project routes", () => {
     expect((await owner("GET", "/pull-requests")).body).toEqual({ pullRequests: [] });
     expect((await owner("GET", "/agents")).body).toEqual({ agents: [] });
     refusal(await owner("GET", `/tasks/${theirs.id}`), 404, "not-found");
-    refusal(await owner("PATCH", `/tasks/${theirs.id}`, { version: 1, title: "x" }), 404, "not-found");
+    refusal(
+      await owner("PATCH", `/tasks/${theirs.id}`, { version: 1, title: "x" }),
+      404,
+      "not-found",
+    );
     refusal(await owner("POST", `/tasks/${theirs.id}/comments`, { body: "x" }), 404, "not-found");
-    refusal(await owner("PUT", `/tasks/${theirs.id}/pull-request`, { number: 3 }), 404, "not-found");
+    refusal(
+      await owner("PUT", `/tasks/${theirs.id}/pull-request`, { number: 3 }),
+      404,
+      "not-found",
+    );
     refusal(await owner("PUT", `/tasks/${mine.id}/pull-request`, { number: 3 }), 404, "not-found");
     refusal(await owner("POST", `/agents/${agent.id}/rotate`), 404, "not-found");
     refusal(await owner("DELETE", `/agents/${agent.id}`), 404, "not-found");
@@ -382,7 +396,9 @@ describe("project routes", () => {
 
     const { agents } = AgentList.parse((await as("owner", other)("GET", "/agents")).body);
     expect(agents.map((a) => a.status)).toEqual(["Offline"]);
-    const unchanged = TaskDetail.parse((await as("owner", other)("GET", `/tasks/${theirs.id}`)).body);
+    const unchanged = TaskDetail.parse(
+      (await as("owner", other)("GET", `/tasks/${theirs.id}`)).body,
+    );
     expect(unchanged).toMatchObject({ title: theirs.title, version: 1, comments: [] });
     expect(unchanged.pullRequest).toBeNull();
   });
@@ -511,9 +527,9 @@ describe("workspace routes", () => {
     expect(mine.headers.get("cache-control")).toBe("no-store");
 
     refusal(await as("owner")("GET", `/tasks?project=${off.projectId}`), 404, "not-found");
-    expect(refusal(await as("owner")("GET", "/tasks?project=acme"), 422, "invalid").fields).toEqual([
-      "project",
-    ]);
+    expect(refusal(await as("owner")("GET", "/tasks?project=acme"), 422, "invalid").fields).toEqual(
+      ["project"],
+    );
     expect(refusal(await as("owner")("GET", "/tasks?page=2"), 422, "invalid").fields).toEqual([
       "page",
     ]);

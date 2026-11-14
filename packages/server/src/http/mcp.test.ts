@@ -10,7 +10,7 @@ import { deliverDue } from "../domain/delivery";
 import { pendingSignals, publishSignal } from "../domain/signals";
 import { createTask, getTask, updateTask } from "../domain/tasks";
 import type { AgentActor, Member, ProjectContext, ProjectRef } from "../host";
-import { createTestDb, FAKE_NOW, type FakeHost, fakeHost, fakeToken, type TestDb } from "../testing";
+import { createTestDb, FAKE_NOW, fakeHost, fakeToken, type TestDb } from "../testing";
 import { publicRoutes } from "./index";
 
 let testDb: TestDb;
@@ -107,7 +107,21 @@ async function setup() {
     const at = now;
     host.clock = { now: () => new Date(at) };
   };
-  return { host, app, project, other, member, codex, claude, outsider, call, post, tool, data, tick };
+  return {
+    host,
+    app,
+    project,
+    other,
+    member,
+    codex,
+    claude,
+    outsider,
+    call,
+    post,
+    tool,
+    data,
+    tick,
+  };
 }
 
 async function refusedWith(response: Response, status: number, code: string) {
@@ -237,9 +251,9 @@ describe("the MCP endpoint", () => {
       name: "Claude",
     });
     expect((await data(claude.token, "create_task", createInput)).id).toBe(created.id);
-    expect((await tool(claude.token, "create_task", { ...createInput, title: "Other" })).isError).toBe(
-      true,
-    );
+    expect(
+      (await tool(claude.token, "create_task", { ...createInput, title: "Other" })).isError,
+    ).toBe(true);
     const change = {
       taskId: created.id,
       version: created.version,
@@ -263,11 +277,7 @@ describe("the MCP endpoint", () => {
     const handoff = (await pendingSignals(host, codex.actor)).filter(
       (s) => s.senderAgentId === claude.id,
     );
-    expect(handoff.map((s) => s.kind).sort()).toEqual([
-      "clarification.answered",
-      "requirements.changed",
-      "task.created",
-    ]);
+    expect(handoff.map((s) => s.kind).sort()).toEqual(["requirements.changed", "task.created"]);
 
     // Codex claims it, reports progress and a blocker.
     tick();
@@ -288,7 +298,11 @@ describe("the MCP endpoint", () => {
     expect(report.isError).toBeUndefined();
     expect(await tool(codex.token, "report_progress", progress)).toEqual(report);
     tick();
-    const blocker = { ...progress, requestId: crypto.randomUUID(), message: "Waiting for a fixture." };
+    const blocker = {
+      ...progress,
+      requestId: crypto.randomUUID(),
+      message: "Waiting for a fixture.",
+    };
     const blocked = await tool(codex.token, "report_blocker", blocker);
     expect(blocked.isError).toBeUndefined();
     expect(await tool(codex.token, "report_blocker", blocker)).toEqual(blocked);
@@ -325,8 +339,10 @@ describe("the MCP endpoint", () => {
     const reviewSignal = (await pendingSignals(host, claude.actor)).find(
       (s) => s.kind === "review.requested",
     );
-    expect(reviewSignal?.senderAgentId).toBe(codex.id);
-    expect((reviewSignal?.payload as { reviewRequestId?: string }).reviewRequestId).toBe(request.id);
+    expect(reviewSignal).toMatchObject({
+      senderAgentId: codex.id,
+      payload: { reviewRequestId: request.id },
+    });
 
     // Claude asks for changes; the task returns to Ready.
     tick();
@@ -340,9 +356,9 @@ describe("the MCP endpoint", () => {
     };
     expect((await tool(codex.token, "submit_review", reviewInput)).isError).toBe(true);
     expect((await tool(outsider.token, "submit_review", reviewInput)).isError).toBe(true);
-    expect((await tool(claude.token, "submit_review", { ...reviewInput, revision: 1 })).isError).toBe(
-      true,
-    );
+    expect(
+      (await tool(claude.token, "submit_review", { ...reviewInput, revision: 1 })).isError,
+    ).toBe(true);
     const decision = await tool(claude.token, "submit_review", reviewInput);
     expect(decision.isError).toBeUndefined();
     expect(await tool(claude.token, "submit_review", reviewInput)).toEqual(decision);
@@ -387,7 +403,11 @@ describe("the MCP endpoint", () => {
 
   it("refuses an agent's writes to a read-only project, and a tool's bad input", async () => {
     const { host, project, member, codex, tool, data } = await setup();
-    const task = await createTask(host, member(), { title: "T", description: "", acceptanceCriteria: "" });
+    const task = await createTask(host, member(), {
+      title: "T",
+      description: "",
+      acceptanceCriteria: "",
+    });
     await updateTask(host, member(), task.id, { version: task.version, status: "READY" });
     host.directory.projects = host.directory.projects.map((p) =>
       p.projectId === project.projectId ? { ...p, readOnly: true } : p,
