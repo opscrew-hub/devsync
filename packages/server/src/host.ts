@@ -45,6 +45,17 @@ export interface WorkspaceContext {
   projects: ProjectRef[];
 }
 
+/**
+ * An agent, authenticated by its token (`authenticateAgent`): what the MCP endpoint passes the
+ * domain where a member's route passes a `ProjectContext`.
+ */
+export interface AgentActor {
+  kind: "agent";
+  agentId: string;
+  name: string;
+  project: ProjectRef;
+}
+
 /** The Hono environments of DevSync's routes: the host sets `devsync` before they run. */
 export type ProjectEnv = { Variables: { devsync: ProjectContext } };
 export type WorkspaceEnv = { Variables: { devsync: WorkspaceContext } };
