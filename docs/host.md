@@ -4,12 +4,43 @@ DevSync is a module of OpsCrew's dashboard (`app.opscrew.dev`): the dashboard is
 host signs people in, holds the workspaces, projects, members and roles, the audit log, the GitHub
 App and the job queue; DevSync adds a project's planned work and the coding agents that do it.
 
-DevSync never imports the host's code. It defines what it needs from a host (`DevSyncHost`, in
-`packages/server/src/host.ts`) and gives the host its routes, queues, migrations, removal hooks and
-pages. The host implements the interface and mounts the rest. In this repository, tests use a fake
-host (`fakeHost()` from `@devsync/server/testing`), so DevSync builds and tests on its own.
+The dashboard names no module: it has a module system, and DevSync is plugged into it by the
+deployment's configuration. DevSync never imports the dashboard's code either. It follows the
+dashboard's module contract with its own copy of the types (`DevSyncHost` in
+`packages/server/src/host.ts`, `ServerModule` in `module.ts`, the page props in
+`packages/web/src/module.tsx`), and type-level tests check them against the contract. In this
+repository, tests use a fake host (`fakeHost()` from `@devsync/server/testing`), so DevSync builds
+and tests on its own; it runs only inside the dashboard.
 
-This file is the contract between the two. A change to it is a change to both.
+This file is DevSync's side of that contract. A change to it is a change to both.
+
+## Plugging DevSync in
+
+The dashboard's deployment lists its modules in `OPSCREW_MODULES`, as GitHub repositories pinned to
+a full commit:
+
+```bash
+OPSCREW_MODULES="https://github.com/opscrew-hub/devsync#<40-character commit>"
+```
+
+Its build downloads that commit into its `modules/` folder, adds DevSync's `packages/*` to its pnpm
+workspace, and reads the manifest in DevSync's root `package.json`:
+
+```json
+"opscrewModule": {
+  "id": "devsync",
+  "name": "DevSync",
+  "summary": "…",
+  "icon": "kanban",
+  "workspacePage": true,
+  "server": "packages/server/src/module.ts",
+  "web": "packages/web/src/module.tsx"
+}
+```
+
+The server imports `serverModule` from the `server` file, the dashboard `webModule` from the `web`
+file (as its own chunk). The `id` is DevSync's schema name, the prefix of its queues and audit
+actions, and the `devsync` in every address below.
 
 ## Switching DevSync on
 
@@ -20,7 +51,8 @@ project or the workspace.
 
 ## The host interface
 
-See `host.ts` for the exact types. In short:
+The dashboard gives every module the same `ModuleHost`; DevSync's `DevSyncHost` is the part of it
+DevSync uses (`host.ts` has the exact types). In short:
 
 | Member | What the host gives |
 |---|---|
@@ -29,22 +61,23 @@ See `host.ts` for the exact types. In short:
 | `log` | `error(message)`: never given a token. |
 | `audit(tx, actor, entry)` | appends to the host's audit log in `tx`. Actions start with `devsync.`; details hold names, ids and figures only. |
 | `members(workspaceId)` | the workspace's members with their names and roles. |
-| `project(projectId)` | the project with DevSync on for it and its workspace, or null: checked on every MCP request. |
+| `project(projectId)` | the connected project with DevSync on for it and its workspace, or null: checked on every MCP request. |
 | `enqueue(queue, payload, options?)` | sends a job to a DevSync queue after the current transaction commits. |
 
 ### Request contexts
 
-The host's guard runs before DevSync's routes and sets `c.var.devsync`, from its session, never from
+The host's guard runs before DevSync's routes and sets `c.var.module`, from its session, never from
 the request:
 
 - on project routes, a `ProjectContext`: the project (`workspaceId`, `projectId`, `fullName`,
   `readOnly`) and the member (`userId`, `name`, `role`);
 - on workspace routes, a `WorkspaceContext`: the workspace, the member, and its projects with
-  DevSync on.
+  DevSync on (disconnected projects left out).
 
-The host has already checked that the member belongs to the workspace, that the project is the
-workspace's and that DevSync is on. It also refuses members' changes (any method but GET) to a
-read-only project, one past the workspace's plan. DevSync checks the role.
+The host has already checked that the member belongs to the workspace (and isn't suspended), that
+the project is the workspace's and that DevSync is on for both. It also refuses members' changes
+(any method but GET) to a read-only project, one past the workspace's plan, or a disconnected one.
+DevSync checks the role.
 
 ## Roles and permissions
 
@@ -65,13 +98,13 @@ The host's roles are OpsCrew's: Owner, Admin, Approver, Developer. `can(role, ac
 |---|---|---|
 | `projectRoutes(host)` | `/api/w/<workspace>/projects/<project>/m/devsync` | the session, the workspace, the guard |
 | `workspaceRoutes(host)` | `/api/w/<workspace>/m/devsync` | the session, the workspace, DevSync on for it |
-| `publicRoutes(host)` | `/m/devsync` | nothing: DevSync authenticates agents itself |
+| `publicRoutes(host)` | `/m/devsync` | the body limit and `Cache-Control: no-store`; DevSync authenticates agents itself |
 
 Each is a Hono app with its own `onError`, answering refusals as
 `{ "error": { "code", "message", "fields"? } }` with the dashboard's codes and statuses:
 `invalid` 422, `unauthenticated` 401, `forbidden` 403, `not-found` 404, `conflict` 409,
-`rate-limited` 429 (`ERROR_STATUS` in `host.ts`). Messages are plain English and say what to do
-next.
+`rate-limited` 429 (`ERROR_STATUS` in `host.ts`), and `internal` 500 for anything unexpected, logged
+without the request's body or any token. Messages are plain English and say what to do next.
 
 ## HTTP API
 
@@ -128,7 +161,8 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 
 Backlog, Ready, Claimed, In progress, Blocked, Review, Done, Cancelled. The moves allowed are
 `TRANSITIONS` in `@devsync/schemas`. A claimed task changes status only by its claim (or by being
-cancelled). Every change to a task's title, description or acceptance criteria keeps a new
+cancelled) until the claim expires or its agent is revoked; then anyone may move it, and the claim
+is cleared. Every change to a task's title, description or acceptance criteria keeps a new
 revision; every edit checks the task's `version` and is refused with "This task changed. Reload it
 and try again." when another came first.
 
@@ -137,8 +171,10 @@ and try again." when another came first.
 `POST /m/devsync/mcp`: a stateless Streamable HTTP MCP endpoint with JSON responses. An Owner or
 Admin registers an agent on the project's DevSync tab and copies its token once; the token is a
 bearer token for that agent and project only, expires after 24 hours, and can be rotated or
-revoked. DevSync keeps only its SHA-256 hash. A request with an origin other than the host's is
-refused; refusals carry `WWW-Authenticate: Bearer` and `Cache-Control: no-store`.
+revoked. DevSync keeps only its SHA-256 hash. A missing, invalid, expired or revoked token is
+refused 401 with `WWW-Authenticate: Bearer`; a valid token whose project is gone, disconnected or
+has DevSync off is refused 403 ("DevSync is off for this project"), as is a request with an origin
+other than the host's. Every answer carries `Cache-Control: no-store`.
 
 | Tool | Input | What it does |
 |---|---|---|
@@ -201,16 +237,20 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
 
 ## Pages
 
-`@devsync/web` gives the host two components, each inside a `DevSyncProvider`:
+`webModule` (`packages/web/src/module.tsx`) gives the host two pages, `ProjectTab` and
+`WorkspacePage`, which take the props every module's pages get:
 
-- `DevSyncProvider`: `apiBase` (the mount point above), `userId` and `role` (the member's), and the
-  host's UI pieces, so DevSync looks like the rest of the dashboard: `Icon` (`{ name, className? }`),
+- both: `apiBase` (the mount point above), `userId` and `role` (the member's), and `ui`, the host's
+  pieces, so DevSync looks like the rest of the dashboard: `Icon` (`{ name, className? }`),
   `Dialog` (`{ title, icon, onSubmit?, children }`), `EmptyState` (`{ icon, title, children,
-  action? }`) and `Link` (`{ to, className?, children }`, the host's router link); and optionally `fetch`
-  (tests pass a fake; the default is the browser's).
-- `ProjectTab`: `{ selectedTaskId, onSelectTask }`, the selected task kept in the host's URL
-  (`?task=<id>`).
-- `WorkspacePage`: `{ taskHref(projectId, taskId) }`.
+  action? }`) and `Link` (`{ to, className?, children }`, the host's router link);
+- `ProjectTab`: `project` (`{ id, fullName, readOnly }`), `query` (the page's search parameters) and
+  `setQuery` (replaces them): the selected task is `?task=<id>`;
+- `WorkspacePage`: `projectHref(projectId, query?)`, the address of a project's DevSync tab, which
+  task links use with `{ task }`.
+
+Inside, each wraps DevSync's own component in `DevSyncProvider` (which also takes an optional
+`fetch` for tests).
 
 They use the host's TanStack Query client, refetch every 10 seconds while visible, and use the
 host's global classes (`card`, `card-h`, `card-t`, `btn`, `btn-primary`, `btn-secondary`,
