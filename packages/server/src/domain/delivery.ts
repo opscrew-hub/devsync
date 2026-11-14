@@ -14,7 +14,7 @@ import type { DevSyncDb, DevSyncHost } from "../host";
 const MAX_BACKOFF_SECONDS = 10 * 60;
 
 /** Seconds before the next try after `attempts` failures: 2, 4, 8, … up to 10 minutes. */
-export function outboxBackoffSeconds(attempts: number): number {
+function outboxBackoffSeconds(attempts: number): number {
   return Math.min(MAX_BACKOFF_SECONDS, 2 ** Math.min(attempts, 10));
 }
 

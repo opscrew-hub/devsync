@@ -24,7 +24,7 @@ import {
 import { parse, REFUSAL } from "./common";
 
 /** How long a token lasts from its registration or rotation. */
-export const AGENT_TOKEN_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const AGENT_TOKEN_LIFETIME_MS = 24 * 60 * 60 * 1000;
 /** Seen within this long: "Recently active" (legacy's two minutes). */
 const RECENTLY_ACTIVE_MS = 2 * 60 * 1000;
 /** 32 random bytes, base64url. */

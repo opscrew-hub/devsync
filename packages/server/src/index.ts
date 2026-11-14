@@ -1,17 +1,38 @@
 /**
- * DevSync's server half, for its host: the interface the host implements (host.ts), the database,
- * the domain, the routes, the queues and the removal hooks. One file per area; each task fills its own.
+ * DevSync's server half, for its host (docs/host.md): the interface the host implements, the routes
+ * it mounts, the queues its worker runs, the migrations it applies, the removal hooks it calls, and
+ * the tables. Nothing else: the domain is reached through the routes and the queues, and tests
+ * import internals from their own modules.
  */
-export * from "./db";
-export * from "./domain/activity";
-export * from "./domain/agents";
-export * from "./domain/claims";
-export * from "./domain/delivery";
-export * from "./domain/outbox";
-export * from "./domain/pull-requests";
-export * from "./domain/signals";
-export * from "./domain/tasks";
-export * from "./host";
-export * from "./http";
-export * from "./jobs";
-export * from "./removal";
+export {
+  agent,
+  githubDelivery,
+  migrations,
+  outboxEvent,
+  pullRequest,
+  run,
+  signal,
+  task,
+  taskComment,
+  taskRevision,
+} from "./db";
+export {
+  type AgentActor,
+  type AuditActor,
+  type AuditEntry,
+  type DevSyncDb,
+  DevSyncError,
+  type DevSyncHost,
+  ERROR_STATUS,
+  type ErrorCode,
+  type Member,
+  type ProjectContext,
+  type ProjectEnv,
+  type ProjectRef,
+  type QueueName,
+  type WorkspaceContext,
+  type WorkspaceEnv,
+} from "./host";
+export { projectRoutes, publicRoutes, workspaceRoutes } from "./http";
+export { type DevSyncJob, jobs } from "./jobs";
+export { removeMember, removeProject, removeWorkspace } from "./removal";

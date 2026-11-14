@@ -461,6 +461,7 @@ describe("project routes", () => {
     const members = await as("owner")("GET", "/members");
     expect(members.status).toBe(500);
     expect(members.body).toEqual({ error: { code: "internal", message: INTERNAL } });
+    expect(ErrorAnswer.safeParse(members.body).success).toBe(true);
     expect(members.headers.get("cache-control")).toBe("no-store");
     expect(host.errors).toHaveLength(1);
     expect(host.errors[0]).toContain("GET");

@@ -11,7 +11,7 @@ import { type AgentActor, DevSyncError, type DevSyncHost } from "../host";
 import { parse, REFUSAL, requireWritable } from "./common";
 
 /** How long a claim lasts from its claim or renewal. */
-export const CLAIM_LEASE_MS = 15 * 60 * 1000;
+const CLAIM_LEASE_MS = 15 * 60 * 1000;
 
 /** A claim: `claim_task` and `renew_task_claim`'s answer, with the requirements' revision. */
 export interface TaskLease {

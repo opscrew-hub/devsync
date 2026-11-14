@@ -29,10 +29,7 @@ export interface OutboxRecord {
 }
 
 /** Inserts the event in `tx`, the transaction making the change, due at once. */
-export async function recordOutboxEvent(
-  tx: DevSyncDb,
-  event: OutboxRecord,
-): Promise<OutboxEventRow> {
+async function recordOutboxEvent(tx: DevSyncDb, event: OutboxRecord): Promise<OutboxEventRow> {
   const actor = event.actor;
   const [row] = await tx
     .insert(outboxEvent)
@@ -55,7 +52,7 @@ export async function recordOutboxEvent(
 }
 
 /** Asks the host to run `devsync.outbox` for the project: once per change that recorded an event. */
-export function wakeOutbox(host: DevSyncHost, projectId: string): Promise<void> {
+function wakeOutbox(host: DevSyncHost, projectId: string): Promise<void> {
   return host.enqueue("devsync.outbox", { projectId });
 }
 

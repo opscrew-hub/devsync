@@ -25,7 +25,10 @@ export const Author = z.discriminatedUnion("kind", [
 ]);
 export type Author = z.infer<typeof Author>;
 
-/** A refusal's answer: `{ error: { code, message, fields? } }` (docs/host.md, Mount points). */
+/**
+ * A refusal's answer: `{ error: { code, message, fields? } }` (docs/host.md, Mount points), and an
+ * unexpected failure's (`internal`, 500), answered without its details.
+ */
 export const ErrorAnswer = z.object({
   error: z.object({
     code: z.enum([
@@ -35,6 +38,7 @@ export const ErrorAnswer = z.object({
       "not-found",
       "conflict",
       "rate-limited",
+      "internal",
     ]),
     message: z.string(),
     fields: z.array(z.string()).optional(),
