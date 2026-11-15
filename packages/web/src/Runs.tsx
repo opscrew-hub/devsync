@@ -262,21 +262,17 @@ function Setup({
           </p>
           <ul className={styles.steps}>
             {data.missing.map((step) => (
-              <li key={step}>
-                {step}
-                {/* The missing secret's step is the one that names it. */}
-                {pages && !data.secret && step.includes(API_KEY_SECRET) && (
-                  <>
-                    {" "}
-                    <a className="cream" href={pages.secrets} target="_blank" rel="noreferrer">
-                      Add it on GitHub
-                    </a>
-                  </>
-                )}
-              </li>
+              <li key={step}>{step}</li>
             ))}
           </ul>
         </>
+      )}
+      {data && pages && !data.secret && (
+        <p>
+          <a className="cream" href={pages.secrets} target="_blank" rel="noreferrer">
+            Add {API_KEY_SECRET} on GitHub
+          </a>
+        </p>
       )}
       {data && !data.workflow && <WorkflowFile create={pages?.workflow ?? null} />}
       {data && data.missing.length === 0 && (

@@ -157,9 +157,11 @@ describe("webModule.ProjectTab", () => {
     expect(create.getAttribute("href")).toBe(
       "https://github.com/acme/shop/new/release/2.x?filename=.github/workflows/devsync.yml",
     );
-    expect(within(runs).getByRole("link", { name: "Add it on GitHub" }).getAttribute("href")).toBe(
-      "https://github.com/acme/shop/settings/secrets/actions",
-    );
+    expect(
+      within(runs)
+        .getByRole("link", { name: "Add ANTHROPIC_API_KEY on GitHub" })
+        .getAttribute("href"),
+    ).toBe("https://github.com/acme/shop/settings/secrets/actions");
   });
 
   it("gives the member's role to DevSync: a developer can't register agents", async () => {

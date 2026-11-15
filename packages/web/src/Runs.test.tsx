@@ -233,7 +233,7 @@ describe("the runs section's links to GitHub", () => {
     const runs = await section();
 
     expect(links(runs)).toEqual([
-      ["Add it on GitHub", SECRETS],
+      ["Add ANTHROPIC_API_KEY on GitHub", SECRETS],
       ["Create it on GitHub", NEW_WORKFLOW],
       ["Open the Actions settings", ACTIONS],
     ]);
@@ -242,14 +242,32 @@ describe("the runs section's links to GitHub", () => {
       expect(link.getAttribute("rel")).toBe("noreferrer");
     }
 
-    // The secret's own item links to its settings; the workflow's link sits by the copy button.
-    const secret = within(runs).getByText(SETUP_WORDS.secret);
-    expect(within(secret).getByRole("link").getAttribute("href")).toBe(SECRETS);
-    expect(within(within(runs).getByText(SETUP_WORDS.workflow)).queryByRole("link")).toBeNull();
+    // The steps stay the server's plain words; the workflow's link sits by the copy button.
+    for (const step of Object.values(SETUP_WORDS)) {
+      expect(within(within(runs).getByText(step)).queryByRole("link")).toBeNull();
+    }
     const create = within(runs).getByRole("link", { name: "Create it on GitHub" });
     expect(create.className).toBe("btn btn-sm btn-primary");
     expect(create.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("arrow-square-out");
     expect(create.parentElement).toBe(button("Copy the workflow", runs).parentElement);
+  });
+
+  it.each<[string, RunSetup, boolean]>([
+    [
+      "missing, whatever the steps say",
+      { workflow: true, secret: false, missing: ["Reworded."] },
+      true,
+    ],
+    [
+      "there, whatever the steps say",
+      { workflow: true, secret: true, missing: [SETUP_WORDS.secret] },
+      false,
+    ],
+  ])("links to the Actions secrets exactly when the secret is %s", async (_, setup, shown) => {
+    show({ setup });
+    const runs = await section();
+    const link = within(runs).queryByRole("link", { name: "Add ANTHROPIC_API_KEY on GitHub" });
+    expect(link?.getAttribute("href") ?? null).toBe(shown ? SECRETS : null);
   });
 
   it("links only to the Actions settings once the repository is set up", async () => {
@@ -276,7 +294,7 @@ describe("the runs section's links to GitHub", () => {
     show({ setup: setupMissing, repository: { fullName: "acme/shop", defaultBranch: "" } });
     const runs = await section();
     expect(links(runs)).toEqual([
-      ["Add it on GitHub", SECRETS],
+      ["Add ANTHROPIC_API_KEY on GitHub", SECRETS],
       ["Open the Actions settings", ACTIONS],
     ]);
     expect(button("Copy the workflow", runs)).toBeTruthy();
