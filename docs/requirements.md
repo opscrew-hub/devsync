@@ -129,6 +129,27 @@ repository.
 4. **Given** a repository without the DevSync workflow or without the `ANTHROPIC_API_KEY` secret,
    **Then** asking for a run says exactly what to add and where, as the checks setup does.
 
+### Story 5 - Fix a security finding with a task (Priority: P3)
+
+From a security finding on the dashboard, a member opens DevSync with the finding, gets a task
+prefilled from it, edits and creates it, and the task then follows DevSync's usual flow
+([findings.md](findings.md)).
+
+**Why this priority**: the dashboard finds problems; DevSync is where a project's work is planned and
+handed to coding agents, so a finding should become work in one step, without copying text by hand.
+
+**Independent Test**: with the fake host's findings, open the project tab with a finding, create the
+task, open it again from the same finding and from a moved one, and check a resolved finding.
+
+**Acceptance Scenarios**:
+
+1. **Given** a finding of a project with DevSync on, **When** a member opens it in DevSync, **Then**
+   a new task is offered prefilled from the finding, and creating it links the task to the finding.
+2. **Given** a finding already linked to a task, or one with the same rule and file as an open
+   linked task, **When** a member opens it in DevSync, **Then** that task opens and no new one is
+   offered.
+3. **Given** a resolved finding or another project's, **Then** DevSync says so and offers nothing.
+
 ---
 
 ## Rules
@@ -159,6 +180,9 @@ repository.
   request to the user's workflow: OpsCrew holds no AI key and no write token, and opens no pull request itself.
 - **R-9**: DevSync MUST run only inside the dashboard: it has no sign-in, projects or pages of its
   own.
+- **R-10**: A task made from a security finding MUST come from the finding as the dashboard gives it
+  (`host.finding`: redacted, without the match itself), read again by the server when the task is
+  created, and MUST NOT be duplicated for the same finding ([findings.md](findings.md)).
 
 ## Data (the `devsync` schema)
 

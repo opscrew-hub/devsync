@@ -1,6 +1,6 @@
 # Implementation status
 
-As of 2026-11-14. What DevSync must do is in [requirements.md](requirements.md); its contract with
+As of 2026-11-15. What DevSync must do is in [requirements.md](requirements.md); its contract with
 OpsCrew's dashboard is in [host.md](host.md).
 
 ## Done
@@ -49,10 +49,12 @@ updates over SSE (the dashboard polls), Redis, and the dedicated Codex and Claud
 
 ## Next
 
-1. **A live test** on a real project, the inventory project first: Claude Code and Codex connected
+1. **A live test** on a real project (under way): Claude Code and Codex connected
    over MCP, and one managed run on a private test repository (what the research left to check
    live: the CLI's flags together, the reads it refuses, GitHub's answer when pull requests from
    Actions are off).
+2. **Fixing a security finding** ([findings.md](findings.md)): a task prefilled from one of the
+   dashboard's findings; built once the dashboard's side (`host.finding`) is deployed.
 
 ## Later
 
