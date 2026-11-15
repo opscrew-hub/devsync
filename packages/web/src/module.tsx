@@ -37,7 +37,11 @@ interface ModulePageProps {
 }
 
 export interface ModuleProjectTabProps extends ModulePageProps {
-  project: { id: string; fullName: string; readOnly: boolean };
+  /**
+   * `fullName` is the project's GitHub repository (`owner/name`), and `defaultBranch` that
+   * repository's default branch.
+   */
+  project: { id: string; fullName: string; defaultBranch: string; readOnly: boolean };
   /** The page's search parameters, and a setter that replaces them (no new history entry). */
   query: URLSearchParams;
   setQuery(next: Record<string, string | null>): void;
@@ -89,7 +93,7 @@ function Provider({
  * A project's DevSync tab; the open task is the query's `?task=`, and a security finding to make a
  * task from its `?finding=` (the dashboard's "Fix with DevSync"), cleared once its task is open or
  * its dialog closed. A read-only project (the host's `readOnly`, which a disconnected one is too)
- * locks every action.
+ * locks every action. The runs section links to the project's repository on GitHub.
  */
 function ModuleProjectTab({ project, query, setQuery, ...page }: ModuleProjectTabProps) {
   const task = query.get("task");
@@ -98,6 +102,7 @@ function ModuleProjectTab({ project, query, setQuery, ...page }: ModuleProjectTa
       <ProjectTab
         selectedTaskId={task}
         onSelectTask={(next) => setQuery({ task: next })}
+        repository={project}
         finding={query.get("finding")}
         onFindingDone={(opened) => setQuery({ task: opened ?? task, finding: null })}
       />

@@ -5,16 +5,40 @@
   gap: 16px;
 }
 
-/* The task list beside the open task. */
+/* The task list over the agents: full width, or the column beside the open task. */
+.side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/*
+ * Beside the open task, the column stays in view while the panel scrolls: below the dashboard's
+ * sticky header (68px and its 8px margin), scrolling on its own when taller than the screen.
+ */
 .split {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
   gap: 16px;
   align-items: start;
 }
+.split > .side {
+  position: sticky;
+  top: 92px;
+  align-self: start;
+  max-height: calc(100vh - 108px);
+  overflow-y: auto;
+}
+/* One column: the tasks, the open task, then the agents. */
 @media (max-width: 1100px) {
   .split {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .split > .side {
+    display: contents;
+  }
+  .split .agents {
+    order: 1;
   }
 }
 

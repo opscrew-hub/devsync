@@ -39,7 +39,7 @@ type Open =
   | { kind: "message"; agent: Agent };
 
 /** The project's coding agents: Owners and Admins register, rotate and revoke them; anyone writes to them. */
-export function Agents() {
+export function Agents({ className }: { className?: string }) {
   const { ui, may } = useDevSync();
   const { Icon, EmptyState } = ui;
   const agents = useAgents();
@@ -69,7 +69,7 @@ export function Agents() {
   const empty = agents.isSuccess && list.length === 0;
 
   return (
-    <section className="card bordered" aria-labelledby={heading}>
+    <section className={`card bordered ${className ?? ""}`} aria-labelledby={heading}>
       <div className="card-h">
         <h3 className="card-t" id={heading}>
           <Icon name="robot" />

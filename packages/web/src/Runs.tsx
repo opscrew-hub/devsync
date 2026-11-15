@@ -1,4 +1,5 @@
 import {
+  API_KEY_SECRET,
   can,
   Id,
   RUN_TASK_CHANGED,
@@ -41,6 +42,30 @@ const USD = new Intl.NumberFormat("en", {
   maximumFractionDigits: 4,
 });
 
+/** The project's GitHub repository, whose pages the setup links to. */
+export interface Repository {
+  /** `owner/name`. */
+  fullName: string;
+  /** The repository's default branch, where the workflow goes. */
+  defaultBranch: string;
+}
+
+/** A repository's `owner/name` as GitHub allows it: no address is built from any other. */
+const FULL_NAME = /^[A-Za-z0-9-]+\/(?!\.\.?$)[A-Za-z0-9_.-]+$/;
+
+/** The repository's pages the setup links to; none for a name that isn't a repository's. */
+function githubPages(repository: Repository | undefined) {
+  if (!repository || !FULL_NAME.test(repository.fullName)) return null;
+  const base = `https://github.com/${repository.fullName}`;
+  const branch = repository.defaultBranch.split("/").map(encodeURIComponent).join("/");
+  return {
+    /** GitHub's new file page on the default branch, the workflow's path filled in. */
+    workflow: branch ? `${base}/new/${branch}?filename=${WORKFLOW_PATH}` : null,
+    secrets: `${base}/settings/secrets/actions`,
+    actions: `${base}/settings/actions`,
+  };
+}
+
 /** What an open dialog is for. */
 type Open = { kind: "ask" } | { kind: "approve"; run: Run };
 
@@ -65,7 +90,7 @@ function taskChanged(task: TaskDetail, run: Run): boolean {
  * The task's managed runs: what the repository still needs, asking for a run on a Ready task, and
  * the runs with their state, decisions and results.
  */
-export function Runs({ task }: { task: TaskDetail }) {
+export function Runs({ task, repository }: { task: TaskDetail; repository?: Repository }) {
   const { ui, may } = useDevSync();
   const { Icon } = ui;
   const runs = useRuns(task.id);
@@ -87,7 +112,7 @@ export function Runs({ task }: { task: TaskDetail }) {
         A run's inputs, this task's text, are visible to anyone who can see the repository's Actions
         runs.
       </p>
-      <Setup setup={setup} />
+      <Setup setup={setup} repository={repository} />
       <div className={styles.buttons}>
         <button
           className="btn btn-sm btn-primary"
@@ -214,11 +239,19 @@ function RunItem({ task, run, onApprove }: { task: TaskDetail; run: Run; onAppro
 
 /**
  * What the repository still needs, in the server's words, with the workflow file to copy when it
- * is missing. Read once while the tab is in use, and again on Check again.
+ * is missing, and links to where each goes on GitHub. Read once while the tab is in use, and again
+ * on Check again.
  */
-function Setup({ setup }: { setup: ReturnType<typeof useRunSetup> }) {
+function Setup({
+  setup,
+  repository,
+}: {
+  setup: ReturnType<typeof useRunSetup>;
+  repository: Repository | undefined;
+}) {
   const { Icon } = useDevSync().ui;
   const data = setup.data;
+  const pages = githubPages(repository);
   return (
     <div className={styles.stack}>
       {data && data.missing.length > 0 && (
@@ -229,12 +262,23 @@ function Setup({ setup }: { setup: ReturnType<typeof useRunSetup> }) {
           </p>
           <ul className={styles.steps}>
             {data.missing.map((step) => (
-              <li key={step}>{step}</li>
+              <li key={step}>
+                {step}
+                {/* The missing secret's step is the one that names it. */}
+                {pages && !data.secret && step.includes(API_KEY_SECRET) && (
+                  <>
+                    {" "}
+                    <a className="cream" href={pages.secrets} target="_blank" rel="noreferrer">
+                      Add it on GitHub
+                    </a>
+                  </>
+                )}
+              </li>
             ))}
           </ul>
         </>
       )}
-      {data && !data.workflow && <WorkflowFile />}
+      {data && !data.workflow && <WorkflowFile create={pages?.workflow ?? null} />}
       {data && data.missing.length === 0 && (
         <p className={`status s-good ${styles.problem}`}>
           <Icon name="check-circle" className="i-sm" />
@@ -245,6 +289,14 @@ function Setup({ setup }: { setup: ReturnType<typeof useRunSetup> }) {
         <p className="sub">
           A run opens its draft pull request only with Settings &gt; Actions &gt; General &gt; Allow
           GitHub Actions to create and approve pull requests turned on.
+          {pages && (
+            <>
+              {" "}
+              <a className="cream" href={pages.actions} target="_blank" rel="noreferrer">
+                Open the Actions settings
+              </a>
+            </>
+          )}
         </p>
       )}
       <Problem error={setup.error} />
@@ -263,8 +315,12 @@ function Setup({ setup }: { setup: ReturnType<typeof useRunSetup> }) {
   );
 }
 
-/** The workflow file in full, to copy to `.github/workflows/devsync.yml`. */
-function WorkflowFile() {
+/**
+ * The workflow file in full, to copy to `.github/workflows/devsync.yml`, and with `create`, the
+ * link to GitHub's page that adds it.
+ */
+function WorkflowFile({ create }: { create: string | null }) {
+  const { Icon } = useDevSync().ui;
   return (
     <figure className={`${styles.stack} ${styles.workflow}`}>
       <figcaption className={styles.inline}>
@@ -274,6 +330,12 @@ function WorkflowFile() {
           label="Copy the workflow"
           className="btn btn-sm btn-secondary bordered"
         />
+        {create && (
+          <a className="btn btn-sm btn-primary" href={create} target="_blank" rel="noreferrer">
+            <Icon name="arrow-square-out" className="i-sm" />
+            Create it on GitHub
+          </a>
+        )}
       </figcaption>
       <pre className={`mono ${styles.code}`}>{WORKFLOW}</pre>
     </figure>

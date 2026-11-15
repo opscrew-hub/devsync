@@ -2,9 +2,19 @@ import type { QueryClient } from "@tanstack/react-query";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import styles from "./devsync.module.css";
 import { ProjectTab } from "./ProjectTab";
 import { button, id, type Reply, renderWith, testQueryClient } from "./test/render";
-import { agent, detail, finding, members, pullRequests, task, tasks } from "./test/samples";
+import {
+  agent,
+  detail,
+  finding,
+  members,
+  pullRequests,
+  setupComplete,
+  task,
+  tasks,
+} from "./test/samples";
 
 afterEach(cleanup);
 
@@ -113,6 +123,37 @@ describe("ProjectTab: the task list", () => {
     expect((await screen.findByRole("alert")).textContent).toBe(
       "This task doesn't exist. Pick another.",
     );
+  });
+});
+
+describe("ProjectTab: the layout", () => {
+  const routes = {
+    ...base,
+    [`GET /tasks/${detail.id}/runs`]: { body: { runs: [] } },
+    "GET /runs/setup": { body: setupComplete },
+  };
+
+  it("shows the tasks, then the agents, with no task open", async () => {
+    renderWith(<ProjectTab selectedTaskId={null} onSelectTask={() => {}} />, { routes });
+    const list = await screen.findByRole("region", { name: "Tasks" });
+    expect(list.nextElementSibling).toBe(screen.getByRole("region", { name: "Agents" }));
+    expect(screen.queryByRole("region", { name: "Add the sign-up form" })).toBeNull();
+  });
+
+  it("stacks the tasks and the agents in the column beside the open task", async () => {
+    renderWith(<ProjectTab selectedTaskId={detail.id} onSelectTask={() => {}} />, { routes });
+    const panel = await screen.findByRole("region", { name: "Add the sign-up form" });
+    const list = screen.getByRole("region", { name: "Tasks" });
+    const agents = screen.getByRole("region", { name: "Agents" });
+
+    const column = list.parentElement as HTMLElement;
+    expect(column.className).toBe(styles.side);
+    expect(Array.from(column.children)).toEqual([list, agents]);
+    const split = column.parentElement as HTMLElement;
+    expect(split.className).toBe(styles.split);
+    expect(Array.from(split.children)).toEqual([column, panel]);
+    // On a narrow screen the column's cards join the panel's one column, the agents' after it.
+    expect(agents.className.split(" ")).toContain(styles.agents);
   });
 });
 

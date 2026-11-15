@@ -14,6 +14,7 @@ import {
   PROJECT,
   pullRequests,
   setupComplete,
+  setupMissing,
   task,
   tasks,
 } from "./test/samples";
@@ -86,7 +87,7 @@ function projectTab(query: string, readOnly = false, routes: Record<string, Repl
     userId: ME,
     role: "developer",
     ui,
-    project: { id: PROJECT, fullName: "acme/shop", readOnly },
+    project: { id: PROJECT, fullName: "acme/shop", defaultBranch: "release/2.x", readOnly },
     query: new URLSearchParams(query),
     setQuery,
   };
@@ -147,6 +148,18 @@ describe("webModule.ProjectTab", () => {
     const dialog = await screen.findByRole("dialog", { name: "New task" });
     await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(closing.setQuery).toHaveBeenCalledWith({ task: detail.id, finding: null });
+  });
+
+  it("links the runs section's setup to the project's repository on GitHub", async () => {
+    projectTab(`task=${detail.id}`, false, { "GET /runs/setup": { body: setupMissing } });
+    const runs = await screen.findByRole("region", { name: "Managed runs" });
+    const create = await within(runs).findByRole("link", { name: "Create it on GitHub" });
+    expect(create.getAttribute("href")).toBe(
+      "https://github.com/acme/shop/new/release/2.x?filename=.github/workflows/devsync.yml",
+    );
+    expect(within(runs).getByRole("link", { name: "Add it on GitHub" }).getAttribute("href")).toBe(
+      "https://github.com/acme/shop/settings/secrets/actions",
+    );
   });
 
   it("gives the member's role to DevSync: a developer can't register agents", async () => {

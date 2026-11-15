@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectTab } from "./ProjectTab";
+import type { Repository } from "./Runs";
 import { TaskPanel } from "./TaskPanel";
 import { button, type Reply, renderWith, type Sent } from "./test/render";
 import {
@@ -28,6 +29,7 @@ afterEach(() => {
 const RUNS = `/tasks/${detail.id}/runs`;
 const GITHUB_RUN = "https://github.com/acme/shop/actions/runs/9001";
 const CHANGED = "The task changed since this run was asked for. Cancel it and ask for a new run.";
+const SHOP: Repository = { fullName: "acme/shop", defaultBranch: "main" };
 
 function show(
   options: {
@@ -36,12 +38,14 @@ function show(
     setup?: RunSetup;
     role?: Role;
     readOnly?: boolean;
+    repository?: Repository;
     extra?: Record<string, Reply>;
   } = {},
 ) {
   const task = options.task ?? detail;
   const runs = options.runs ?? [];
-  return renderWith(<TaskPanel taskId={task.id} onClose={() => {}} />, {
+  const repository = options.repository ?? SHOP;
+  return renderWith(<TaskPanel taskId={task.id} repository={repository} onClose={() => {}} />, {
     role: options.role ?? "owner",
     readOnly: options.readOnly,
     routes: {
@@ -124,6 +128,7 @@ describe("the runs section's setup", () => {
     expect(within(runs).getByText(SETUP_WORDS.secret)).toBeTruthy();
     expect(within(runs).queryByText(SETUP_WORDS.workflow)).toBeNull();
     expect(runs.querySelector("pre")).toBeNull();
+    expect(within(runs).queryByRole("link", { name: "Create it on GitHub" })).toBeNull();
   });
 
   it("says when the repository is set up, and lets a Ready task's run be asked for", async () => {
@@ -209,6 +214,83 @@ describe("the runs section's setup", () => {
     expect((await within(runs).findByRole("alert")).textContent).toBe(message);
     expect(button("Ask for a run", runs).disabled).toBe(true);
   });
+});
+
+describe("the runs section's links to GitHub", () => {
+  const NEW_WORKFLOW =
+    "https://github.com/acme/shop/new/main?filename=.github/workflows/devsync.yml";
+  const SECRETS = "https://github.com/acme/shop/settings/secrets/actions";
+  const ACTIONS = "https://github.com/acme/shop/settings/actions";
+
+  /** Each link in the runs section: its name and address. */
+  const links = (runs: HTMLElement) =>
+    within(runs)
+      .queryAllByRole("link")
+      .map((link) => [link.textContent, link.getAttribute("href")]);
+
+  it("offers to create the workflow, add the secret and open the Actions settings", async () => {
+    show({ setup: setupMissing });
+    const runs = await section();
+
+    expect(links(runs)).toEqual([
+      ["Add it on GitHub", SECRETS],
+      ["Create it on GitHub", NEW_WORKFLOW],
+      ["Open the Actions settings", ACTIONS],
+    ]);
+    for (const link of within(runs).getAllByRole("link")) {
+      expect(link.getAttribute("target")).toBe("_blank");
+      expect(link.getAttribute("rel")).toBe("noreferrer");
+    }
+
+    // The secret's own item links to its settings; the workflow's link sits by the copy button.
+    const secret = within(runs).getByText(SETUP_WORDS.secret);
+    expect(within(secret).getByRole("link").getAttribute("href")).toBe(SECRETS);
+    expect(within(within(runs).getByText(SETUP_WORDS.workflow)).queryByRole("link")).toBeNull();
+    const create = within(runs).getByRole("link", { name: "Create it on GitHub" });
+    expect(create.className).toBe("btn btn-sm btn-primary");
+    expect(create.querySelector("[data-icon]")?.getAttribute("data-icon")).toBe("arrow-square-out");
+    expect(create.parentElement).toBe(button("Copy the workflow", runs).parentElement);
+  });
+
+  it("links only to the Actions settings once the repository is set up", async () => {
+    show();
+    const runs = await section();
+    expect(links(runs)).toEqual([["Open the Actions settings", ACTIONS]]);
+  });
+
+  it.each([
+    ["release/1.x", "release/1.x"],
+    ["fix/über#2", "fix/%C3%BCber%232"],
+  ])(
+    "creates the workflow on the default branch %s, each segment encoded",
+    async (branch, path) => {
+      show({ setup: setupMissing, repository: { fullName: "acme/shop", defaultBranch: branch } });
+      const runs = await section();
+      expect(
+        within(runs).getByRole("link", { name: "Create it on GitHub" }).getAttribute("href"),
+      ).toBe(`https://github.com/acme/shop/new/${path}?filename=.github/workflows/devsync.yml`);
+    },
+  );
+
+  it("offers no workflow link without a default branch, and the other links still", async () => {
+    show({ setup: setupMissing, repository: { fullName: "acme/shop", defaultBranch: "" } });
+    const runs = await section();
+    expect(links(runs)).toEqual([
+      ["Add it on GitHub", SECRETS],
+      ["Open the Actions settings", ACTIONS],
+    ]);
+    expect(button("Copy the workflow", runs)).toBeTruthy();
+  });
+
+  it.each(["acme/..", "acme/.", "acme", "acme/shop/x", "acme/shop?tab=1", "ac me/shop", "../shop"])(
+    "offers no link for the name %s, which isn't a repository's",
+    async (fullName) => {
+      show({ setup: setupMissing, repository: { fullName, defaultBranch: "main" } });
+      const runs = await section();
+      expect(links(runs)).toEqual([]);
+      expect(button("Copy the workflow", runs)).toBeTruthy();
+    },
+  );
 });
 
 describe("asking for a run", () => {

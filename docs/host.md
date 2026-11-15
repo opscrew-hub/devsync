@@ -283,9 +283,10 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
   pieces, so DevSync looks like the rest of the dashboard: `Icon` (`{ name, className? }`),
   `Dialog` (`{ title, icon, onSubmit?, children }`), `EmptyState` (`{ icon, title, children,
   action? }`) and `Link` (`{ to, className?, children }`, the host's router link);
-- `ProjectTab`: `project` (`{ id, fullName, readOnly }`), `query` (the page's search parameters) and
-  `setQuery` (replaces them): the selected task is `?task=<id>`, and a security finding to make a
-  task from is `?finding=<fingerprint>` (see Security findings);
+- `ProjectTab`: `project` (`{ id, fullName, defaultBranch, readOnly }`, `defaultBranch` being the
+  repository's default branch, which the runs section's links to GitHub use), `query` (the page's
+  search parameters) and `setQuery` (replaces them): the selected task is `?task=<id>`, and a
+  security finding to make a task from is `?finding=<fingerprint>` (see Security findings);
 - `WorkspacePage`: `projectHref(projectId, query?)`, the address of a project's DevSync tab, which
   task links use with `{ task }`.
 
@@ -303,7 +304,7 @@ variables (`--c-*`, `--s-*`, `--radius-card`, `--radius-inner`, `--font-*`) in t
 modules. No `style` attributes: the host's Content-Security-Policy forbids them. The icons DevSync
 names (the host's sprite must have them, Phosphor regular): `kanban`, `plus`, `robot`,
 `git-pull-request`, `copy`, `trash`, `paper-plane-tilt`, `arrows-clockwise`,
-`clock-counter-clockwise`, `chat-circle-text`, `check-circle`, `warning`.
+`clock-counter-clockwise`, `chat-circle-text`, `check-circle`, `warning`, `arrow-square-out`.
 
 ## Managed runs
 

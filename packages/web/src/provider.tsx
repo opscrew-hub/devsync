@@ -22,7 +22,8 @@ export type DevSyncIcon =
   | "clock-counter-clockwise"
   | "chat-circle-text"
   | "check-circle"
-  | "warning";
+  | "warning"
+  | "arrow-square-out";
 
 export interface DevSyncIconProps {
   name: DevSyncIcon;

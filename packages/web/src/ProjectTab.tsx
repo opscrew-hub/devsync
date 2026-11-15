@@ -15,12 +15,15 @@ import styles from "./devsync.module.css";
 import { DialogButtons, memberName, Problem, RequirementFields, requirements } from "./parts";
 import { useDevSync } from "./provider";
 import { useChange, useFinding, useMembers, useTasks } from "./queries";
+import type { Repository } from "./Runs";
 import { TaskPanel } from "./TaskPanel";
 
 export interface ProjectTabProps {
   /** The task open in the panel, kept in the host's URL (`?task=<id>`), or null. */
   selectedTaskId: string | null;
   onSelectTask: (taskId: string | null) => void;
+  /** The project's repository, which the open task's runs section links to. */
+  repository?: Repository;
   /** The fingerprint of a security finding to make a task from (`?finding=`), or null. */
   finding?: string | null;
   /** Leaves the finding: opening `taskId` (its linked or new task), or with null once closed. */
@@ -28,28 +31,33 @@ export interface ProjectTabProps {
 }
 
 /**
- * A project's DevSync tab: its tasks by status, the open task's panel, its agents, and the task
- * offered from a security finding.
+ * A project's DevSync tab: its tasks by status and its agents, the open task's panel beside them,
+ * and the task offered from a security finding. The list and the agents keep their place in the
+ * page whether a task is open or not, so opening one doesn't mount them again.
  */
 export function ProjectTab({
   selectedTaskId,
   onSelectTask,
+  repository,
   finding,
   onFindingDone,
 }: ProjectTabProps) {
   return (
     <div className={styles.page}>
       <div className={selectedTaskId ? styles.split : undefined}>
-        <TaskList selectedTaskId={selectedTaskId} onSelectTask={onSelectTask} />
+        <div className={styles.side}>
+          <TaskList selectedTaskId={selectedTaskId} onSelectTask={onSelectTask} />
+          <Agents className={styles.agents} />
+        </div>
         {selectedTaskId && (
           <TaskPanel
             key={selectedTaskId}
             taskId={selectedTaskId}
+            repository={repository}
             onClose={() => onSelectTask(null)}
           />
         )}
       </div>
-      <Agents />
       {finding && onFindingDone && (
         <FindingTask key={finding} fingerprint={finding} onDone={onFindingDone} />
       )}

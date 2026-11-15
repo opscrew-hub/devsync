@@ -26,13 +26,22 @@ import {
 } from "./parts";
 import { useDevSync } from "./provider";
 import { useChange, useMembers, usePullRequests, useTask } from "./queries";
-import { Runs } from "./Runs";
+import { type Repository, Runs } from "./Runs";
 
 /**
  * The open task: its requirements, status, assignee, pull request, managed runs, revisions, comments
  * and timeline.
  */
-export function TaskPanel({ taskId, onClose }: { taskId: string; onClose: () => void }) {
+export function TaskPanel({
+  taskId,
+  repository,
+  onClose,
+}: {
+  taskId: string;
+  /** The project's repository, which the runs section's setup links to. */
+  repository?: Repository;
+  onClose: () => void;
+}) {
   const { ui } = useDevSync();
   const task = useTask(taskId);
   const panel = useRef<HTMLElement>(null);
@@ -58,7 +67,7 @@ export function TaskPanel({ taskId, onClose }: { taskId: string; onClose: () => 
         </button>
       </div>
       <Problem error={task.error} />
-      {task.data && <TaskBody task={task.data} />}
+      {task.data && <TaskBody task={task.data} repository={repository} />}
     </section>
   );
 }
@@ -68,7 +77,7 @@ function useTaskUpdate(taskId: string) {
   return useChange(TaskUpdate, (api, body) => api.send("PATCH", `/tasks/${taskId}`, body, Task));
 }
 
-function TaskBody({ task }: { task: TaskDetail }) {
+function TaskBody({ task, repository }: { task: TaskDetail; repository?: Repository }) {
   const { may } = useDevSync();
   const write = may("task.write");
   const [editing, setEditing] = useState(false);
@@ -133,7 +142,7 @@ function TaskBody({ task }: { task: TaskDetail }) {
       />
       <Problem error={update.error} />
       <PullRequestPicker task={task} />
-      <Runs task={task} />
+      <Runs task={task} repository={repository} />
       <Revisions task={task} />
       <Comments task={task} />
       <Timeline events={task.timeline} />
