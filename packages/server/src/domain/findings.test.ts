@@ -1,5 +1,7 @@
 import { FindingAnswer } from "@devsync/schemas";
+import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { task } from "../db";
 import { DevSyncError, type Member, type ProjectContext, type ProjectRef } from "../host";
 import { refusal, sampleFinding } from "../test/helpers";
 import { createTestDb, type FakeHost, fakeHost, type TestDb } from "../testing";
@@ -141,6 +143,30 @@ describe("findingTask", () => {
     );
     // The same rule with a file is another problem.
     expect((await findingTask(host, as(), { fingerprint: found.fingerprint })).task).toBeNull();
+  });
+
+  it("takes a finding's empty file as none: answered, kept and matched as no file", async () => {
+    const empty = sampleFinding({
+      fingerprint: "repo/no-branch-protection:3",
+      ruleId: "repo/no-branch-protection",
+      file: "",
+      line: null,
+    });
+    const none = { ...empty, fingerprint: "repo/no-branch-protection:4", file: null };
+    host.directory.findings[projectA.projectId] = [empty, none];
+    const answer = await findingTask(host, as(), { fingerprint: empty.fingerprint });
+    expect(answer).toEqual({ finding: { ...empty, file: null }, task: null });
+
+    const created = await fromFinding(empty.fingerprint);
+    const [row] = await testDb.db
+      .select({ file: task.findingFile })
+      .from(task)
+      .where(eq(task.id, created.id));
+    expect(row).toEqual({ file: null });
+    // Linked as a finding without a file is (by its rule), never by an empty path.
+    expect((await findingTask(host, as(), { fingerprint: none.fingerprint })).task).toEqual(
+      created,
+    );
   });
 
   it("never answers another project's task", async () => {

@@ -69,9 +69,16 @@ describe("Finding", () => {
     for (const file of ["src/app.ts", "a..b/c", ".env"]) {
       expect(Finding.safeParse(finding({ file })).success, file).toBe(true);
     }
-    for (const file of ["", "/etc/passwd", "../app.ts", "src/../../app.ts", "src\\app.ts"]) {
+    for (const file of ["/etc/passwd", "../app.ts", "src/../../app.ts", "src\\app.ts"]) {
       expect(Finding.safeParse(finding({ file })).success, file).toBe(false);
     }
+  });
+
+  it("takes an empty file as none, as the host may give it", () => {
+    expect(Finding.parse(finding({ file: "" })).file).toBeNull();
+    expect(FindingAnswer.parse({ finding: finding({ file: "" }), task: null }).finding.file).toBe(
+      null,
+    );
   });
 
   it("refuses a bad fingerprint, severity, line, dismissal or time", () => {

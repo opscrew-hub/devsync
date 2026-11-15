@@ -22,14 +22,18 @@ export type FindingSeverity = z.infer<typeof FindingSeverity>;
 export const DismissalReason = z.enum(["false-positive", "accepted-risk"]);
 export type DismissalReason = z.infer<typeof DismissalReason>;
 
-/** A POSIX path relative to the repository's root: no leading `/`, no `..` segment, no backslash. */
+/**
+ * A POSIX path relative to the repository's root: no leading `/`, no `..` segment, no backslash.
+ * An empty one, which the host may give, is no file at all: null, as the prefill and the links
+ * between findings take it.
+ */
 const RepositoryPath = z
   .string()
-  .min(1)
   .max(FINDING_LIMITS.file)
   .refine(
     (path) => !path.startsWith("/") && !path.includes("\\") && !path.split("/").includes(".."),
-  );
+  )
+  .transform((path) => path || null);
 
 /** A time the host gives, ISO 8601. */
 const HostTime = z.iso.datetime({ offset: true });

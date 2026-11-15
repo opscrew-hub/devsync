@@ -362,7 +362,7 @@ answers one of the project's open findings:
 | `fingerprint` | 1–128 characters of `A–Z a–z 0–9 . _ : / -`. It includes the line, so the same problem gets a new fingerprint when code above it moves |
 | `ruleId`, `title` | at most 200 characters each |
 | `severity` | `critical`, `high`, `medium`, `low` or `info` |
-| `file`, `line` | a POSIX path relative to the repository's root (no leading `/`, no `..`, no backslash, at most 1,000 characters) and a positive line, or null |
+| `file`, `line` | a POSIX path relative to the repository's root (no leading `/`, no `..`, no backslash, at most 1,000 characters; an empty one counts as none) and a positive line, or null |
 | `description`, `remediation` | at most 4,000 characters each, or null |
 | `firstSeenAt`, `lastSeenAt` | ISO 8601 |
 | `dismissal` | `{ reason: "false-positive" \| "accepted-risk" }` for one marked "Not a problem", or null |
@@ -382,8 +382,9 @@ names another fingerprint, fails as unexpected) and uses it twice:
   fingerprint, or from a finding with the same rule and file. The fingerprint may hold a `/`, so it
   is always a query parameter, never a path segment.
 - `POST /tasks` with `finding: { fingerprint }` reads the finding again (404 as above when it is
-  gone), refuses 409 (`conflict`) when it has an open linked task by the same rule ("This finding
-  already has a task, "<title>". Open it instead."), and keeps its fingerprint, rule and file on
+  gone), refuses 409 (`conflict`) when it has an open task linked to it (the same fingerprint, or
+  the same rule and file) ("This finding already has a task, "<title>". Open it instead."), and
+  keeps its fingerprint, rule and file on
   the task (`finding_fingerprint`, `finding_rule`, `finding_file`), from the host's answer, never
   the browser's. The task's text is what the member wrote, prefilled by the tab from the finding
   within DevSync's limits.

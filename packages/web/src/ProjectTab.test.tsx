@@ -1,8 +1,9 @@
+import type { QueryClient } from "@tanstack/react-query";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectTab } from "./ProjectTab";
-import { button, id, type Reply, renderWith } from "./test/render";
+import { button, id, type Reply, renderWith, testQueryClient } from "./test/render";
 import { agent, detail, finding, members, pullRequests, task, tasks } from "./test/samples";
 
 afterEach(cleanup);
@@ -124,7 +125,7 @@ describe("ProjectTab: a security finding (?finding=)", () => {
   /** The tab opened from `answer`'s finding, `onFindingDone` recording where it leaves. */
   function openFinding(
     answer: Reply,
-    options: { readOnly?: boolean; extra?: Record<string, Reply> } = {},
+    options: { readOnly?: boolean; extra?: Record<string, Reply>; client?: QueryClient } = {},
   ) {
     const onFindingDone = vi.fn();
     const fake = renderWith(
@@ -137,10 +138,34 @@ describe("ProjectTab: a security finding (?finding=)", () => {
       {
         routes: { ...base, "GET /findings": answer, ...options.extra },
         readOnly: options.readOnly,
+        client: options.client,
       },
     );
     return { ...fake, onFindingDone };
   }
+
+  it("reads the finding afresh each time the tab is opened with it", async () => {
+    const client = testQueryClient();
+    const first = openFinding({ body: { finding: found, task: null } }, { client });
+    await screen.findByRole("dialog", { name: "New task" });
+    expect(first.onFindingDone).not.toHaveBeenCalled();
+    cleanup();
+
+    // Meanwhile a task was made from it: opening the finding again opens that task.
+    const linked = task(18, { title: "Fix the exposed secret" });
+    const again = openFinding({ body: { finding: found, task: linked } }, { client });
+    await waitFor(() => expect(again.onFindingDone).toHaveBeenCalledWith(linked.id));
+    expect(again.sent.filter((s) => s.path.startsWith("/findings"))).toHaveLength(1);
+  });
+
+  it("leaves out an empty file, as it does a missing one", async () => {
+    openFinding({ body: { finding: finding({ file: "", line: null }), task: null } });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    expect(field(dialog, "Description")).not.toContain("Where");
+    expect(field(dialog, "Acceptance criteria")).toBe(
+      "The next security scan no longer reports config/client-exposed-secret.",
+    );
+  });
 
   const field = (dialog: HTMLElement, label: string) =>
     (within(dialog).getByLabelText(label) as HTMLInputElement | HTMLTextAreaElement).value;

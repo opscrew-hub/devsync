@@ -70,13 +70,24 @@ export const ui: DevSyncUi = {
 
 export const ME = id(1);
 
+/** A query client as the tests' pages get, to share between two renders as the host's one is. */
+export function testQueryClient(): QueryClient {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+}
+
 export function renderWith(
   element: ReactElement,
-  options: { routes: Record<string, Reply>; role?: Role; apiBase?: string; readOnly?: boolean },
+  options: {
+    routes: Record<string, Reply>;
+    role?: Role;
+    apiBase?: string;
+    readOnly?: boolean;
+    client?: QueryClient;
+  },
 ) {
   const apiBase = options.apiBase ?? API;
   const fake = fakeFetch(options.routes, apiBase);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = options.client ?? testQueryClient();
   render(
     <QueryClientProvider client={client}>
       <DevSyncProvider
