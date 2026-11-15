@@ -26,6 +26,18 @@ function show(
 }
 
 describe("the Agents card", () => {
+  it("offers registering once: in the empty state without agents, in the header with some", async () => {
+    show("admin", { "GET /agents": { body: { agents: [] } } });
+    const empty = (await screen.findByText("No agents yet")).parentElement as HTMLElement;
+    expect(screen.getAllByRole("button", { name: "Register an agent" })).toHaveLength(1);
+    expect(within(empty).getByRole("button", { name: "Register an agent" })).toBeTruthy();
+    cleanup();
+
+    show("admin");
+    await screen.findByRole("list", { name: "Agents" });
+    expect(screen.getAllByRole("button", { name: "Register an agent" })).toHaveLength(1);
+  });
+
   it("registers an agent and shows its token once, with a copy button", async () => {
     const user = userEvent.setup();
     const secret = token();

@@ -85,7 +85,7 @@ export function WorkspacePage({ taskHref }: WorkspacePageProps) {
         <EmptyState icon="check-circle" title={filtered ? "No tasks match" : "No open tasks"}>
           {filtered
             ? "Change the filters to see more."
-            : "New tasks on any project with DevSync on show here."}
+            : "Create tasks on a project's DevSync tab; every project's open ones show here."}
         </EmptyState>
       )}
       {list.length > 0 && (

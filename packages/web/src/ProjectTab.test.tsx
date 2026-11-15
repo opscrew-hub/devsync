@@ -39,8 +39,15 @@ describe("ProjectTab: the task list", () => {
     renderWith(<ProjectTab selectedTaskId={null} onSelectTask={() => {}} />, {
       routes: { ...base, "GET /tasks": { body: { tasks: [] } } },
     });
-    expect(await screen.findByText("No tasks yet")).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "New task" })).toHaveLength(2);
+    const empty = (await screen.findByText("No tasks yet")).parentElement as HTMLElement;
+    expect(screen.getAllByRole("button", { name: "New task" })).toHaveLength(1);
+    expect(within(empty).getByRole("button", { name: "New task" })).toBeTruthy();
+  });
+
+  it("offers a new task once, in the card's header, on a project with tasks", async () => {
+    renderWith(<ProjectTab selectedTaskId={null} onSelectTask={() => {}} />, { routes: base });
+    await screen.findByRole("region", { name: "Ready" });
+    expect(screen.getAllByRole("button", { name: "New task" })).toHaveLength(1);
   });
 
   it("creates a task and opens it", async () => {

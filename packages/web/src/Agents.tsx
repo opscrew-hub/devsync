@@ -65,6 +65,8 @@ export function Agents() {
     </button>
   );
   const list = agents.data?.agents ?? [];
+  // One button: the empty state's while there is no agent yet, the header's afterwards.
+  const empty = agents.isSuccess && list.length === 0;
 
   return (
     <section className="card bordered" aria-labelledby={heading}>
@@ -73,11 +75,11 @@ export function Agents() {
           <Icon name="robot" />
           Agents
         </h3>
-        {register}
+        {!empty && register}
       </div>
       {!manage && <p className="sub">An Owner or Admin registers, rotates and revokes agents.</p>}
       <Problem error={agents.error ?? rotate.error} />
-      {agents.isSuccess && list.length === 0 && (
+      {empty && (
         <EmptyState icon="robot" title="No agents yet" action={register}>
           Register Claude Code or Codex to let it claim this project's Ready tasks through MCP.
         </EmptyState>

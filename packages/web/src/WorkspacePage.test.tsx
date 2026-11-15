@@ -82,6 +82,7 @@ describe("WorkspacePage", () => {
       routes: { "GET /tasks": { body: { tasks: [] } }, "GET /members": { body: { members } } },
     });
     expect(await screen.findByText("No open tasks")).toBeTruthy();
+    expect(screen.getByText(/Create tasks on a project's DevSync tab/)).toBeTruthy();
   });
 
   it("reads the tasks again every 10 seconds", async () => {

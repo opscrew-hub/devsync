@@ -53,6 +53,8 @@ function TaskList({ selectedTaskId, onSelectTask }: ProjectTabProps) {
     </button>
   );
   const list = tasks.data?.tasks ?? [];
+  // One button: the empty state's while there is no task yet, the header's afterwards.
+  const empty = tasks.isSuccess && list.length === 0;
 
   return (
     <section className="card bordered" aria-labelledby={heading}>
@@ -61,10 +63,10 @@ function TaskList({ selectedTaskId, onSelectTask }: ProjectTabProps) {
           <Icon name="kanban" />
           Tasks
         </h3>
-        {newTask}
+        {!empty && newTask}
       </div>
       <Problem error={tasks.error} />
-      {tasks.isSuccess && list.length === 0 && (
+      {empty && (
         <EmptyState icon="kanban" title="No tasks yet" action={newTask}>
           Write down what this project should do next; your people and coding agents pick it up.
         </EmptyState>
