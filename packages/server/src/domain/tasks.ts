@@ -11,6 +11,7 @@ import {
   type Author,
   type Comment,
   CommentInput,
+  type Finding,
   type PullRequest,
   PullRequestLink,
   type Revision,
@@ -27,7 +28,7 @@ import {
   type WorkspaceTaskList,
   WorkspaceTaskListQuery,
 } from "@devsync/schemas";
-import { and, desc, eq, inArray, isNull, notInArray, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, notInArray, or, type SQL } from "drizzle-orm";
 import type { z } from "zod";
 import {
   agent,
@@ -182,6 +183,35 @@ async function loadTask(db: DevSyncDb, project: ProjectRef, taskId: string): Pro
   const [row] = await selectTasks(db, taskIn(project, taskId));
   if (!row) throw noSuchTask();
   return toTask(row.task, row.claimAgentName);
+}
+
+/**
+ * The open task (neither Done nor Cancelled) linked to a security finding, the latest updated:
+ * made from the same fingerprint, or, since the fingerprint includes the line and changes when code
+ * above it moves, from a finding with the same rule and file. Null when there is none, so a new task
+ * may be made from the finding.
+ */
+export async function linkedTask(
+  db: DevSyncDb,
+  project: ProjectRef,
+  finding: Pick<Finding, "fingerprint" | "ruleId" | "file">,
+): Promise<Task | null> {
+  const [row] = await selectTasks(
+    db,
+    and(
+      eq(task.projectId, project.projectId),
+      eq(task.workspaceId, project.workspaceId),
+      notInArray(task.status, ["DONE", "CANCELLED"]),
+      or(
+        eq(task.findingFingerprint, finding.fingerprint),
+        and(
+          eq(task.findingRule, finding.ruleId),
+          finding.file === null ? isNull(task.findingFile) : eq(task.findingFile, finding.file),
+        ),
+      ),
+    ),
+  ).limit(1);
+  return row ? toTask(row.task, row.claimAgentName) : null;
 }
 
 function assigneeFilter(
@@ -372,7 +402,8 @@ export async function getTask(
  * Backlog with revision 1 of its requirements. An agent's retry with the same `requestId` answers
  * the task it created; the same `requestId` with other requirements is refused. A member's task
  * from a security finding keeps the finding's fingerprint, rule and file as the host gives them,
- * read again here (never the browser's copy): a finding the host no longer gives is refused.
+ * read again here (never the browser's copy): a finding the host no longer gives is refused, and so
+ * is one with an open linked task (`linkedTask`).
  */
 export async function createTask(
   host: DevSyncHost,
@@ -422,6 +453,14 @@ export async function createTask(
         }
         return { task: toTask(existing.task, existing.claimAgentName), created: false };
       }
+    }
+    // One open task per finding (R-10); two creates at the same instant may both pass, accepted.
+    const linked = finding ? await linkedTask(tx, project, finding) : null;
+    if (linked) {
+      throw new DevSyncError(
+        "conflict",
+        `This finding already has a task, "${linked.title}". Open it instead.`,
+      );
     }
     const [row] = await tx
       .insert(task)

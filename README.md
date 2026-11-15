@@ -34,7 +34,8 @@ and their developers plan the work in DevSync, their coding agents do it, and Op
   and "Allow GitHub Actions to create and approve pull requests" on
   ([docs/managed-runs.md](docs/managed-runs.md)).
 - **Security findings.** **Fix with DevSync** on one of the dashboard's security findings opens a
-  task prefilled from it, or the task already made from it ([docs/findings.md](docs/findings.md)).
+  task prefilled from it, or the open task already made from it
+  ([docs/findings.md](docs/findings.md)).
 
 ## Using it
 

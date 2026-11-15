@@ -61,8 +61,8 @@ export const FindingQuery = z.strictObject({ fingerprint: FindingFingerprint });
 export type FindingQuery = z.infer<typeof FindingQuery>;
 
 /**
- * `GET /findings`: the finding, and the task already linked to it (made from the same fingerprint,
- * else an open one made from the same rule and file), or null.
+ * `GET /findings`: the finding, and the open task already linked to it (made from the same
+ * fingerprint, or from the same rule and file), or null.
  */
 export const FindingAnswer = z.object({ finding: Finding, task: Task.nullable() });
 export type FindingAnswer = z.infer<typeof FindingAnswer>;

@@ -632,6 +632,13 @@ describe("project finding routes", () => {
       const linked = FindingAnswer.parse((await s.as("approver")("GET", query(fingerprint))).body);
       expect(linked.task, fingerprint).toEqual(task);
     }
+    const again = await s.as("owner")("POST", "/tasks", {
+      ...newTask,
+      finding: { fingerprint: moved.fingerprint },
+    });
+    expect(refusal(again, 409, "conflict").message).toBe(
+      `This finding already has a task, "${task.title}". Open it instead.`,
+    );
   });
 
   it("refuse a bad fingerprint before asking the host, and say a missing finding is resolved", async () => {

@@ -255,6 +255,22 @@ describe("ProjectTab: a security finding (?finding=)", () => {
     expect(sent.some((s) => s.method === "POST")).toBe(false);
   });
 
+  it("shows the server's words when the finding got a task meanwhile, and stays open", async () => {
+    const taken = 'This finding already has a task, "Fix the exposed secret". Open it instead.';
+    const { onFindingDone } = openFinding(
+      { body: { finding: found, task: null } },
+      {
+        extra: {
+          "POST /tasks": { status: 409, body: { error: { code: "conflict", message: taken } } },
+        },
+      },
+    );
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    await userEvent.click(button("Create the task", dialog));
+    expect((await within(dialog).findByRole("alert")).textContent).toBe(taken);
+    expect(onFindingDone).not.toHaveBeenCalled();
+  });
+
   it("says a resolved finding, or another project's, is gone and offers nothing", async () => {
     const { onFindingDone } = openFinding({
       status: 404,

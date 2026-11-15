@@ -264,6 +264,40 @@ describe("createTask from a security finding", () => {
     expect(await testDb.db.select().from(task)).toEqual([]);
   });
 
+  it("refuses a second task while the finding has an open one, by fingerprint or by rule and file", async () => {
+    const moved = sampleFinding({ fingerprint: "config/client-exposed-secret:src/app.ts:30" });
+    host.directory.findings[projectA.projectId] = [finding, moved];
+    const first = await createTask(host, as(developer), {
+      ...fields,
+      title: "Fix the exposed secret.",
+      finding: { fingerprint: finding.fingerprint },
+    });
+    for (const fingerprint of [finding.fingerprint, moved.fingerprint]) {
+      const error = await refusal(
+        createTask(host, as(owner), { ...fields, finding: { fingerprint } }),
+        "conflict",
+      );
+      expect(error.message).toBe(
+        'This finding already has a task, "Fix the exposed secret.". Open it instead.',
+      );
+    }
+    expect(await testDb.db.select().from(task)).toHaveLength(1);
+    // A task without the finding is still made.
+    await createTask(host, as(owner), fields);
+
+    // Once the first is Cancelled (or Done), a new task may be made from the finding.
+    await updateTask(host, as(owner), first.id, { version: first.version, status: "CANCELLED" });
+    const second = await createTask(host, as(owner), {
+      ...fields,
+      finding: { fingerprint: moved.fingerprint },
+    });
+    expect(await stored(second.id)).toEqual({
+      fingerprint: moved.fingerprint,
+      rule: moved.ruleId,
+      file: moved.file,
+    });
+  });
+
   it("refuses a bad fingerprint by its field, and an agent's finding, before asking the host", async () => {
     host.directory.findings[projectA.projectId] = [finding];
     const asked = vi.spyOn(host, "finding");

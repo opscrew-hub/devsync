@@ -98,14 +98,14 @@ describe("findingTask", () => {
     await refusal(findingTask(host, as(), { fingerprint: moved.fingerprint }), "not-found");
   });
 
-  it("answers the task made from the same fingerprint, whatever its status", async () => {
+  it("answers the open task made from the same fingerprint, not a Cancelled one", async () => {
     const created = await fromFinding(found.fingerprint);
-    const cancelled = await updateTask(host, as(), created.id, {
-      version: created.version,
-      status: "CANCELLED",
-    });
     const answer = await findingTask(host, as(), { fingerprint: found.fingerprint });
-    expect(answer.task).toEqual(cancelled);
+    expect(answer.task).toEqual(created);
+    await updateTask(host, as(), created.id, { version: created.version, status: "CANCELLED" });
+    for (const fingerprint of [found.fingerprint, moved.fingerprint]) {
+      expect((await findingTask(host, as(), { fingerprint })).task, fingerprint).toBeNull();
+    }
   });
 
   it("answers an open task made from the same rule and file once the line moved, not a Done one", async () => {
@@ -120,10 +120,10 @@ describe("findingTask", () => {
       expect(linked.task, status).toEqual(current);
     }
     await updateTask(host, as(), created.id, { version: current.version, status: "DONE" });
-    expect((await findingTask(host, as(), { fingerprint: moved.fingerprint })).task).toBeNull();
-    // The same fingerprint still opens it, Done.
-    const same = await findingTask(host, as(), { fingerprint: found.fingerprint });
-    expect(same.task?.status).toBe("DONE");
+    // Done, it links to neither the same fingerprint nor the moved one: a new task is offered.
+    for (const fingerprint of [found.fingerprint, moved.fingerprint]) {
+      expect((await findingTask(host, as(), { fingerprint })).task, fingerprint).toBeNull();
+    }
   });
 
   it("matches a finding without a file to an open task from the same rule without one", async () => {

@@ -14,9 +14,11 @@ findings").
    parses its answer. The host gives the finding already redacted and cut to its limits, never the
    match itself; a resolved finding, or another project's, answers null: "This finding is resolved or
    isn't this project's. Open it again from the project's security findings."
-3. The route also answers the task already linked to the finding: the one created from the same
-   fingerprint, else an open task (not Done) created from a finding with the same rule and file,
-   since the fingerprint includes the line and changes when code above it moves.
+3. The route also answers the task already linked to the finding: an open task (neither Done nor
+   Cancelled) created from the same fingerprint, or an open task (neither Done nor Cancelled)
+   created from a finding with the same rule and file, since the fingerprint includes the line and
+   changes when code above it moves. When the finding's only tasks are Done or Cancelled, a new
+   task is offered.
 4. With a linked task, the tab opens it. Without one, it opens **New task** prefilled:
    - title: "Fix: " and the finding's title, cut to DevSync's title limit;
    - description: the finding's description, where it is (`file:line`), its severity and rule, and
@@ -27,7 +29,10 @@ findings").
    The person edits the text and creates the task, or closes the dialog.
 5. Creating it sends the fingerprint with the task. The server reads the finding again through
    `host.finding` (it never trusts the browser's copy of the rule or file) and stores the
-   fingerprint, rule and file on the task. Members who may not write tasks see the finding and a
+   fingerprint, rule and file on the task. If the finding has an open linked task by then (as in
+   step 3; checked in the create's transaction), it refuses with 409 (`conflict`): "This finding
+   already has a task, "<title>". Open it instead.", which the dialog shows. Two creates at the same
+   instant may both pass; that is accepted. Members who may not write tasks see the finding and a
    disabled **Create**, as everywhere else.
 
 From there the task follows DevSync's usual flow: Ready, claimed by an agent, or a managed run whose
@@ -45,7 +50,7 @@ exact text an Approver approves.
   `"findingAction": { "label": "Fix with DevSync" }`; the host interface's copy: `finding` and its
   `Finding` type (the dashboard's `ModuleFinding`), `fakeHost()`'s findings; the task table's
   `finding_fingerprint`, `finding_rule`, `finding_file` (nullable; a migration); `Finding` and the
-  route's answer in `@devsync/schemas`; `GET /findings?fingerprint=` (any member; 400 for a bad
+  route's answer in `@devsync/schemas`; `GET /findings?fingerprint=` (any member; 422 (`invalid`) for a bad
   fingerprint before calling the host; 404 with the text above for null), the linked task as in step
   3; `TaskInput`'s optional `finding: { fingerprint }`, re-read on create (404 when gone); the
   project tab's `?finding=` handling as in step 4, clearing `finding` from the address once the task

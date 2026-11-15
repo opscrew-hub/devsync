@@ -378,10 +378,12 @@ names another fingerprint, fails as unexpected) and uses it twice:
 - `GET /findings?fingerprint=` (any member) refuses a fingerprint outside the character set (422,
   `invalid`) before asking the host, and answers null as 404: "This finding is resolved or isn't
   this project's. Open it again from the project's security findings." Otherwise it answers the
-  finding and the task already linked to it: the one made from the same fingerprint, else an open
-  one (not Done) made from a finding with the same rule and file. The fingerprint may hold a `/`, so
-  it is always a query parameter, never a path segment.
+  finding and the open task (neither Done nor Cancelled) already linked to it: made from the same
+  fingerprint, or from a finding with the same rule and file. The fingerprint may hold a `/`, so it
+  is always a query parameter, never a path segment.
 - `POST /tasks` with `finding: { fingerprint }` reads the finding again (404 as above when it is
-  gone) and keeps its fingerprint, rule and file on the task (`finding_fingerprint`, `finding_rule`,
-  `finding_file`), from the host's answer, never the browser's. The task's text is what the member
-  wrote, prefilled by the tab from the finding within DevSync's limits.
+  gone), refuses 409 (`conflict`) when it has an open linked task by the same rule ("This finding
+  already has a task, "<title>". Open it instead."), and keeps its fingerprint, rule and file on
+  the task (`finding_fingerprint`, `finding_rule`, `finding_file`), from the host's answer, never
+  the browser's. The task's text is what the member wrote, prefilled by the tab from the finding
+  within DevSync's limits.
