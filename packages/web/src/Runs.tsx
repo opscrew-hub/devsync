@@ -1,9 +1,10 @@
 import {
-  API_KEY_SECRET,
+  API_KEY_SECRETS,
   can,
   Id,
   RUN_TASK_CHANGED,
   Run,
+  type RunProvider,
   type RunSetup,
   type RunStatus,
   type RunUsage,
@@ -33,6 +34,12 @@ const STATUS: Record<RunStatus, [string, string, DevSyncIcon]> = {
   REJECTED: ["Rejected", "s-muted", "warning"],
   CANCELLED: ["Cancelled", "s-muted", "trash"],
 };
+
+/** Whose key a run used, as its result says. */
+const PROVIDER: Record<RunProvider, string> = { anthropic: "Anthropic", openrouter: "OpenRouter" };
+
+/** `ANTHROPIC_API_KEY or OPENROUTER_API_KEY`: the secrets a run takes its key from. */
+const KEY_SECRETS = API_KEY_SECRETS.join(" or ");
 
 const COUNT = new Intl.NumberFormat("en");
 const USD = new Intl.NumberFormat("en", {
@@ -270,7 +277,7 @@ function Setup({
       {data && pages && !data.secret && (
         <p>
           <a className="cream" href={pages.secrets} target="_blank" rel="noreferrer">
-            Add {API_KEY_SECRET} on GitHub
+            Add a key on GitHub
           </a>
         </p>
       )}
@@ -278,7 +285,7 @@ function Setup({
       {data && data.missing.length === 0 && (
         <p className={`status s-good ${styles.problem}`}>
           <Icon name="check-circle" className="i-sm" />
-          The repository has the workflow and the ANTHROPIC_API_KEY secret.
+          The repository has the workflow and an {KEY_SECRETS} secret.
         </p>
       )}
       {data && (
@@ -362,10 +369,13 @@ function RunFacts({ run }: { run: Run }) {
   );
 }
 
-/** What a run left: why it failed, the files it changed, its usage and cost, and its links. */
+/**
+ * What a run left: why it failed, the files it changed, its usage, its cost (Claude Code's
+ * estimate), the models and whose key it used, and its links.
+ */
 function RunResult({ run }: { run: Run }) {
   const { Icon } = useDevSync().ui;
-  const { failure, changedFiles, usage, draftPullRequestUrl, githubRunUrl } = run;
+  const { failure, changedFiles, usage, provider, draftPullRequestUrl, githubRunUrl } = run;
   return (
     <>
       {failure && (
@@ -381,12 +391,17 @@ function RunResult({ run }: { run: Run }) {
             <>
               <dt>Tokens</dt>
               <dd>{tokens(usage)}</dd>
-              <dt>Cost, estimated</dt>
-              <dd>{USD.format(usage.costUsd)}</dd>
-              {usage.models.length > 0 && (
+              <dt>Cost</dt>
+              <dd>{`≈ ${USD.format(usage.costUsd)}, estimated from Anthropic's prices`}</dd>
+              {(usage.models.length > 0 || provider) && (
                 <>
                   <dt>Models</dt>
-                  <dd className="mono">{usage.models.join(", ")}</dd>
+                  <dd>
+                    {usage.models.length > 0 && (
+                      <span className="mono">{usage.models.join(", ")}</span>
+                    )}
+                    {provider && ` via ${PROVIDER[provider]}`}
+                  </dd>
                 </>
               )}
             </>
@@ -521,7 +536,7 @@ function Approve({ task, run, onClose }: { task: TaskDetail; run: Run; onClose: 
       <p className="sub">
         Claude Code then works on revision {run.revision} of this task, as{" "}
         {authorName(run.requestedBy)} asked for it, in the repository's Actions and on its
-        ANTHROPIC_API_KEY secret.
+        ANTHROPIC_API_KEY secret, or without one its OPENROUTER_API_KEY.
       </p>
       {changed ? (
         <p className={`status s-warning ${styles.problem}`}>

@@ -124,7 +124,7 @@ time.
   tokens and cost, the models, the draft pull request, the GitHub run).
 - [x] **D4, the standalone version removed** (lead): its folder deleted once D1 and D2 had ported
   its runs, with every mention in the README, the agents' guides, the docs and the code's comments.
-- [ ] **D5, paying through OpenRouter** (`packages/**`, `docs/host.md` if it names the secret,
+- [x] **D5, paying through OpenRouter** (`packages/**`, `docs/host.md` if it names the secret,
   `docs/requirements.md`'s story 4 and R-8, `README.md`). As "Paying through OpenRouter" above: the
   workflow's `agent` job choosing the key, the `no-key` failure, the backstop for both keys,
   `provider` in `result.json` (its schema and checks) and on the run, the cost labelled an estimate,

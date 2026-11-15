@@ -158,9 +158,7 @@ describe("webModule.ProjectTab", () => {
       "https://github.com/acme/shop/new/release/2.x?filename=.github/workflows/devsync.yml",
     );
     expect(
-      within(runs)
-        .getByRole("link", { name: "Add ANTHROPIC_API_KEY on GitHub" })
-        .getAttribute("href"),
+      within(runs).getByRole("link", { name: "Add a key on GitHub" }).getAttribute("href"),
     ).toBe("https://github.com/acme/shop/settings/secrets/actions");
   });
 

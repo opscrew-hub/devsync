@@ -28,6 +28,7 @@ function result(overrides: Record<string, unknown> = {}) {
       costUsd: 0.42,
     },
     models: ["claude-sonnet-5-5"],
+    provider: "anthropic",
     pullRequestUrl: "https://github.com/acme/shop/pull/12",
     branch: `devsync/${runId}`,
     ...overrides,
@@ -47,6 +48,31 @@ describe("checkRunResult", () => {
       result: { status: "failed", failure: "no-changes" },
       pullRequestNumber: null,
     });
+  });
+
+  it("takes the provider the run used, and none for a run that failed before choosing", () => {
+    const check = (fields: Record<string, unknown>) =>
+      checkRunResult(result(fields), { runId, fullName });
+    expect(check({ provider: "openrouter" })).toMatchObject({
+      ok: true,
+      result: { provider: "openrouter" },
+    });
+    const noKey = { status: "failed", failure: "no-key", provider: null, pullRequestUrl: null };
+    expect(check(noKey)).toMatchObject({
+      ok: true,
+      result: { failure: "no-key", provider: null },
+    });
+    expect(check({ ...noKey, failure: "agent-failed" }).ok).toBe(true);
+  });
+
+  it("refuses an unknown or missing provider, and a succeeded run without one", () => {
+    const check = (fields: Record<string, unknown>) =>
+      checkRunResult(result(fields), { runId, fullName }).ok;
+    expect(check({ provider: "openai" })).toBe(false);
+    expect(check({ provider: "Anthropic" })).toBe(false);
+    expect(check({ provider: null })).toBe(false);
+    const { provider: _, ...withoutProvider } = result();
+    expect(checkRunResult(withoutProvider, { runId, fullName }).ok).toBe(false);
   });
 
   it("drops fields it doesn't know", () => {
@@ -169,6 +195,7 @@ describe("RunFailure", () => {
     expect(RunFailure.options).toEqual(
       expect.arrayContaining(["bad-result", "no-result", "cancelled", "workflow-missing"]),
     );
+    expect(WorkflowFailure.options).toContain("no-key");
   });
 });
 
@@ -190,11 +217,14 @@ describe("Run and RunSetup", () => {
       failure: null,
       changedFiles: ["src/app.ts"],
       usage: { ...result().usage, models: ["claude-sonnet-5-5"] },
+      provider: "openrouter",
       draftPullRequestUrl: "https://github.com/acme/shop/pull/12",
       githubRunUrl: "https://github.com/acme/shop/actions/runs/1",
     };
     expect(Run.parse(run)).toEqual(run);
+    expect(Run.parse({ ...run, provider: null }).provider).toBeNull();
     expect(Run.safeParse({ ...run, status: "DONE" }).success).toBe(false);
+    expect(Run.safeParse({ ...run, provider: "openai" }).success).toBe(false);
     expect(RunSetup.parse({ workflow: true, secret: false, missing: ["Add it."] })).toEqual({
       workflow: true,
       secret: false,

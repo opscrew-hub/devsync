@@ -46,7 +46,7 @@ describe("the devsync schema's migration", () => {
 
   it("applies twice, each migration journaled once in devsync.__drizzle_migrations", async () => {
     await testDb.migrate();
-    expect(await testDb.db.select().from(journal)).toHaveLength(3);
+    expect(await testDb.db.select().from(journal)).toHaveLength(4);
     const tables = await testDb.db
       .select({ name: catalog.tableName })
       .from(catalog)
@@ -154,7 +154,11 @@ describe("the devsync schema's migration", () => {
         githubRunId: 9_007_199_254_740,
       })
       .returning();
-    expect(r).toMatchObject({ status: "REQUESTED", githubRunId: 9_007_199_254_740 });
+    expect(r).toMatchObject({
+      status: "REQUESTED",
+      githubRunId: 9_007_199_254_740,
+      provider: null,
+    });
 
     // A task's rows go with it.
     await db.delete(task).where(sql`${task.id} = ${t.id}`);

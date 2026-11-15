@@ -30,6 +30,7 @@ export const RUN_TASK_CHANGED =
 
 /** Why the workflow says a run failed: `result.json`'s `failure`. */
 const WORKFLOW_FAILURES = [
+  "no-key",
   "agent-failed",
   "budget",
   "turns",
@@ -77,6 +78,13 @@ const TokenUsage = z.object({
 export const RunUsage = TokenUsage.extend({ models: z.array(z.string()) });
 export type RunUsage = z.infer<typeof RunUsage>;
 
+/**
+ * Whose key a run used: the `ANTHROPIC_API_KEY` secret's, or the `OPENROUTER_API_KEY` secret's
+ * through OpenRouter. Its cost is Claude Code's estimate from Anthropic's prices either way.
+ */
+export const RunProvider = z.enum(["anthropic", "openrouter"]);
+export type RunProvider = z.infer<typeof RunProvider>;
+
 /** A run, as `GET /tasks/:taskId/runs` and every change to a run answer it. */
 export const Run = z.object({
   id: Id,
@@ -96,6 +104,8 @@ export const Run = z.object({
   failure: z.object({ code: RunFailure, message: z.string() }).nullable(),
   changedFiles: z.array(z.string()).nullable(),
   usage: RunUsage.nullable(),
+  /** Whose key it used; null until its result is kept, or when it failed before choosing one. */
+  provider: RunProvider.nullable(),
   draftPullRequestUrl: z.url().nullable(),
   /** The run in the repository's Actions, once GitHub started it. */
   githubRunUrl: z.url().nullable(),
@@ -110,7 +120,10 @@ export type RunList = z.infer<typeof RunList>;
 export const RunSetup = z.object({
   /** `.github/workflows/devsync.yml` is on the repository's default branch. */
   workflow: z.boolean(),
-  /** Runs can read the `ANTHROPIC_API_KEY` Actions secret (the repository's or its organization's). */
+  /**
+   * Runs can read the `ANTHROPIC_API_KEY` or the `OPENROUTER_API_KEY` Actions secret (the
+   * repository's or its organization's).
+   */
   secret: z.boolean(),
   /** What to add before asking for a run, each in plain English; empty when nothing is missing. */
   missing: z.array(z.string()),
@@ -145,12 +158,14 @@ export const RunResult = z
     changedFiles: z.array(storable(RESULT_LIMITS.path)).max(RESULT_LIMITS.changedFiles),
     usage: TokenUsage,
     models: z.array(storable(RESULT_LIMITS.model)).max(RESULT_LIMITS.models),
+    /** Null when the run failed before choosing a key (`no-key`, or an earlier step). */
+    provider: RunProvider.nullable(),
     pullRequestUrl: z.string().max(2048).nullable(),
     branch: z.string().max(255).nullable(),
   })
   .refine((result) =>
     result.status === "succeeded"
-      ? result.failure === null && result.pullRequestUrl !== null
+      ? result.failure === null && result.pullRequestUrl !== null && result.provider !== null
       : result.failure !== null,
   );
 export type RunResult = z.infer<typeof RunResult>;

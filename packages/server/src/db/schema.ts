@@ -287,6 +287,8 @@ export const run = devsyncSchema.table(
     tokenUsage: jsonb("token_usage"),
     /** The result's changed paths. */
     changedFiles: jsonb("changed_files"),
+    /** The result's `RunProvider`: whose key the run used. */
+    provider: text("provider"),
     draftPullRequestUrl: text("draft_pull_request_url"),
     githubRunId: bigint("github_run_id", { mode: "number" }),
   },

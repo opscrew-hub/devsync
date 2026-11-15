@@ -4,7 +4,7 @@
  * no test commits one.
  */
 import { randomBytes } from "node:crypto";
-import { API_KEY_SECRET, WORKFLOW_FILE } from "@devsync/schemas";
+import { WORKFLOW_FILE } from "@devsync/schemas";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
@@ -167,7 +167,7 @@ function fakeGithub(projects: () => ProjectRef[]): FakeGithub {
     return failure ? { ok: false, failure } : null;
   };
   const github: FakeGithub = {
-    repository: { workflow: true, secrets: [API_KEY_SECRET] },
+    repository: { workflow: true, secrets: ["ANTHROPIC_API_KEY"] },
     fail: {},
     artifacts: [],
     dispatches: [],

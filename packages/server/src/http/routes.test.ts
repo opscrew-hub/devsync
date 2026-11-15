@@ -533,7 +533,7 @@ describe("project run routes", () => {
     const missing = RunSetup.parse((await s.as("owner")("GET", "/runs/setup")).body).missing;
     expect(missing).toEqual([
       "Add .github/workflows/devsync.yml from the runs section to the repository's default branch.",
-      "Add the ANTHROPIC_API_KEY Actions secret to the repository or its organization.",
+      "Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or its organization.",
     ]);
     const refused = refusal(
       await s.as("developer")("POST", `/tasks/${ready.id}/runs`),

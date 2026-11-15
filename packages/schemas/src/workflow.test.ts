@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  API_KEY_SECRETS,
   PATCH_ARTIFACT,
   RESULT_ARTIFACT,
   WORKFLOW,
@@ -8,6 +9,7 @@ import {
 } from "./workflow";
 
 const FAILURES = [
+  "no-key",
   "agent-failed",
   "budget",
   "turns",
@@ -106,35 +108,111 @@ describe("the managed runs' workflow file", () => {
     expect(job("report")).toContain("    permissions: {}");
   });
 
-  it("gives the Claude API key only to the step that runs Claude Code", () => {
-    expect(WORKFLOW.match(/secrets\./g)).toHaveLength(1);
+  it("names the two secrets a run takes its key from, Anthropic's first", () => {
+    expect(API_KEY_SECRETS).toEqual(["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
+  });
+
+  it("gives either key only to the step that runs Claude Code, through its env", () => {
     const run = step("agent", "Run Claude Code");
-    const mentions = (source: string) => source.match(/ANTHROPIC/g)?.length ?? 0;
-    expect(mentions(text(run))).toBeGreaterThan(0);
-    expect(mentions(WORKFLOW)).toBe(mentions(text(run)));
     expect(under(run, /^ {8}env:$/)).toEqual([
       `          ANTHROPIC_API_KEY: ${expression("secrets.ANTHROPIC_API_KEY")}`,
+      `          OPENROUTER_API_KEY: ${expression("secrets.OPENROUTER_API_KEY")}`,
     ]);
+    expect(WORKFLOW.match(/secrets\./g)).toHaveLength(2);
+    // The keys' names, and what carries a key to Claude Code: in that step and no other.
+    const keys = /ANTHROPIC_API_KEY|OPENROUTER_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_BASE_URL/g;
+    const mentions = (source: string) => source.match(keys)?.length ?? 0;
+    expect(mentions(text(run))).toBeGreaterThan(0);
+    expect(mentions(WORKFLOW)).toBe(mentions(text(run)));
+    for (const name of ["publish", "report"]) {
+      expect(text(job(name)), name).not.toMatch(/secrets|API_KEY|AUTH_TOKEN/);
+    }
     expect(text(run)).toContain(`claude "\${flags[@]}"`);
   });
 
-  it("refuses a change that holds the key, in that step, never putting the key in argv", () => {
+  it("runs on the Anthropic key, else on the OpenRouter key through OpenRouter", () => {
     const run = text(step("agent", "Run Claude Code"));
-    const guard = run.indexOf('if [ -z "$failure" ] && [ -n "$ANTHROPIC_API_KEY" ]; then');
-    const files = run.indexOf("grep -rqF --exclude-dir=.git -f <(printenv ANTHROPIC_API_KEY) .");
+    const choice = [
+      'if [ -n "$ANTHROPIC_API_KEY" ]; then',
+      "  provider=anthropic",
+      'elif [ -n "$OPENROUTER_API_KEY" ]; then',
+      "  provider=openrouter",
+      "  export ANTHROPIC_BASE_URL=https://openrouter.ai/api",
+      '  export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"',
+      "  export ANTHROPIC_API_KEY=",
+      "else",
+    ]
+      .map((line) => `          ${line}`)
+      .join("\n");
+    const chosen = run.indexOf(choice);
+    expect(chosen).toBeGreaterThan(run.indexOf("set +e"));
+    const said = run.indexOf('echo "provider=$provider" >> "$GITHUB_OUTPUT"');
+    expect(said).toBeGreaterThan(chosen);
+    expect(said).toBeLessThan(run.indexOf(`claude "\${flags[@]}"`));
+    // The gateway is set in that branch only; the models stay the workflow's own.
+    expect(run.match(/ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN/g)).toHaveLength(2);
+    expect(run).not.toMatch(/ANTHROPIC_\w*MODEL/);
+    expect(job("agent")).toContain(
+      `      provider: ${expression("steps.claude.outputs.provider")}`,
+    );
+  });
+
+  it("fails no-key with neither key, before Claude Code runs", () => {
+    const run = text(step("agent", "Run Claude Code"));
+    const missing = [
+      "else",
+      '  echo "::error::Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or its organization."',
+      '  echo "failure=no-key" >> "$GITHUB_OUTPUT"',
+      "  exit 0",
+      "fi",
+    ]
+      .map((line) => `          ${line}`)
+      .join("\n");
+    const at = run.indexOf(missing);
+    expect(at).toBeGreaterThan(run.indexOf('elif [ -n "$OPENROUTER_API_KEY" ]; then'));
+    expect(at).toBeLessThan(run.indexOf(`claude "\${flags[@]}"`));
+    // The patch is built only without a failure, so a run without a key publishes nothing.
+    expect(step("agent", "Build the patch")).toContain(
+      "        if: steps.claude.outputs.failure == ''",
+    );
+  });
+
+  it("never prints a key, nor traces the script that holds them", () => {
+    const run = text(step("agent", "Run Claude Code"));
+    const key = /\$\{?(ANTHROPIC_API_KEY|OPENROUTER_API_KEY|ANTHROPIC_AUTH_TOKEN|!key)\b/;
+    for (const script of scripts()) {
+      for (const line of script.split("\n").filter((l) => /\b(echo|printf)\b/.test(l))) {
+        expect(line).not.toMatch(key);
+      }
+      expect(script).not.toMatch(/set -[a-z]*x|set -o xtrace/);
+    }
+    // A key's value is read only where the run chooses, hands over and checks it.
+    expect(run.match(/\$ANTHROPIC_API_KEY/g)).toHaveLength(1);
+    expect(run.match(/\$OPENROUTER_API_KEY/g)).toHaveLength(2);
+    expect(run.match(/\$\{!key\}/g)).toHaveLength(1);
+  });
+
+  it("refuses a change that holds either key, both when both are set, never putting one in argv", () => {
+    const run = text(step("agent", "Run Claude Code"));
+    const loop = run.indexOf("for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY; do");
+    const guard = run.indexOf(`if [ -z "$failure" ] && [ -n "\${!key}" ]; then`);
+    const files = run.indexOf('grep -rqF --exclude-dir=.git -f <(printenv "$key") .');
     const names = run.indexOf(
-      "find . -name .git -prune -o -print | grep -qF -f <(printenv ANTHROPIC_API_KEY)",
+      'find . -name .git -prune -o -print | grep -qF -f <(printenv "$key")',
     );
     const refusal = run.indexOf(
-      'echo "::error::The change holds the Claude API key, so it is not published."',
+      'echo "::error::The change holds the $key secret, so it is not published."',
     );
+    const done = run.indexOf("done", refusal);
     const output = run.indexOf('echo "failure=$failure" >> "$GITHUB_OUTPUT"');
-    for (const at of [guard, files, names, refusal]) {
-      expect(at).toBeGreaterThan(run.indexOf("code=$?"));
+    expect(loop).toBeGreaterThan(run.indexOf("code=$?"));
+    for (const at of [guard, files, names, refusal, done]) {
+      expect(at).toBeGreaterThan(loop);
       expect(at).toBeLessThan(output);
     }
-    expect(run.slice(refusal, output)).toContain("failure=agent-failed");
-    expect(run.match(/\$ANTHROPIC_API_KEY/g)).toHaveLength(1);
+    expect(run.slice(refusal, done)).toContain("failure=agent-failed");
+    // Each key that is set is checked: the loop never stops early.
+    expect(run.slice(loop, done)).not.toMatch(/\bbreak\b/);
   });
 
   it("keeps the write token out of the agent job, which checks out without credentials", () => {
@@ -239,11 +317,13 @@ describe("the managed runs' workflow file", () => {
       "changedFiles:",
       "usage:",
       "models:",
+      "provider: present($provider)",
       "pullRequestUrl:",
       "branch:",
     ]) {
       expect(write).toContain(field);
     }
+    expect(write).toContain(`PROVIDER: ${expression("needs.agent.outputs.provider")}`);
     expect(text(step("agent", "Run Claude Code"))).toMatch(
       /error_max_budget_usd \]; then\n {12}failure=budget\n.*error_max_turns \]; then\n {12}failure=turns/,
     );

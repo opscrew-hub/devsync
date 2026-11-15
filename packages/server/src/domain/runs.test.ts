@@ -124,6 +124,7 @@ function resultOf(runId: string, overrides: Record<string, unknown> = {}) {
       costUsd: 0.37,
     },
     models: ["claude-sonnet-5-5"],
+    provider: "anthropic",
     pullRequestUrl: "https://github.com/Acme/Shop/pull/12",
     branch: `devsync/${runId}`,
     ...overrides,
@@ -191,6 +192,7 @@ describe("requestRun", () => {
       failure: null,
       changedFiles: null,
       usage: null,
+      provider: null,
       draftPullRequestUrl: null,
       githubRunUrl: null,
     });
@@ -297,7 +299,7 @@ describe("requestRun", () => {
       secret: false,
       missing: [
         "Add .github/workflows/devsync.yml from the runs section to the repository's default branch.",
-        "Add the ANTHROPIC_API_KEY Actions secret to the repository or its organization.",
+        "Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or its organization.",
       ],
     });
     await expect(requestRun(s.host, s.ctx("developer"), ready.id)).rejects.toMatchObject({
@@ -310,6 +312,19 @@ describe("requestRun", () => {
       code: "conflict",
       message: SETUP_STEP.secret,
     });
+    // Either key will do, in any case, or both.
+    for (const secrets of [
+      ["OPENROUTER_API_KEY"],
+      ["openrouter_api_key", "OTHER"],
+      ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"],
+    ]) {
+      github.repository = { workflow: true, secrets };
+      expect(await runSetup(s.host, s.ctx("developer")), secrets.join()).toEqual({
+        workflow: true,
+        secret: true,
+        missing: [],
+      });
+    }
     github.repository = { workflow: false, secrets: ["anthropic_api_key"] };
     await expect(requestRun(s.host, s.ctx("developer"), ready.id)).rejects.toMatchObject({
       code: "conflict",
@@ -626,6 +641,7 @@ describe("a workflow_run fact (devsync.github)", () => {
         costUsd: 0.37,
         models: ["claude-sonnet-5-5"],
       },
+      provider: "anthropic",
       draftPullRequestUrl: "https://github.com/Acme/Shop/pull/12",
     });
     expect(s.host.github.deleted.map((d) => [d.githubRunId, d.name])).toEqual([
@@ -693,6 +709,7 @@ describe("a workflow_run fact (devsync.github)", () => {
     const result = resultOf(started.id, {
       status: "failed",
       failure: "pull-request-not-allowed",
+      provider: "openrouter",
       pullRequestUrl: null,
     });
     await complete(s, started, { result, conclusion: "failure" });
@@ -705,9 +722,46 @@ describe("a workflow_run fact (devsync.github)", () => {
       },
       changedFiles: ["src/export.ts", "src/export.test.ts"],
       usage: { costUsd: 0.37 },
+      provider: "openrouter",
       draftPullRequestUrl: null,
     });
     expect((await getTask(s.host, s.ctx("owner"), ready.id)).pullRequestNumber).toBeNull();
+  });
+
+  it("fails no-key for a run without either key, in the setup's words, with no provider", async () => {
+    const s = setup();
+    const ready = await readyTask(s);
+    const started = await startedRun(s, ready.id);
+    const zero = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      costUsd: 0,
+    };
+    const noKey = resultOf(started.id, {
+      status: "failed",
+      failure: "no-key",
+      changedFiles: [],
+      usage: zero,
+      models: [],
+      provider: null,
+      pullRequestUrl: null,
+      branch: null,
+    });
+    await complete(s, started, { result: noKey, conclusion: "success" });
+    const [ended] = (await listRuns(s.host, s.ctx("developer"), ready.id)).runs;
+    expect(ended).toMatchObject({
+      status: "FAILED",
+      failure: {
+        code: "no-key",
+        message:
+          "Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or its organization.",
+      },
+      provider: null,
+    });
+    expect(failureMessage("no-key", started.id)).toBe(SETUP_STEP.secret);
+    expect(await rowOf(started.id)).toMatchObject({ failure: "no-key", provider: null });
   });
 
   it("fails bad-result, keeping none of it, for a result that fails a check", async () => {
@@ -724,6 +778,10 @@ describe("a workflow_run fact (devsync.github)", () => {
         (id) => ({
           result: resultOf(id, { pullRequestUrl: "https://github.com/evil/shop/pull/1" }),
         }),
+      ],
+      [
+        "a provider DevSync doesn't know",
+        (id) => ({ result: resultOf(id, { provider: "openai" }) }),
       ],
       [
         "too many changed files",
@@ -763,11 +821,10 @@ describe("a workflow_run fact (devsync.github)", () => {
       await complete(s, started, artifact(started.id));
       const ended = await rowOf(started.id);
       expect([ended.status, ended.failure], name).toEqual(["FAILED", "bad-result"]);
-      expect([ended.tokenUsage, ended.changedFiles, ended.draftPullRequestUrl], name).toEqual([
-        null,
-        null,
-        null,
-      ]);
+      expect(
+        [ended.tokenUsage, ended.changedFiles, ended.provider, ended.draftPullRequestUrl],
+        name,
+      ).toEqual([null, null, null, null]);
     }
     expect((await getTask(s.host, s.ctx("owner"), ready.id)).pullRequestNumber).toBeNull();
     expect(auditsOf(s.host, "devsync.run.finished")).toHaveLength(cases.length);

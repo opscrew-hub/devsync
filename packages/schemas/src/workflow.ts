@@ -18,14 +18,18 @@ export const RESULT_FILE = "result.json";
 /** The artifact the `agent` job hands the change over in: the patch and its changed files. */
 export const PATCH_ARTIFACT = "devsync-patch";
 
-/** The Actions secret with the workspace's own Anthropic key. */
-export const API_KEY_SECRET = "ANTHROPIC_API_KEY";
+/**
+ * The Actions secrets a run takes its key from, the workspace's own: an Anthropic key, or an
+ * OpenRouter key (docs/managed-runs.md, "Paying through OpenRouter"). With both, the first is used.
+ */
+export const API_KEY_SECRETS = ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"] as const;
 
 /**
  * The file's text, shown in full for the user to copy. Three jobs: `agent` (Contents read, the
- * only one given the Claude API key) runs Claude Code with file tools only and uploads the change
- * as a patch; `publish` (Contents and Pull requests write, no key) pushes `devsync/<run id>` and
- * opens a draft pull request; `report` (always) uploads `result.json`.
+ * only one given the keys) runs Claude Code with file tools only, on the Anthropic key or else
+ * through OpenRouter, and uploads the change as a patch; `publish` (Contents and Pull requests
+ * write, no key) pushes `devsync/<run id>` and opens a draft pull request; `report` (always)
+ * uploads `result.json`.
  */
 export const WORKFLOW = `# DevSync's managed runs. DevSync starts this workflow for a run approved in its dashboard:
 # Claude Code makes the task's change with file tools only, the change is opened as a draft pull
@@ -67,6 +71,7 @@ jobs:
       has_changes: \${{ steps.patch.outputs.has_changes }}
       usage: \${{ steps.claude.outputs.usage }}
       models: \${{ steps.claude.outputs.models }}
+      provider: \${{ steps.claude.outputs.provider }}
     steps:
       # The branch DevSync dispatched on, with no git credentials left behind.
       - name: Check out the repository
@@ -99,8 +104,24 @@ jobs:
         id: claude
         env:
           ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+          OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set +e
+          # The Anthropic key when there is one, else the OpenRouter key through OpenRouter, with
+          # the same Claude models. Neither key is ever printed.
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            provider=anthropic
+          elif [ -n "$OPENROUTER_API_KEY" ]; then
+            provider=openrouter
+            export ANTHROPIC_BASE_URL=https://openrouter.ai/api
+            export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"
+            export ANTHROPIC_API_KEY=
+          else
+            echo "::error::Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or its organization."
+            echo "failure=no-key" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "provider=$provider" >> "$GITHUB_OUTPUT"
           flags=(
             --bare -p --output-format json
             --model "$DEVSYNC_MODEL"
@@ -138,14 +159,17 @@ jobs:
           else
             failure=agent-failed
           fi
-          # The key never leaves in the change: not in a file's content, not in a path's name.
-          if [ -z "$failure" ] && [ -n "$ANTHROPIC_API_KEY" ]; then
-            if grep -rqF --exclude-dir=.git -f <(printenv ANTHROPIC_API_KEY) . ||
-              find . -name .git -prune -o -print | grep -qF -f <(printenv ANTHROPIC_API_KEY); then
-              echo "::error::The change holds the Claude API key, so it is not published."
-              failure=agent-failed
+          # No key leaves in the change: not in a file's content, not in a path's name. Each key
+          # that is set is checked, both when both are.
+          for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY; do
+            if [ -z "$failure" ] && [ -n "\${!key}" ]; then
+              if grep -rqF --exclude-dir=.git -f <(printenv "$key") . ||
+                find . -name .git -prune -o -print | grep -qF -f <(printenv "$key"); then
+                echo "::error::The change holds the $key secret, so it is not published."
+                failure=agent-failed
+              fi
             fi
-          fi
+          done
           echo "failure=$failure" >> "$GITHUB_OUTPUT"
           totals='def total(k): [.modelUsage // {} | .[] | .[k] // 0] | add // 0;
             {inputTokens: total("inputTokens"), outputTokens: total("outputTokens"),
@@ -257,6 +281,7 @@ jobs:
           AGENT_FAILURE: \${{ needs.agent.outputs.failure }}
           USAGE: \${{ needs.agent.outputs.usage }}
           MODELS: \${{ needs.agent.outputs.models }}
+          PROVIDER: \${{ needs.agent.outputs.provider }}
           PUBLISH_FAILURE: \${{ needs.publish.outputs.failure }}
           BRANCH: \${{ needs.publish.outputs.branch }}
           PULL_REQUEST_URL: \${{ needs.publish.outputs.pull_request_url }}
@@ -278,8 +303,8 @@ jobs:
           [ -f "$files" ] || echo '[]' > "$files"
           args=(
             --arg runId "$RUN_ID" --arg failure "$failure" --arg usage "$USAGE"
-            --arg models "$MODELS" --arg url "$PULL_REQUEST_URL" --arg branch "$BRANCH"
-            --slurpfile files "$files"
+            --arg models "$MODELS" --arg provider "$PROVIDER" --arg url "$PULL_REQUEST_URL"
+            --arg branch "$BRANCH" --slurpfile files "$files"
           )
           jq -n "\${args[@]}" '
             def parsed(text; fallback): (text | try fromjson catch fallback) // fallback;
@@ -293,6 +318,7 @@ jobs:
               usage: parsed($usage; {inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0,
                 cacheReadInputTokens: 0, costUsd: 0}),
               models: parsed($models; []),
+              provider: present($provider),
               pullRequestUrl: present($url),
               branch: present($branch)
             }' > "$RUNNER_TEMP/devsync-result/result.json"

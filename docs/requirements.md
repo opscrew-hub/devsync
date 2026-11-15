@@ -104,9 +104,9 @@ pull requests, a task's link and its state, and the signals delivered to registe
 ### Story 4 - Managed coding runs in the user's own Actions (Priority: P3)
 
 A member asks for a managed run on a Ready task; an Owner, Admin or Approver approves it; OpsCrew
-starts a workflow in the project's own GitHub Actions, which runs Claude Code on the workspace's own
-Anthropic key, commits its change to a new branch and opens a draft pull request. The run's state,
-its changed files, token use and the draft's link come back to the task.
+starts a workflow in the project's own GitHub Actions, which runs Claude Code on an Anthropic or
+OpenRouter key of the workspace's own, commits its change to a new branch and opens a draft pull
+request. The run's state, its changed files, token use and the draft's link come back to the task.
 
 **Why this priority**: it carries over the standalone version's managed runs in the way OpsCrew
 runs everything else: in the user's Actions, holding no AI key and no write token, never opening a
@@ -126,8 +126,9 @@ repository.
 3. **Given** a finished run, **Then** its result (succeeded or failed with why, changed files, token
    use, the draft pull request's link) is read through the dashboard's GitHub App from the run
    OpsCrew started in that repository, and from no other, checked, and shown on the task.
-4. **Given** a repository without the DevSync workflow or without the `ANTHROPIC_API_KEY` secret,
-   **Then** asking for a run says exactly what to add and where, as the checks setup does.
+4. **Given** a repository without the DevSync workflow or without an Anthropic or OpenRouter key
+   (the `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` secret), **Then** asking for a run says exactly
+   what to add and where, as the checks setup does.
 
 ### Story 5 - Fix a security finding with a task (Priority: P3)
 
@@ -174,8 +175,8 @@ task, open it again from the same finding and from a moved one, and check a reso
 - **R-7**: DevSync MUST build, typecheck and test in its own repository without the dashboard,
   against a fake host; the dashboard plugs it in at a pinned commit through its deployment's
   configuration.
-- **R-8**: DevSync's managed runs MUST run in the project's own GitHub Actions on the workspace's
-  own Anthropic key, report back through the run's artifact read by the dashboard's GitHub App
+- **R-8**: DevSync's managed runs MUST run in the project's own GitHub Actions on an Anthropic or
+  OpenRouter key of the workspace's own, report back through the run's artifact read by the dashboard's GitHub App
   ([managed-runs.md](managed-runs.md)), and leave opening the draft pull
   request to the user's workflow: OpsCrew holds no AI key and no write token, and opens no pull request itself.
 - **R-9**: DevSync MUST run only inside the dashboard: it has no sign-in, projects or pages of its

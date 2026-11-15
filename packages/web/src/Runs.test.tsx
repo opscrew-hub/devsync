@@ -135,7 +135,9 @@ describe("the runs section's setup", () => {
     show();
     const runs = await section();
     expect(
-      within(runs).getByText("The repository has the workflow and the ANTHROPIC_API_KEY secret."),
+      within(runs).getByText(
+        "The repository has the workflow and an ANTHROPIC_API_KEY or OPENROUTER_API_KEY secret.",
+      ),
     ).toBeTruthy();
     expect(runs.querySelector("pre")).toBeNull();
     expect(within(runs).getByText("No runs yet.")).toBeTruthy();
@@ -233,7 +235,7 @@ describe("the runs section's links to GitHub", () => {
     const runs = await section();
 
     expect(links(runs)).toEqual([
-      ["Add ANTHROPIC_API_KEY on GitHub", SECRETS],
+      ["Add a key on GitHub", SECRETS],
       ["Create it on GitHub", NEW_WORKFLOW],
       ["Open the Actions settings", ACTIONS],
     ]);
@@ -266,7 +268,7 @@ describe("the runs section's links to GitHub", () => {
   ])("links to the Actions secrets exactly when the secret is %s", async (_, setup, shown) => {
     show({ setup });
     const runs = await section();
-    const link = within(runs).queryByRole("link", { name: "Add ANTHROPIC_API_KEY on GitHub" });
+    const link = within(runs).queryByRole("link", { name: "Add a key on GitHub" });
     expect(link?.getAttribute("href") ?? null).toBe(shown ? SECRETS : null);
   });
 
@@ -294,7 +296,7 @@ describe("the runs section's links to GitHub", () => {
     show({ setup: setupMissing, repository: { fullName: "acme/shop", defaultBranch: "" } });
     const runs = await section();
     expect(links(runs)).toEqual([
-      ["Add ANTHROPIC_API_KEY on GitHub", SECRETS],
+      ["Add a key on GitHub", SECRETS],
       ["Open the Actions settings", ACTIONS],
     ]);
     expect(button("Copy the workflow", runs)).toBeTruthy();
@@ -592,6 +594,7 @@ describe("a run's state and result", () => {
             costUsd: 0.4213,
             models: ["claude-sonnet-5-5"],
           },
+          provider: "openrouter",
           draftPullRequestUrl: "https://github.com/acme/shop/pull/43",
           githubRunUrl: GITHUB_RUN,
         }),
@@ -621,8 +624,11 @@ describe("a run's state and result", () => {
         "12,000 input · 3,400 output · 50,000 cache read · 8,000 cache written",
       ),
     ).toBeTruthy();
-    expect(within(succeeded).getByText("$0.4213")).toBeTruthy();
+    expect(
+      within(succeeded).getByText("≈ $0.4213, estimated from Anthropic's prices"),
+    ).toBeTruthy();
     expect(within(succeeded).getByText("claude-sonnet-5-5")).toBeTruthy();
+    expect(within(succeeded).getByText("via OpenRouter")).toBeTruthy();
     const pull = within(succeeded).getByRole("link", { name: "acme/shop/pull/43" });
     expect(pull.getAttribute("href")).toBe("https://github.com/acme/shop/pull/43");
     expect(pull.getAttribute("rel")).toBe("noopener noreferrer");
@@ -635,6 +641,44 @@ describe("a run's state and result", () => {
     expect(within(failed).getByText(failure.message)).toBeTruthy();
     expect(within(failed).getByText("src/app.ts")).toBeTruthy();
     expect(within(failed).queryByText(/more files/)).toBeNull();
+  });
+
+  it("says which key a run used, and none when it failed before choosing one", async () => {
+    const ended = { decidedBy: ana, decidedAt: at, startedAt: at, finishedAt: at };
+    const usage = {
+      inputTokens: 900,
+      outputTokens: 100,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      costUsd: 0.05,
+      models: ["claude-sonnet-5-5"],
+    };
+    const noKey = {
+      code: "no-key" as const,
+      message:
+        "Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or its organization.",
+    };
+    show({
+      runs: [
+        run(73, { ...ended, status: "SUCCEEDED", usage, provider: "anthropic" }),
+        run(72, {
+          ...ended,
+          status: "FAILED",
+          failure: noKey,
+          changedFiles: [],
+          usage: { ...usage, inputTokens: 0, outputTokens: 0, costUsd: 0, models: [] },
+          provider: null,
+        }),
+      ],
+    });
+    const runs = await section();
+    const [anthropic, failed] = items(runs);
+    if (!anthropic || !failed) throw new Error("Two runs should be listed.");
+    expect(within(anthropic).getByText("via Anthropic")).toBeTruthy();
+    expect(within(anthropic).getByText("≈ $0.05, estimated from Anthropic's prices")).toBeTruthy();
+    expect(within(failed).getByText(noKey.message)).toBeTruthy();
+    expect(within(failed).queryByText(/^via /)).toBeNull();
+    expect(within(failed).queryByText("Models")).toBeNull();
   });
 
   it.each([

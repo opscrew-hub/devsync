@@ -9,7 +9,7 @@
  * timeline (an outbox event) and audited, in its transaction. Every query filters by the project.
  */
 import {
-  API_KEY_SECRET,
+  API_KEY_SECRETS,
   can,
   checkRunResult,
   Id,
@@ -20,6 +20,7 @@ import {
   type Run,
   RunFailure,
   type RunList,
+  RunProvider,
   type RunResult,
   type RunSetup,
   RunUsage,
@@ -80,7 +81,7 @@ const RESULT_MAX_BYTES = 1024 * 1024;
 /** What the setup asks the user to add, word for word in the runs section and in a refusal. */
 export const SETUP_STEP = {
   workflow: `Add ${WORKFLOW_PATH} from the runs section to the repository's default branch.`,
-  secret: `Add the ${API_KEY_SECRET} Actions secret to the repository or its organization.`,
+  secret: `Add the ${API_KEY_SECRETS.join(" or ")} Actions secret to the repository or its organization.`,
 } as const;
 
 const REFUSED = {
@@ -123,6 +124,7 @@ const SETUP_REFUSAL: Record<GithubFailure, [ErrorCode, string]> = {
 export function failureMessage(failure: RunFailure, runId: string): string {
   const branch = `devsync/${runId}`;
   const messages: Record<RunFailure, string> = {
+    "no-key": SETUP_STEP.secret,
     "agent-failed":
       "Claude Code stopped with an error. Open the GitHub run to see why, then ask for a new run.",
     budget: `Claude Code reached the workflow's budget before it finished. Raise --max-budget-usd in ${WORKFLOW_PATH}, or narrow the task, then ask for a new run.`,
@@ -159,6 +161,7 @@ const ChangedFiles = z.array(z.string());
 function toRun(row: RunRow, names: Map<string, string>, fullName: string): Run {
   const failure = RunFailure.safeParse(row.failure);
   const usage = RunUsage.safeParse(row.tokenUsage);
+  const provider = RunProvider.safeParse(row.provider);
   const changedFiles = ChangedFiles.safeParse(row.changedFiles);
   return {
     id: row.id,
@@ -176,6 +179,7 @@ function toRun(row: RunRow, names: Map<string, string>, fullName: string): Run {
       : null,
     changedFiles: changedFiles.success ? changedFiles.data : null,
     usage: usage.success ? usage.data : null,
+    provider: provider.success ? provider.data : null,
     draftPullRequestUrl: row.draftPullRequestUrl,
     githubRunUrl:
       row.githubRunId === null
@@ -319,6 +323,7 @@ async function recordEnd(
       finishedAt: at,
       tokenUsage: result ? { ...result.usage, models: result.models } : null,
       changedFiles: result ? result.changedFiles : null,
+      provider: result ? result.provider : null,
       draftPullRequestUrl: pullRequestNumber !== null ? (result?.pullRequestUrl ?? null) : null,
     })
     .where(runIn(row, row.id))
@@ -394,7 +399,7 @@ export async function listRuns(
 
 /**
  * `GET /runs/setup` (read): whether the repository has `devsync.yml` on its default branch and an
- * `ANTHROPIC_API_KEY` secret its runs can read, and what to add.
+ * `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` secret its runs can read, and what to add.
  */
 export async function runSetup(host: DevSyncHost, ctx: ProjectContext): Promise<RunSetup> {
   const answer = await host.github.setup(ctx.project.projectId, WORKFLOW_FILE);
@@ -402,7 +407,8 @@ export async function runSetup(host: DevSyncHost, ctx: ProjectContext): Promise<
     const [code, message] = SETUP_REFUSAL[answer.failure];
     throw new DevSyncError(code, message);
   }
-  const secret = answer.secrets.some((name) => name.toUpperCase() === API_KEY_SECRET);
+  const keys: readonly string[] = API_KEY_SECRETS;
+  const secret = answer.secrets.some((name) => keys.includes(name.toUpperCase()));
   const missing: string[] = [];
   if (!answer.workflow) missing.push(SETUP_STEP.workflow);
   if (!secret) missing.push(SETUP_STEP.secret);
