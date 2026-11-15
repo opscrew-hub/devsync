@@ -50,6 +50,7 @@ import {
   type WorkspaceContext,
 } from "../host";
 import {
+  hostFinding,
   lockAgentRow,
   memberAuthor,
   namesOf,
@@ -369,7 +370,9 @@ export async function getTask(
 /**
  * `POST /tasks` (a member, `TaskInput`) and `create_task` (an agent, `AgentTaskInput`): a task in
  * Backlog with revision 1 of its requirements. An agent's retry with the same `requestId` answers
- * the task it created; the same `requestId` with other requirements is refused.
+ * the task it created; the same `requestId` with other requirements is refused. A member's task
+ * from a security finding keeps the finding's fingerprint, rule and file as the host gives them,
+ * read again here (never the browser's copy): a finding the host no longer gives is refused.
  */
 export async function createTask(
   host: DevSyncHost,
@@ -380,9 +383,11 @@ export async function createTask(
   const { project } = actor;
   const agentActor = isAgent(actor) ? actor : null;
   const agentId = agentActor?.agentId ?? null;
-  const { requestId, ...fields } = agentActor
+  const parsed: TaskInput & { requestId: string | null } = agentActor
     ? parse(AgentTaskInput, input)
     : { requestId: null, ...parse(TaskInput, input) };
+  const { requestId, finding: from, ...fields } = parsed;
+  const finding = from ? await hostFinding(host, project, from.fingerprint) : null;
   const at = host.clock.now();
   const creator = actorIds(actor);
 
@@ -427,6 +432,9 @@ export async function createTask(
         creatorUserId: "userId" in creator ? creator.userId : null,
         creatorAgentId: agentId,
         createRequestId: requestId,
+        findingFingerprint: finding?.fingerprint ?? null,
+        findingRule: finding?.ruleId ?? null,
+        findingFile: finding?.file ?? null,
         createdAt: at,
         updatedAt: at,
       })

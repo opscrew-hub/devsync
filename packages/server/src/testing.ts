@@ -15,6 +15,7 @@ import type {
   DevSyncDb,
   DevSyncGithub,
   DevSyncHost,
+  Finding,
   GithubFailure,
   Member,
   ProjectRef,
@@ -51,6 +52,8 @@ export interface FakeHostOptions {
   members?: Record<string, Member[]>;
   /** The projects with DevSync on: what `project(id)` finds. */
   projects?: ProjectRef[];
+  /** Each project's open security findings, by project id: what `finding()` finds. */
+  findings?: Record<string, Finding[]>;
   /** The clock's fixed time, ISO 8601. */
   now?: string;
 }
@@ -90,8 +93,15 @@ export const FAKE_GITHUB_RUN_ID = 7_000_000_001;
 
 export interface FakeHost extends DevSyncHost {
   github: FakeGithub;
-  /** The members and projects `members()` and `project()` answer from; a test may change them. */
-  directory: { members: Record<string, Member[]>; projects: ProjectRef[] };
+  /**
+   * The members, projects and open findings `members()`, `project()` and `finding()` answer from;
+   * a test may change them (resolving a finding is removing it).
+   */
+  directory: {
+    members: Record<string, Member[]>;
+    projects: ProjectRef[];
+    findings: Record<string, Finding[]>;
+  };
   audits: { actor: AuditActor; entry: AuditEntry }[];
   enqueued: {
     queue: QueueName;
@@ -104,7 +114,8 @@ export interface FakeHost extends DevSyncHost {
 /**
  * A `DevSyncHost` on `db` with a fixed clock, recording audit entries, enqueued jobs (at once: the
  * fake has no transaction to wait for) and logged errors, with a fake GitHub (`FakeGithub`) whose
- * repositories have DevSync's workflow and the Anthropic key's secret.
+ * repositories have DevSync's workflow and the Anthropic key's secret. `finding()` answers a
+ * project's open finding by its fingerprint, and null for a project `project()` doesn't find.
  */
 export function fakeHost(db: DevSyncDb, options: FakeHostOptions = {}): FakeHost {
   const now = new Date(options.now ?? FAKE_NOW).getTime();
@@ -112,7 +123,11 @@ export function fakeHost(db: DevSyncDb, options: FakeHostOptions = {}): FakeHost
     db,
     clock: { now: () => new Date(now) },
     log: { error: (message) => host.errors.push(message) },
-    directory: { members: { ...options.members }, projects: [...(options.projects ?? [])] },
+    directory: {
+      members: { ...options.members },
+      projects: [...(options.projects ?? [])],
+      findings: { ...options.findings },
+    },
     audits: [],
     enqueued: [],
     errors: [],
@@ -129,6 +144,10 @@ export function fakeHost(db: DevSyncDb, options: FakeHostOptions = {}): FakeHost
       host.enqueued.push({ queue, payload, options });
     },
     github: fakeGithub(() => host.directory.projects),
+    async finding(projectId, fingerprint) {
+      if (!host.directory.projects.some((p) => p.projectId === projectId)) return null;
+      return host.directory.findings[projectId]?.find((f) => f.fingerprint === fingerprint) ?? null;
+    },
   };
   return host;
 }

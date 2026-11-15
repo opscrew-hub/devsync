@@ -4,6 +4,7 @@ import {
   AgentWithToken,
   Comment,
   ErrorAnswer,
+  FindingAnswer,
   MemberList,
   PullRequestList,
   type Role,
@@ -16,7 +17,7 @@ import {
   WorkspaceTaskList,
 } from "@devsync/schemas";
 import { Hono } from "hono";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { pullRequest } from "../db";
 import { registerAgent } from "../domain/agents";
 import { createTask, updateTask } from "../domain/tasks";
@@ -28,6 +29,7 @@ import type {
   WorkspaceContext,
   WorkspaceEnv,
 } from "../host";
+import { sampleFinding } from "../test/helpers";
 import { createTestDb, FAKE_NOW, type FakeHost, fakeHost, type TestDb } from "../testing";
 import { projectRoutes, workspaceRoutes } from "./index";
 
@@ -602,6 +604,59 @@ describe("project run routes", () => {
     }
     const unchanged = await s.as("owner", s.other)("GET", `/tasks/${theirs.id}/runs`);
     expect(RunList.parse(unchanged.body).runs.map((r) => r.status)).toEqual(["REQUESTED"]);
+  });
+});
+
+describe("project finding routes", () => {
+  const finding = sampleFinding();
+  const moved = sampleFinding({ fingerprint: "config/client-exposed-secret:src/app.ts:30" });
+  const query = (fingerprint: string) => `/findings?${new URLSearchParams({ fingerprint })}`;
+
+  it("read a finding with any role, make a task from it, then answer that task", async () => {
+    const s = setup();
+    s.host.directory.findings[s.project.projectId] = [finding, moved];
+    for (const role of ROLES) {
+      const read = await s.as(role)("GET", query(finding.fingerprint));
+      expect(read.status, role).toBe(200);
+      expect(FindingAnswer.parse(read.body)).toEqual({ finding, task: null });
+      expect(read.headers.get("cache-control")).toBe("no-store");
+    }
+
+    const created = await s.as("developer")("POST", "/tasks", {
+      ...newTask,
+      finding: { fingerprint: finding.fingerprint },
+    });
+    expect(created.status).toBe(201);
+    const task = Task.parse(created.body);
+    for (const fingerprint of [finding.fingerprint, moved.fingerprint]) {
+      const linked = FindingAnswer.parse((await s.as("approver")("GET", query(fingerprint))).body);
+      expect(linked.task, fingerprint).toEqual(task);
+    }
+  });
+
+  it("refuse a bad fingerprint before asking the host, and say a missing finding is resolved", async () => {
+    const s = setup();
+    s.host.directory.findings[s.project.projectId] = [finding];
+    const asked = vi.spyOn(s.host, "finding");
+    const owner = s.as("owner");
+    for (const path of [query("a b"), query("x".repeat(129)), "/findings"]) {
+      expect(refusal(await owner("GET", path), 422, "invalid").fields, path).toEqual([
+        "fingerprint",
+      ]);
+    }
+    expect(asked).not.toHaveBeenCalled();
+
+    const gone = refusal(await owner("GET", query(moved.fingerprint)), 404, "not-found");
+    expect(gone.message).toBe(
+      "This finding is resolved or isn't this project's. Open it again from the project's security findings.",
+    );
+    refusal(await s.as("owner", s.other)("GET", query(finding.fingerprint)), 404, "not-found");
+    const create = await owner("POST", "/tasks", {
+      ...newTask,
+      finding: { fingerprint: moved.fingerprint },
+    });
+    expect(refusal(create, 404, "not-found").message).toBe(gone.message);
+    expect((await owner("GET", "/tasks")).body).toEqual({ tasks: [] });
   });
 });
 

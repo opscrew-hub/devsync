@@ -26,6 +26,7 @@ export {
   type DevSyncHost,
   ERROR_STATUS,
   type ErrorCode,
+  type Finding,
   type GithubFact,
   type GithubFailure,
   type GithubJob,

@@ -26,8 +26,8 @@ export type PublishSignalInput = z.infer<typeof PublishSignalInput>;
 export const TaskClaimInput = z.strictObject({ taskId: Id, claimId: Id });
 export type TaskClaimInput = z.infer<typeof TaskClaimInput>;
 
-/** `create_task`, idempotent by `requestId`. */
-export const AgentTaskInput = TaskInput.extend({ requestId: Id });
+/** `create_task`, idempotent by `requestId`; a task from a security finding is a member's. */
+export const AgentTaskInput = TaskInput.omit({ finding: true }).extend({ requestId: Id });
 export type AgentTaskInput = z.infer<typeof AgentTaskInput>;
 
 /** `update_task`: a task the agent created; it moves to Backlog or Ready only, and is never assigned. */

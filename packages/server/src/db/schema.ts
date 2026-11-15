@@ -96,6 +96,10 @@ export const task = devsyncSchema.table(
     claimId: uuid("claim_id"),
     claimExpiresAt: tstz("claim_expires_at"),
     pullRequestNumber: integer("pull_request_number"),
+    /** The security finding the task was made from, as the host gave it when it was created. */
+    findingFingerprint: text("finding_fingerprint"),
+    findingRule: text("finding_rule"),
+    findingFile: text("finding_file"),
     createdAt: createdAt(),
     updatedAt: tstz("updated_at").notNull().defaultNow(),
   },

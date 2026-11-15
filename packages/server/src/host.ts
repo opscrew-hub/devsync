@@ -162,6 +162,34 @@ export interface DevSyncGithub {
   ): Promise<{ ok: true } | { ok: false; failure: GithubFailure }>;
 }
 
+/**
+ * One of a project's open security findings, as the host gives it (the contract's
+ * `ModuleFinding`): every text already redacted and cut to its limit with "…", never the match
+ * itself. DevSync parses it with `Finding` from `@devsync/schemas` before using any of it.
+ */
+export interface Finding {
+  /** 1–128 characters of `A–Z a–z 0–9 . _ : / -`; it includes the line, so moved code changes it. */
+  fingerprint: string;
+  /** At most 200 characters. */
+  ruleId: string;
+  /** At most 200 characters. */
+  title: string;
+  severity: "critical" | "high" | "medium" | "low" | "info";
+  /** A POSIX path relative to the repository's root (no leading `/`, no `..`), at most 1,000. */
+  file: string | null;
+  /** A positive whole number. */
+  line: number | null;
+  /** At most 4,000 characters. */
+  description: string | null;
+  /** At most 4,000 characters. */
+  remediation: string | null;
+  /** ISO 8601. */
+  firstSeenAt: string;
+  lastSeenAt: string;
+  /** Marked "Not a problem" on the dashboard. */
+  dismissal: { reason: "false-positive" | "accepted-risk" } | null;
+}
+
 export interface DevSyncHost {
   db: DevSyncDb;
   clock: { now(): Date };
@@ -186,6 +214,12 @@ export interface DevSyncHost {
   ): Promise<void>;
   /** DevSync's workflow in the project's repository: its managed runs. */
   github: DevSyncGithub;
+  /**
+   * The project's open security finding with this fingerprint, or null: for a fingerprint outside
+   * its character set, a finding the project doesn't have, a resolved one, and while DevSync is off
+   * for the project or its workspace. Any member may read it.
+   */
+  finding(projectId: string, fingerprint: string): Promise<Finding | null>;
 }
 
 /** The error codes DevSync answers with, and their HTTP statuses: the dashboard's own. */

@@ -5,6 +5,12 @@ export const Id = z.uuid();
 /** Every time DevSync answers: ISO 8601, from `Date.toISOString()`. */
 export const Timestamp = z.iso.datetime();
 
+/**
+ * A security finding's fingerprint, as the host gives it: 1 to 128 characters of
+ * `A–Z a–z 0–9 . _ : / -`. It may hold a `/`, so it goes in a query parameter, never a path segment.
+ */
+export const FindingFingerprint = z.string().regex(/^[A-Za-z0-9._:/-]{1,128}$/);
+
 /** The limits on text people and agents write. */
 export const LIMITS = {
   title: 160,

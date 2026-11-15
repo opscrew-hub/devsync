@@ -66,6 +66,10 @@ describe("the MCP tools' inputs", () => {
     expect(AgentTaskInput.safeParse(input).success).toBe(true);
     expect(AgentTaskInput.safeParse({ ...input, title: text(161) }).success).toBe(false);
     expect(AgentTaskInput.safeParse({ ...input, requestId: "r" }).success).toBe(false);
+    // A task from a security finding is a member's, made from the dashboard.
+    expect(AgentTaskInput.safeParse({ ...input, finding: { fingerprint: "a:1" } }).success).toBe(
+      false,
+    );
   });
 
   it("let an agent move its task to Backlog or Ready only, and never assign it", () => {

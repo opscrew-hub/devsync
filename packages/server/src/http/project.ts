@@ -13,6 +13,8 @@ import {
   AgentWithToken,
   Comment,
   CommentInput,
+  FindingAnswer,
+  FindingQuery,
   MemberList,
   PullRequestLink,
   PullRequestList,
@@ -29,6 +31,7 @@ import {
 import { Hono, type MiddlewareHandler } from "hono";
 import { listAgents, registerAgent, revokeAgent, rotateAgent } from "../domain/agents";
 import { requireRole } from "../domain/common";
+import { findingTask } from "../domain/findings";
 import { listPullRequests } from "../domain/pull-requests";
 import { approveRun, cancelRun, listRuns, rejectRun, requestRun, runSetup } from "../domain/runs";
 import { publishSignal } from "../domain/signals";
@@ -102,6 +105,12 @@ export function projectRoutes(host: DevSyncHost): Hono<ProjectEnv> {
   app.post("/runs/:runId/cancel", async (c) =>
     answer(c, Run, await cancelRun(host, c.get("module"), c.req.param("runId"))),
   );
+
+  // The fingerprint may hold a `/`: it is a query parameter, never a path segment.
+  app.get("/findings", async (c) => {
+    const query = readQuery(c, FindingQuery);
+    return answer(c, FindingAnswer, await findingTask(host, c.get("module"), query));
+  });
 
   app.get("/pull-requests", async (c) =>
     answer(c, PullRequestList, await listPullRequests(host, c.get("module"))),

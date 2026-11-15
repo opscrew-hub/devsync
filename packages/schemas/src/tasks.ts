@@ -1,13 +1,29 @@
 import { z } from "zod";
-import { Author, Counter, Id, LIMITS, MAX_PULL_REQUEST, Timestamp } from "./common";
+import {
+  Author,
+  Counter,
+  FindingFingerprint,
+  Id,
+  LIMITS,
+  MAX_PULL_REQUEST,
+  Timestamp,
+} from "./common";
 import { TaskStatus } from "./lifecycle";
 
 const title = z.string().trim().min(1).max(LIMITS.title);
 const description = z.string().trim().max(LIMITS.description);
 const acceptanceCriteria = z.string().trim().max(LIMITS.acceptanceCriteria);
 
-/** `POST /tasks`. */
-export const TaskInput = z.strictObject({ title, description, acceptanceCriteria });
+/**
+ * `POST /tasks`. With `finding`, the task is made from that security finding: the server reads it
+ * again from the host, so the browser sends only its fingerprint.
+ */
+export const TaskInput = z.strictObject({
+  title,
+  description,
+  acceptanceCriteria,
+  finding: z.strictObject({ fingerprint: FindingFingerprint }).optional(),
+});
 export type TaskInput = z.infer<typeof TaskInput>;
 
 /** `PATCH /tasks/:taskId`: the version read, and any of the fields. */

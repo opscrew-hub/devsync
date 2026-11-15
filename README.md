@@ -33,6 +33,8 @@ and their developers plan the work in DevSync, their coding agents do it, and Op
   repository needs the workflow file the task's runs section shows, the `ANTHROPIC_API_KEY` secret,
   and "Allow GitHub Actions to create and approve pull requests" on
   ([docs/managed-runs.md](docs/managed-runs.md)).
+- **Security findings.** **Fix with DevSync** on one of the dashboard's security findings opens a
+  task prefilled from it, or the task already made from it ([docs/findings.md](docs/findings.md)).
 
 ## Using it
 

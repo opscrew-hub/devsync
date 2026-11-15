@@ -1,5 +1,6 @@
 import {
   AgentList,
+  FindingAnswer,
   MemberList,
   PullRequestList,
   RunList,
@@ -55,6 +56,23 @@ export function useRunSetup() {
     queryFn: () => api.get("/runs/setup", RunSetup),
     staleTime: Number.POSITIVE_INFINITY,
     refetchInterval: false,
+  });
+}
+
+/**
+ * A security finding and the task linked to it, by its fingerprint in the query string (it may
+ * hold a `/`). Read once while the tab offers its task: a refresh would replace what the member is
+ * writing, and a resolved finding's 404 is an answer, not a failure to retry. Its key is outside
+ * `["devsync", apiBase]`, so creating the task doesn't read it again.
+ */
+export function useFinding(fingerprint: string) {
+  const { api, apiBase } = useDevSync();
+  return useQuery({
+    queryKey: ["devsync-finding", apiBase, fingerprint],
+    queryFn: () => api.get(`/findings?${new URLSearchParams({ fingerprint })}`, FindingAnswer),
+    staleTime: Number.POSITIVE_INFINITY,
+    refetchInterval: false,
+    retry: false,
   });
 }
 

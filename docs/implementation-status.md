@@ -42,6 +42,11 @@ their findings fixed.
   six-hour sweep; the workflow file the user adds (the Anthropic key only in the agent's job, which
   has no write token; a change holding the key never published); the task's runs section. Verified
   through the dashboard's real host with a fake GitHub, end to end.
+- **Fixing a security finding** ([findings.md](findings.md)): `host.finding` and the manifest's
+  `findingAction`; `GET /findings` with the task already linked to the finding (the same
+  fingerprint, or an open task from the same rule and file); the task prefilled from the finding
+  within DevSync's limits, its fingerprint, rule and file read again from the host on create. On
+  the branch `finding-action`, merged once the dashboard's side is deployed.
 
 What the standalone version had and the module drops, because the dashboard has it: its own sign-in,
 projects and project members, audit log, GitHub App, webhook intake and repository linking, live
@@ -53,8 +58,6 @@ updates over SSE (the dashboard polls), Redis, and the dedicated Codex and Claud
    over MCP, and one managed run on a private test repository (what the research left to check
    live: the CLI's flags together, the reads it refuses, GitHub's answer when pull requests from
    Actions are off).
-2. **Fixing a security finding** ([findings.md](findings.md)): a task prefilled from one of the
-   dashboard's findings; built once the dashboard's side (`host.finding`) is deployed.
 
 ## Later
 

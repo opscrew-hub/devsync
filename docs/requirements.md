@@ -192,7 +192,7 @@ table has `workspace_id` and `project_id` (except where noted), and every query 
 
 | Table | Columns (beyond `id` uuid pk, `workspace_id`, `project_id`, `created_at`) | Keys and indexes |
 |---|---|---|
-| `task` | `title`, `description`, `acceptance_criteria`, `status` (BACKLOG, READY, CLAIMED, IN_PROGRESS, BLOCKED, REVIEW, DONE, CANCELLED), `revision` int, `version` int, `creator_user_id` uuid?, `creator_agent_id` uuid?, `create_request_id` uuid?, `assignee_user_id` uuid?, `claim_agent_id` uuid?, `claim_id` uuid?, `claim_expires_at`?, `pull_request_number` int?, `updated_at` | (`project_id`, `status`); (`project_id`, `assignee_user_id`); unique (`project_id`, `creator_agent_id`, `create_request_id`) |
+| `task` | `title`, `description`, `acceptance_criteria`, `status` (BACKLOG, READY, CLAIMED, IN_PROGRESS, BLOCKED, REVIEW, DONE, CANCELLED), `revision` int, `version` int, `creator_user_id` uuid?, `creator_agent_id` uuid?, `create_request_id` uuid?, `assignee_user_id` uuid?, `claim_agent_id` uuid?, `claim_id` uuid?, `claim_expires_at`?, `pull_request_number` int?, `finding_fingerprint`?, `finding_rule`?, `finding_file`? (the security finding it was made from, as the host gave it), `updated_at` | (`project_id`, `status`); (`project_id`, `assignee_user_id`); unique (`project_id`, `creator_agent_id`, `create_request_id`) |
 | `task_revision` | `task_id` → task cascade, `number`, `title`, `description`, `acceptance_criteria`, `author_user_id`?, `author_agent_id`? | pk (`task_id`, `number`) |
 | `task_comment` | `task_id` → task cascade, `author_user_id`, `body` | (`task_id`, `created_at`) |
 | `agent` | `name`, `kind` (CLAUDE, CODEX), `token_hash` unique, `expires_at`, `revoked_at`?, `last_seen_at`?, `registered_by_user_id`? | (`project_id`) |

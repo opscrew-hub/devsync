@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { MemberList, type Role, TaskList } from "@devsync/schemas";
+import { type Finding as FindingSchema, MemberList, type Role, TaskList } from "@devsync/schemas";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import { createTask } from "./domain/tasks";
 import type {
   DevSyncGithub,
   DevSyncHost,
+  Finding,
   GithubFailure,
   GithubJob,
   Member,
@@ -58,6 +59,20 @@ namespace Contract {
       options?: { singleton?: { key: string; seconds: number } },
     ): Promise<void>;
     github: ModuleGithub;
+    finding(projectId: string, fingerprint: string): Promise<ModuleFinding | null>;
+  }
+  export interface ModuleFinding {
+    fingerprint: string;
+    ruleId: string;
+    title: string;
+    severity: "critical" | "high" | "medium" | "low" | "info";
+    file: string | null;
+    line: number | null;
+    description: string | null;
+    remediation: string | null;
+    firstSeenAt: string;
+    lastSeenAt: string;
+    dismissal: { reason: "false-positive" | "accepted-risk" } | null;
   }
   export type GithubFact =
     | {
@@ -173,6 +188,15 @@ describe("the contract's types (checked by the typecheck)", () => {
     assignable<GithubJob>(some<z.output<typeof GithubJobSchema>>());
     expect(true).toBe(true);
   });
+
+  it("DevSync's copy of the host's finding is the contract's, both ways, and its schema takes it", () => {
+    assignable<Finding>(some<Contract.ModuleFinding>());
+    assignable<Contract.ModuleFinding>(some<Finding>());
+    // Every finding the host gives is one the Finding schema can take, and what it parses is one.
+    assignable<z.input<typeof FindingSchema>>(some<Contract.ModuleFinding>());
+    assignable<Finding>(some<z.output<typeof FindingSchema>>());
+    expect(true).toBe(true);
+  });
 });
 
 let testDb: TestDb;
@@ -189,16 +213,19 @@ const root = new URL("../../../", import.meta.url);
 const manifest = JSON.parse(readFileSync(new URL("package.json", root), "utf8")).opscrewModule;
 
 describe("the opscrewModule manifest", () => {
-  it("names DevSync, its icon, its workspace page and its two entries", () => {
+  it("names DevSync, its icon, its workspace page, its finding action and its two entries", () => {
     expect(manifest).toEqual({
       id: "devsync",
       name: "DevSync",
       summary: expect.any(String),
       icon: "kanban",
       workspacePage: true,
+      findingAction: { label: "Fix with DevSync" },
       server: "packages/server/src/module.ts",
       web: "packages/web/src/module.tsx",
     });
+    // The host's rule for the button's label: 1 to 40 characters of plain text.
+    expect(manifest.findingAction.label).toMatch(/^[^<>&]{1,40}$/);
     expect(manifest.id).toMatch(/^[a-z][a-z0-9-]{1,30}$/);
     expect(manifest.summary.length).toBeGreaterThan(0);
     expect(manifest.summary.length).toBeLessThanOrEqual(200);

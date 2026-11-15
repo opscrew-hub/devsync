@@ -84,11 +84,14 @@ export function DialogButtons({
   label,
   pending,
   danger = false,
+  disabled = false,
   onCancel,
 }: {
   label: string;
   pending: boolean;
   danger?: boolean;
+  /** The member may not do the action: the dialog shows what it would, with the action locked. */
+  disabled?: boolean;
   onCancel: () => void;
 }) {
   return (
@@ -99,7 +102,7 @@ export function DialogButtons({
       <button
         className={danger ? "btn btn-danger bordered" : "btn btn-primary"}
         type="submit"
-        disabled={pending}
+        disabled={pending || disabled}
       >
         {label}
       </button>

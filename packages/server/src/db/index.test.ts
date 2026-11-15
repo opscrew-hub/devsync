@@ -46,7 +46,7 @@ describe("the devsync schema's migration", () => {
 
   it("applies twice, each migration journaled once in devsync.__drizzle_migrations", async () => {
     await testDb.migrate();
-    expect(await testDb.db.select().from(journal)).toHaveLength(2);
+    expect(await testDb.db.select().from(journal)).toHaveLength(3);
     const tables = await testDb.db
       .select({ name: catalog.tableName })
       .from(catalog)

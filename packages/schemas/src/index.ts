@@ -2,6 +2,7 @@
 
 export * from "./agents";
 export * from "./common";
+export * from "./findings";
 export * from "./lifecycle";
 export * from "./mcp";
 export * from "./members";

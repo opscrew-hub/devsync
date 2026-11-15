@@ -8,6 +8,9 @@
     "summary": "Plan each project's work as tasks with their requirements' history, and let your coding agents claim, report on and review them through MCP.",
     "icon": "kanban",
     "workspacePage": true,
+    "findingAction": {
+      "label": "Fix with DevSync"
+    },
     "server": "packages/server/src/module.ts",
     "web": "packages/web/src/module.tsx"
   },

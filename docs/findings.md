@@ -40,7 +40,7 @@ exact text an Approver approves.
 
 ## Tasks
 
-- [ ] **F1, the finding's task** (`packages/**`, `package.json`'s `opscrewModule`, `docs/host.md`,
+- [x] **F1, the finding's task** (`packages/**`, `package.json`'s `opscrewModule`, `docs/host.md`,
   `docs/requirements.md`'s Data, `README.md`). The manifest's
   `"findingAction": { "label": "Fix with DevSync" }`; the host interface's copy: `finding` and its
   `Finding` type (the dashboard's `ModuleFinding`), `fakeHost()`'s findings; the task table's

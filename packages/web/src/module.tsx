@@ -86,13 +86,21 @@ function Provider({
 }
 
 /**
- * A project's DevSync tab; the open task is the query's `?task=`. A read-only project (the host's
- * `readOnly`, which a disconnected one is too) locks every action.
+ * A project's DevSync tab; the open task is the query's `?task=`, and a security finding to make a
+ * task from its `?finding=` (the dashboard's "Fix with DevSync"), cleared once its task is open or
+ * its dialog closed. A read-only project (the host's `readOnly`, which a disconnected one is too)
+ * locks every action.
  */
 function ModuleProjectTab({ project, query, setQuery, ...page }: ModuleProjectTabProps) {
+  const task = query.get("task");
   return (
     <Provider {...page} readOnly={project.readOnly}>
-      <ProjectTab selectedTaskId={query.get("task")} onSelectTask={(task) => setQuery({ task })} />
+      <ProjectTab
+        selectedTaskId={task}
+        onSelectTask={(next) => setQuery({ task: next })}
+        finding={query.get("finding")}
+        onFindingDone={(opened) => setQuery({ task: opened ?? task, finding: null })}
+      />
     </Provider>
   );
 }

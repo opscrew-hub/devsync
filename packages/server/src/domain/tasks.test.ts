@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Task, TaskDetail, WorkspaceTaskList } from "@devsync/schemas";
 import { and, eq } from "drizzle-orm";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { agent, outboxEvent, pullRequest, task, taskRevision } from "../db";
 import type { AgentActor, Member, ProjectContext, ProjectRef } from "../host";
-import { refusal } from "../test/helpers";
+import { refusal, sampleFinding } from "../test/helpers";
 import { createTestDb, type FakeHost, fakeHost, fakeToken, type TestDb } from "../testing";
 import {
   commentOnTask,
@@ -214,6 +214,84 @@ describe("createTask", () => {
       expect(error.message).toMatch(/read-only/);
     }
     expect(await testDb.db.select().from(task)).toEqual([]);
+  });
+});
+
+describe("createTask from a security finding", () => {
+  const finding = sampleFinding();
+
+  async function stored(taskId: string) {
+    const [row] = await testDb.db
+      .select({
+        fingerprint: task.findingFingerprint,
+        rule: task.findingRule,
+        file: task.findingFile,
+      })
+      .from(task)
+      .where(eq(task.id, taskId));
+    return row;
+  }
+
+  it("keeps the fingerprint, rule and file as the host gives them, read again on create", async () => {
+    host.directory.findings[projectA.projectId] = [finding];
+    const asked = vi.spyOn(host, "finding");
+    const created = await createTask(host, as(developer), {
+      ...fields,
+      finding: { fingerprint: finding.fingerprint },
+    });
+    expect(asked).toHaveBeenCalledWith(projectA.projectId, finding.fingerprint);
+    expect(await stored(created.id)).toEqual({
+      fingerprint: finding.fingerprint,
+      rule: finding.ruleId,
+      file: finding.file,
+    });
+    // The task's own text is what the member wrote, and it is made like any other.
+    expect(created).toMatchObject({ title: fields.title, status: "BACKLOG", revision: 1 });
+    expect((await events(created.id)).map((e) => e.kind)).toEqual(["task.created"]);
+
+    const plain = await createTask(host, as(developer), fields);
+    expect(await stored(plain.id)).toEqual({ fingerprint: null, rule: null, file: null });
+  });
+
+  it("refuses a finding the host no longer gives, saving nothing", async () => {
+    const error = await refusal(
+      createTask(host, as(developer), { ...fields, finding: { fingerprint: finding.fingerprint } }),
+      "not-found",
+    );
+    expect(error.message).toBe(
+      "This finding is resolved or isn't this project's. Open it again from the project's security findings.",
+    );
+    expect(await testDb.db.select().from(task)).toEqual([]);
+  });
+
+  it("refuses a bad fingerprint by its field, and an agent's finding, before asking the host", async () => {
+    host.directory.findings[projectA.projectId] = [finding];
+    const asked = vi.spyOn(host, "finding");
+    const bad = await refusal(
+      createTask(host, as(developer), { ...fields, finding: { fingerprint: "a b" } }),
+      "invalid",
+    );
+    expect(bad.fields).toEqual(["finding.fingerprint"]);
+    const builder = await seedAgent(projectA);
+    const agentsFinding = {
+      ...fields,
+      requestId: randomUUID(),
+      finding: { fingerprint: finding.fingerprint },
+    };
+    expect((await refusal(createTask(host, builder, agentsFinding), "invalid")).fields).toEqual([
+      "finding",
+    ]);
+    expect(asked).not.toHaveBeenCalled();
+    expect(await testDb.db.select().from(task)).toEqual([]);
+  });
+
+  it("refuses a read-only project before asking the host", async () => {
+    host.directory.findings[projectA.projectId] = [finding];
+    const asked = vi.spyOn(host, "finding");
+    const readOnly = { ...projectA, readOnly: true };
+    const input = { ...fields, finding: { fingerprint: finding.fingerprint } };
+    await refusal(createTask(host, as(owner, readOnly), input), "forbidden");
+    expect(asked).not.toHaveBeenCalled();
   });
 });
 

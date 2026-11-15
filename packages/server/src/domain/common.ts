@@ -1,9 +1,10 @@
 /**
  * What the domain files share: parsing an input, the role and read-only checks, the agent-row lock,
- * finding a task of the project, naming members, and the refusals more than one of them gives.
- * Internal to the server: the package's index doesn't export it.
+ * finding a task of the project, reading a security finding from the host, naming members, and the
+ * refusals more than one of them gives. Internal to the server: the package's index doesn't export
+ * it.
  */
-import { type Action, type Author, can, Id, type Role } from "@devsync/schemas";
+import { type Action, type Author, can, Finding, Id, type Role } from "@devsync/schemas";
 import { and, eq, type SQL } from "drizzle-orm";
 import type { z } from "zod";
 import { agent, task } from "../db";
@@ -11,6 +12,7 @@ import {
   type AgentActor,
   type DevSyncDb,
   DevSyncError,
+  type DevSyncHost,
   type Member,
   type ProjectRef,
 } from "../host";
@@ -36,6 +38,9 @@ export const REFUSAL = {
   noSuchPeer:
     "There's no such agent in this project, or it was revoked. Check the agent's id with get_project_state.",
   noSuchSignal: "There's no such signal in your inbox. Check its id with get_pending_signals.",
+  /** A security finding the host doesn't give: resolved, another project's, or DevSync off. */
+  noSuchFinding:
+    "This finding is resolved or isn't this project's. Open it again from the project's security findings.",
 } as const;
 
 /** What a member whose role may not do an action is told: by the routes and by the domain. */
@@ -113,6 +118,30 @@ export function taskIn(
     eq(task.projectId, project.projectId),
     eq(task.workspaceId, project.workspaceId),
   ) as SQL;
+}
+
+/**
+ * The project's open security finding `fingerprint` (already checked against its character set),
+ * as the host gives it and parsed: refused `not-found` when the host has none. An answer that
+ * isn't a finding, or names another fingerprint, is the host's fault: it fails as unexpected, its
+ * message naming fields only, never their text.
+ */
+export async function hostFinding(
+  host: DevSyncHost,
+  project: ProjectRef,
+  fingerprint: string,
+): Promise<Finding> {
+  const answer = await host.finding(project.projectId, fingerprint);
+  if (answer === null) throw new DevSyncError("not-found", REFUSAL.noSuchFinding);
+  const parsed = Finding.safeParse(answer);
+  if (!parsed.success) {
+    const paths = [...new Set(parsed.error.issues.map((i) => i.path.join(".") || "(root)"))];
+    throw new Error(`The host's finding doesn't match DevSync's schema at ${paths.join(", ")}.`);
+  }
+  if (parsed.data.fingerprint !== fingerprint) {
+    throw new Error("The host answered another finding than the one DevSync asked for.");
+  }
+  return parsed.data;
 }
 
 /** The name shown for a member who has left the workspace. */

@@ -33,6 +33,7 @@ workspace, and reads the manifest in DevSync's root `package.json`:
   "summary": "…",
   "icon": "kanban",
   "workspacePage": true,
+  "findingAction": { "label": "Fix with DevSync" },
   "server": "packages/server/src/module.ts",
   "web": "packages/web/src/module.tsx"
 }
@@ -40,7 +41,8 @@ workspace, and reads the manifest in DevSync's root `package.json`:
 
 The server imports `serverModule` from the `server` file, the dashboard `webModule` from the `web`
 file (as its own chunk). The `id` is DevSync's schema name, the prefix of its queues and audit
-actions, and the `devsync` in every address below.
+actions, and the `devsync` in every address below. `findingAction` is the button on a security
+finding (see Security findings).
 
 ## Switching DevSync on
 
@@ -64,6 +66,7 @@ DevSync uses (`host.ts` has the exact types). In short:
 | `project(projectId)` | the connected project with DevSync on for it and its workspace, or null: checked on every MCP request. |
 | `enqueue(queue, payload, options?)` | sends a job to a DevSync queue after the current transaction commits. |
 | `github` | DevSync's workflow in the project's repository, through the host's GitHub App: `setup`, `dispatch`, `artifact`, `deleteArtifact` (see Managed runs). |
+| `finding(projectId, fingerprint)` | one of the project's open security findings, redacted, or null (see Security findings). |
 
 ### Request contexts
 
@@ -124,6 +127,7 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 | `PATCH /tasks/:taskId` | `task.write` | `TaskUpdate` | `Task` |
 | `POST /tasks/:taskId/comments` | `task.write` | `CommentInput` | 201 `Comment` |
 | `PUT /tasks/:taskId/pull-request` | `task.write` | `PullRequestLink` | `Task` |
+| `GET /findings?fingerprint=` | read | | `FindingAnswer` (see Security findings) |
 | `GET /pull-requests` | read | | `{ pullRequests: PullRequest[] }`, the 50 most recently updated |
 | `GET /members` | read | | `{ members: Member[] }` |
 | `GET /agents` | read | | `{ agents: Agent[] }` |
@@ -147,7 +151,10 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 
 ### Shapes
 
-- `TaskInput`: `title` (1–160), `description` (≤ 8000), `acceptanceCriteria` (≤ 8000).
+- `TaskInput`: `title` (1–160), `description` (≤ 8000), `acceptanceCriteria` (≤ 8000), and
+  `finding` (`{ fingerprint }`, optional: the security finding the task is made from).
+- `Finding`: the host's finding as `host.finding` gives it (see Security findings).
+  `FindingAnswer`: `finding`, and `task` (the `Task` already linked to it, or null).
 - `TaskUpdate`: `version`, and any of `title`, `description`, `acceptanceCriteria`, `status`,
   `assigneeUserId` (a member's id, or null).
 - `Task`: `id`, `projectId`, `title`, `status`, `revision`, `version`, `assigneeUserId`, `claim`
@@ -277,7 +284,8 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
   `Dialog` (`{ title, icon, onSubmit?, children }`), `EmptyState` (`{ icon, title, children,
   action? }`) and `Link` (`{ to, className?, children }`, the host's router link);
 - `ProjectTab`: `project` (`{ id, fullName, readOnly }`), `query` (the page's search parameters) and
-  `setQuery` (replaces them): the selected task is `?task=<id>`;
+  `setQuery` (replaces them): the selected task is `?task=<id>`, and a security finding to make a
+  task from is `?finding=<fingerprint>` (see Security findings);
 - `WorkspacePage`: `projectHref(projectId, query?)`, the address of a project's DevSync tab, which
   task links use with `{ task }`.
 
@@ -335,3 +343,45 @@ Each change is a timeline event of the task (`run.requested`, `run.approved`, `r
 `run.cancelled`, `run.started`, `run.finished`) and, but for the start, an audit entry
 (`devsync.run.requested`, `approved`, `rejected`, `cancelled`, `finished`, the last by the host),
 with ids and figures only.
+
+## Security findings
+
+A member turns one of the dashboard's security findings into a DevSync task. The design is
+[findings.md](findings.md); this is what DevSync asks of the host.
+
+The manifest's `"findingAction": { "label": "Fix with DevSync" }` (1–40 characters, plain text)
+names the button the dashboard shows on a finding's details, also on one marked "Not a problem",
+when DevSync is on for the project. It opens DevSync's project tab with `?finding=<fingerprint>`;
+the tab clears `finding` from the address once the finding's task is open or its dialog closed.
+
+`host.finding(projectId, fingerprint)`, the contract's `ModuleFinding` (`Finding` in `host.ts`),
+answers one of the project's open findings:
+
+| Field | What it holds |
+|---|---|
+| `fingerprint` | 1–128 characters of `A–Z a–z 0–9 . _ : / -`. It includes the line, so the same problem gets a new fingerprint when code above it moves |
+| `ruleId`, `title` | at most 200 characters each |
+| `severity` | `critical`, `high`, `medium`, `low` or `info` |
+| `file`, `line` | a POSIX path relative to the repository's root (no leading `/`, no `..`, no backslash, at most 1,000 characters) and a positive line, or null |
+| `description`, `remediation` | at most 4,000 characters each, or null |
+| `firstSeenAt`, `lastSeenAt` | ISO 8601 |
+| `dismissal` | `{ reason: "false-positive" \| "accepted-risk" }` for one marked "Not a problem", or null |
+
+Every text is already redacted and cut to its limit with "…"; the match itself never reaches
+DevSync. It answers null for a fingerprint outside the character set, for a finding the project
+doesn't have, for a resolved one, and while DevSync is off for the project or its workspace. Any
+member may read it.
+
+DevSync parses the answer with `Finding` from `@devsync/schemas` (an answer that doesn't parse, or
+names another fingerprint, fails as unexpected) and uses it twice:
+
+- `GET /findings?fingerprint=` (any member) refuses a fingerprint outside the character set (422,
+  `invalid`) before asking the host, and answers null as 404: "This finding is resolved or isn't
+  this project's. Open it again from the project's security findings." Otherwise it answers the
+  finding and the task already linked to it: the one made from the same fingerprint, else an open
+  one (not Done) made from a finding with the same rule and file. The fingerprint may hold a `/`, so
+  it is always a query parameter, never a path segment.
+- `POST /tasks` with `finding: { fingerprint }` reads the finding again (404 as above when it is
+  gone) and keeps its fingerprint, rule and file on the task (`finding_fingerprint`, `finding_rule`,
+  `finding_file`), from the host's answer, never the browser's. The task's text is what the member
+  wrote, prefilled by the tab from the finding within DevSync's limits.

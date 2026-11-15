@@ -1,20 +1,42 @@
-import { type Member, STATUS_LABEL, Task, TaskInput, TaskStatus } from "@devsync/schemas";
-import { type FormEvent, useId, useState } from "react";
+import {
+  type DismissalReason,
+  type Finding,
+  type FindingSeverity,
+  LIMITS,
+  type Member,
+  STATUS_LABEL,
+  Task,
+  TaskInput,
+  TaskStatus,
+} from "@devsync/schemas";
+import { type FormEvent, useEffect, useId, useState } from "react";
 import { Agents } from "./Agents";
 import styles from "./devsync.module.css";
 import { DialogButtons, memberName, Problem, RequirementFields, requirements } from "./parts";
 import { useDevSync } from "./provider";
-import { useChange, useMembers, useTasks } from "./queries";
+import { useChange, useFinding, useMembers, useTasks } from "./queries";
 import { TaskPanel } from "./TaskPanel";
 
 export interface ProjectTabProps {
   /** The task open in the panel, kept in the host's URL (`?task=<id>`), or null. */
   selectedTaskId: string | null;
   onSelectTask: (taskId: string | null) => void;
+  /** The fingerprint of a security finding to make a task from (`?finding=`), or null. */
+  finding?: string | null;
+  /** Leaves the finding: opening `taskId` (its linked or new task), or with null once closed. */
+  onFindingDone?: (taskId: string | null) => void;
 }
 
-/** A project's DevSync tab: its tasks by status, the open task's panel, and its agents. */
-export function ProjectTab({ selectedTaskId, onSelectTask }: ProjectTabProps) {
+/**
+ * A project's DevSync tab: its tasks by status, the open task's panel, its agents, and the task
+ * offered from a security finding.
+ */
+export function ProjectTab({
+  selectedTaskId,
+  onSelectTask,
+  finding,
+  onFindingDone,
+}: ProjectTabProps) {
   return (
     <div className={styles.page}>
       <div className={selectedTaskId ? styles.split : undefined}>
@@ -28,6 +50,9 @@ export function ProjectTab({ selectedTaskId, onSelectTask }: ProjectTabProps) {
         )}
       </div>
       <Agents />
+      {finding && onFindingDone && (
+        <FindingTask key={finding} fingerprint={finding} onDone={onFindingDone} />
+      )}
     </div>
   );
 }
@@ -122,21 +147,128 @@ function describe(task: Task, members: Member[] | undefined): string {
     .join(" · ");
 }
 
-function NewTask({ onClose, onCreated }: { onClose: () => void; onCreated: (task: Task) => void }) {
-  const { Dialog } = useDevSync().ui;
+/**
+ * The new task's dialog; from a security finding, prefilled from it, saying when it is marked
+ * "Not a problem", and sending its fingerprint with the task. A member who may not write tasks sees
+ * it with Create disabled.
+ */
+function NewTask({
+  finding,
+  onClose,
+  onCreated,
+}: {
+  finding?: Finding;
+  onClose: () => void;
+  onCreated: (task: Task) => void;
+}) {
+  const { ui, may } = useDevSync();
+  const { Dialog, Icon } = ui;
   const create = useChange(TaskInput, (api, input) => api.send("POST", "/tasks", input, Task));
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    create.mutate(requirements(form), { onSuccess: onCreated });
+    const fields = requirements(new FormData(event.currentTarget));
+    const input = finding ? { ...fields, finding: { fingerprint: finding.fingerprint } } : fields;
+    create.mutate(input, { onSuccess: onCreated });
   }
 
   return (
     <Dialog title="New task" icon="plus" onSubmit={submit}>
-      <RequirementFields />
+      {finding?.dismissal && (
+        <p className={`status s-muted ${styles.problem}`}>
+          <Icon name="check-circle" className="i-sm" />
+          Marked “Not a problem” ({DISMISSAL[finding.dismissal.reason]}).
+        </p>
+      )}
+      <RequirementFields initial={finding && findingRequirements(finding)} />
       <Problem error={create.error} />
-      <DialogButtons label="Create the task" pending={create.isPending} onCancel={onClose} />
+      <DialogButtons
+        label="Create the task"
+        pending={create.isPending}
+        disabled={!may("task.write")}
+        onCancel={onClose}
+      />
     </Dialog>
+  );
+}
+
+const DISMISSAL: Record<DismissalReason, string> = {
+  "false-positive": "false positive",
+  "accepted-risk": "accepted risk",
+};
+
+const SEVERITY: Record<FindingSeverity, string> = {
+  critical: "Critical",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+  info: "Info",
+};
+
+/** `text`, cut to `max` characters ending with "…" when it is longer. */
+function cut(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+/** A new task's requirements from a finding, each within DevSync's limits. */
+function findingRequirements(finding: Finding) {
+  const where = finding.file && (finding.line ? `${finding.file}:${finding.line}` : finding.file);
+  const facts = [
+    where && `Where: ${where}`,
+    `Severity: ${SEVERITY[finding.severity]}`,
+    `Rule: ${finding.ruleId}`,
+  ];
+  const description = [
+    finding.description,
+    facts.filter(Boolean).join("\n"),
+    finding.remediation && `How to fix it:\n${finding.remediation}`,
+  ];
+  const at = finding.file ? ` at ${finding.file}` : "";
+  return {
+    title: cut(`Fix: ${finding.title}`, LIMITS.title),
+    description: cut(description.filter(Boolean).join("\n\n"), LIMITS.description),
+    acceptanceCriteria: `The next security scan no longer reports ${finding.ruleId}${at}.`,
+  };
+}
+
+/**
+ * The task from the security finding `fingerprint`: its linked task opens instead when it has one,
+ * else the new task's dialog is offered prefilled; a finding the server doesn't find (resolved, or
+ * another project's) is said so, offering nothing. `onDone` leaves the finding.
+ */
+function FindingTask({
+  fingerprint,
+  onDone,
+}: {
+  fingerprint: string;
+  onDone: (taskId: string | null) => void;
+}) {
+  const { Dialog } = useDevSync().ui;
+  const found = useFinding(fingerprint);
+  const linked = found.data?.task?.id;
+
+  useEffect(() => {
+    if (linked) onDone(linked);
+  }, [linked, onDone]);
+
+  if (found.error) {
+    return (
+      <Dialog title="Security finding" icon="warning">
+        <Problem error={found.error} />
+        <div className={styles.actions}>
+          <button className="btn btn-secondary bordered" type="button" onClick={() => onDone(null)}>
+            Close
+          </button>
+        </div>
+      </Dialog>
+    );
+  }
+  if (!found.data || found.data.task) return null;
+  return (
+    <NewTask
+      finding={found.data.finding}
+      onClose={() => onDone(null)}
+      onCreated={(task) => onDone(task.id)}
+    />
   );
 }

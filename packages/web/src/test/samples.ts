@@ -1,5 +1,32 @@
-import type { Agent, Member, PullRequest, Run, RunSetup, Task, TaskDetail } from "@devsync/schemas";
+import type {
+  Agent,
+  Finding,
+  Member,
+  PullRequest,
+  Run,
+  RunSetup,
+  Task,
+  TaskDetail,
+} from "@devsync/schemas";
 import { id, ME } from "./render";
+
+/** A security finding as `GET /findings` answers it: a secret exposed at `src/app.ts:12`. */
+export function finding(fields: Partial<Finding> = {}): Finding {
+  return {
+    fingerprint: "config/client-exposed-secret:src/app.ts:12",
+    ruleId: "config/client-exposed-secret",
+    title: "A secret is exposed to the browser",
+    severity: "high",
+    file: "src/app.ts",
+    line: 12,
+    description: "The value is bundled into the client's code.",
+    remediation: "Read it on the server only.",
+    firstSeenAt: "2026-11-01T00:00:00Z",
+    lastSeenAt: "2026-11-13T00:00:00Z",
+    dismissal: null,
+    ...fields,
+  };
+}
 
 export const PROJECT = id(50);
 export const BEN = id(2);

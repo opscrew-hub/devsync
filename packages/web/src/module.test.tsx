@@ -1,6 +1,6 @@
 import type { WorkspaceTask } from "@devsync/schemas";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentType, FormEvent, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import { fakeFetch, id, ME, type Reply } from "./test/render";
 import {
   agent,
   detail,
+  finding,
   members,
   PROJECT,
   pullRequests,
@@ -78,7 +79,7 @@ function host(element: ReactNode, apiBase: string, routes: Record<string, Reply>
   return fake;
 }
 
-function projectTab(query: string, readOnly = false) {
+function projectTab(query: string, readOnly = false, routes: Record<string, Reply> = {}) {
   const setQuery = vi.fn<ModuleProjectTabProps["setQuery"]>();
   const props: ModuleProjectTabProps = {
     apiBase: PROJECT_API,
@@ -97,6 +98,7 @@ function projectTab(query: string, readOnly = false) {
     [`GET /tasks/${detail.id}`]: { body: detail },
     [`GET /tasks/${detail.id}/runs`]: { body: { runs: [] } },
     "GET /runs/setup": { body: setupComplete },
+    ...routes,
   });
   return { ...fake, setQuery };
 }
@@ -116,6 +118,35 @@ describe("webModule.ProjectTab", () => {
     await within(panel).findByText("Description");
     await userEvent.click(within(panel).getByRole("button", { name: "Close" }));
     expect(setQuery).toHaveBeenCalledWith({ task: null });
+  });
+
+  it("makes a task from the query's ?finding=, then opens it and clears the finding", async () => {
+    const found = finding();
+    const created = task(16, { title: `Fix: ${found.title}` });
+    const { setQuery } = projectTab(`finding=${encodeURIComponent(found.fingerprint)}`, false, {
+      "GET /findings": { body: { finding: found, task: null } },
+      "POST /tasks": { status: 201, body: created },
+    });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Create the task" }));
+    await waitFor(() => expect(setQuery).toHaveBeenCalledWith({ task: created.id, finding: null }));
+  });
+
+  it("opens the finding's linked task, and closing the dialog keeps the open task", async () => {
+    const found = finding();
+    const linked = task(17);
+    const { setQuery } = projectTab(`finding=${found.fingerprint}`, false, {
+      "GET /findings": { body: { finding: found, task: linked } },
+    });
+    await waitFor(() => expect(setQuery).toHaveBeenCalledWith({ task: linked.id, finding: null }));
+    cleanup();
+
+    const closing = projectTab(`task=${detail.id}&finding=${found.fingerprint}`, false, {
+      "GET /findings": { body: { finding: found, task: null } },
+    });
+    const dialog = await screen.findByRole("dialog", { name: "New task" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(closing.setQuery).toHaveBeenCalledWith({ task: detail.id, finding: null });
   });
 
   it("gives the member's role to DevSync: a developer can't register agents", async () => {

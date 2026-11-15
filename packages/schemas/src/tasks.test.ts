@@ -52,6 +52,15 @@ describe("TaskInput", () => {
     expect(TaskInput.parse({ ...valid, title: "  Ship it " }).title).toBe("Ship it");
     expect(TaskInput.safeParse({ ...valid, status: "DONE" }).success).toBe(false);
   });
+
+  it("takes a security finding's fingerprint, and nothing else of the finding", () => {
+    const finding = { fingerprint: "config/client-exposed-secret:src/app.ts:12" };
+    expect(TaskInput.parse({ ...valid, finding }).finding).toEqual(finding);
+    expect(TaskInput.safeParse({ ...valid, finding: { fingerprint: "a b" } }).success).toBe(false);
+    expect(
+      TaskInput.safeParse({ ...valid, finding: { ...finding, ruleId: "config/x" } }).success,
+    ).toBe(false);
+  });
 });
 
 describe("TaskUpdate", () => {
