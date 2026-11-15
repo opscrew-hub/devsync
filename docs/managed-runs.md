@@ -17,7 +17,8 @@ research behind it is in [research/managed-runs.md](research/managed-runs.md); t
    requested revision's title, description and acceptance criteria as JSON). The run is then
    `RUNNING`, with GitHub's run id. A refusal ends it `FAILED` with what to do.
 4. The workflow (the file the user adds, `WORKFLOW_FILE` in `@devsync/schemas`) runs three jobs: an
-   `agent` job with Contents read only, the only one given `ANTHROPIC_API_KEY`, which runs Claude
+   `agent` job with Contents read only, the only one given a key (`ANTHROPIC_API_KEY` or
+   `OPENROUTER_API_KEY`), which runs Claude
    Code headless with file tools only and uploads the change as a patch; a `publish` job with
    Contents and Pull requests write and no key, which applies the patch (refusing one that touches
    `.github/`), pushes `devsync/<run id>` and opens a draft pull request; and a `report` job, always
@@ -47,6 +48,7 @@ repository's Actions runs can read the inputs.
   "usage": { "inputTokens": 0, "outputTokens": 0, "cacheCreationInputTokens": 0,
              "cacheReadInputTokens": 0, "costUsd": 0 },
   "models": ["claude-sonnet-5-5"],
+  "provider": "anthropic",
   "pullRequestUrl": "https://github.com/<owner>/<repo>/pull/<number>",
   "branch": "devsync/<run id>"
 }
@@ -54,8 +56,9 @@ repository's Actions runs can read the inputs.
 
 DevSync accepts it only when `runId` is the run's, `pullRequestUrl` is a pull request of the
 project's own repository, `changedFiles` has at most 1,000 paths of at most 400 characters each,
-and every figure is a non-negative number; otherwise the run fails `bad-result`. `failure` is one
-of `agent-failed`, `budget`, `turns`, `no-changes`, `patch-did-not-apply`,
+every figure is a non-negative number, and `provider` is `anthropic` or `openrouter` (null only on
+a failed run); otherwise the run fails `bad-result`. `failure` is one of `no-key`,
+`agent-failed`, `budget`, `turns`, `no-changes`, `patch-did-not-apply`,
 `patch-touches-workflows`, `push-failed`, `pull-request-not-allowed`, each shown with what to do
 (`pull-request-not-allowed`: "Turn on Settings > Actions > General > Allow GitHub Actions to create
 and approve pull requests, or open the pull request from the `devsync/<run id>` branch").

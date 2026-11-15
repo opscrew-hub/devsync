@@ -39,8 +39,9 @@ their findings fixed.
   [research/managed-runs.md](research/managed-runs.md)): asking, approving the exact text,
   rejecting and cancelling; one dispatch per run, never repeated; the result read from the run's
   artifact through the dashboard's GitHub App and checked; the draft pull request linked; the
-  six-hour sweep; the workflow file the user adds (the Anthropic key only in the agent's job, which
-  has no write token; a change holding the key never published); the task's runs section. Verified
+  six-hour sweep; the workflow file the user adds (the `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`
+  key only in the agent's job, which has no write token; a change holding either key never
+  published); the task's runs section. Verified
   through the dashboard's real host with a fake GitHub, end to end.
 - **Fixing a security finding** ([findings.md](findings.md)): `host.finding` and the manifest's
   `findingAction`; `GET /findings` with the open task already linked to the finding (the same

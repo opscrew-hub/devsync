@@ -192,6 +192,26 @@ describe("the managed runs' workflow file", () => {
     expect(run.match(/\$\{!key\}/g)).toHaveLength(1);
   });
 
+  it("starts Claude Code without the OpenRouter key's own variable, the shell keeping both keys", () => {
+    const run = text(step("agent", "Run Claude Code"));
+    // Through OpenRouter the key reaches Claude Code only as ANTHROPIC_AUTH_TOKEN; with the
+    // Anthropic key, Claude Code never sees the OpenRouter key.
+    expect(run).toContain(
+      `          env -u OPENROUTER_API_KEY claude "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/claude.json"\n`,
+    );
+    expect(run.match(/\bclaude "\$\{flags/g)).toHaveLength(1);
+    // The shell drops and changes no key the check reads: the Anthropic key is emptied only
+    // through OpenRouter, which is chosen only when that key is empty already.
+    expect(run).not.toMatch(/\bunset\b|export -n|OPENROUTER_API_KEY=/);
+    const emptied = run.indexOf("export ANTHROPIC_API_KEY=");
+    expect(run.match(/ANTHROPIC_API_KEY=/g)).toHaveLength(1);
+    expect(emptied).toBeGreaterThan(run.indexOf('elif [ -n "$OPENROUTER_API_KEY" ]; then'));
+    expect(emptied).toBeLessThan(run.indexOf("          else\n"));
+    expect(run.indexOf("for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY; do")).toBeGreaterThan(
+      run.indexOf("env -u OPENROUTER_API_KEY claude"),
+    );
+  });
+
   it("refuses a change that holds either key, both when both are set, never putting one in argv", () => {
     const run = text(step("agent", "Run Claude Code"));
     const loop = run.indexOf("for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY; do");
