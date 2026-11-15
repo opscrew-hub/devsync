@@ -65,9 +65,29 @@ The model, turn cap and budget cap are in the workflow file, which the user may 
 ## Setup
 
 The task panel's runs section asks the host's `github.setup` for `devsync.yml` and the secrets'
-names, and shows what is missing: the workflow file (shown in full, to copy), the
-`ANTHROPIC_API_KEY` secret (repository or organization), and the pull-request setting. Asking for a
+names, and shows what is missing: the workflow file (shown in full, to copy), a key (the
+`ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` secret, repository or organization), and the
+pull-request setting. Asking for a
 run while the file or the secret is missing answers 409 with the same words.
+
+## Paying through OpenRouter
+
+A run can use an OpenRouter API key instead of an Anthropic one (research:
+[research/openrouter.md](research/openrouter.md)).
+
+- The user adds `OPENROUTER_API_KEY` as an Actions secret, repository or organization, instead of
+  `ANTHROPIC_API_KEY`. With both, the Anthropic key is used.
+- The `agent` job gets both secrets. Without an Anthropic key, it runs Claude Code with
+  `ANTHROPIC_BASE_URL=https://openrouter.ai/api`, `ANTHROPIC_AUTH_TOKEN` set to the OpenRouter
+  key and `ANTHROPIC_API_KEY` empty; the models stay Claude's. With neither, the run fails
+  `no-key`: "Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or
+  its organization."
+- The backstop refuses a change that contains either key, and no other job gets either.
+- `result.json` says which provider the run used (`provider`: `anthropic` or `openrouter`). The
+  run shows it, and its cost reads as Claude Code's estimate, from Anthropic's prices: through
+  OpenRouter, OpenRouter's own usage page has what it bills.
+- The setup counts either secret. The README tells OpenRouter users to set a spending limit on
+  the key and to put Anthropic first in the account's provider routing, as OpenRouter recommends.
 
 ## Not in the first version
 
@@ -104,3 +124,9 @@ time.
   tokens and cost, the models, the draft pull request, the GitHub run).
 - [x] **D4, the standalone version removed** (lead): its folder deleted once D1 and D2 had ported
   its runs, with every mention in the README, the agents' guides, the docs and the code's comments.
+- [ ] **D5, paying through OpenRouter** (`packages/**`, `docs/host.md` if it names the secret,
+  `docs/requirements.md`'s story 4 and R-8, `README.md`). As "Paying through OpenRouter" above: the
+  workflow's `agent` job choosing the key, the `no-key` failure, the backstop for both keys,
+  `provider` in `result.json` (its schema and checks) and on the run, the cost labelled an estimate,
+  the setup counting either secret (its step and the dashboard's link wording), the README; tests
+  for each, including the workflow text's env lines and that no other job gets either key.
