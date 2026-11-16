@@ -535,8 +535,8 @@ function Approve({ task, run, onClose }: { task: TaskDetail; run: Run; onClose: 
     >
       <p className="sub">
         Claude Code then works on revision {run.revision} of this task, as{" "}
-        {authorName(run.requestedBy)} asked for it, in the repository's Actions and on its
-        ANTHROPIC_API_KEY secret, or without one its OPENROUTER_API_KEY.
+        {authorName(run.requestedBy)} asked for it, in the repository's Actions, paid with its
+        ANTHROPIC_API_KEY secret or, without that, its OPENROUTER_API_KEY.
       </p>
       {changed ? (
         <p className={`status s-warning ${styles.problem}`}>

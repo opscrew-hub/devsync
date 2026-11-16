@@ -176,9 +176,10 @@ task, open it again from the same finding and from a moved one, and check a reso
   against a fake host; the dashboard plugs it in at a pinned commit through its deployment's
   configuration.
 - **R-8**: DevSync's managed runs MUST run in the project's own GitHub Actions on an Anthropic or
-  OpenRouter key of the workspace's own, report back through the run's artifact read by the dashboard's GitHub App
-  ([managed-runs.md](managed-runs.md)), and leave opening the draft pull
-  request to the user's workflow: OpsCrew holds no AI key and no write token, and opens no pull request itself.
+  OpenRouter key of the workspace's own, report back through the run's artifact read by the
+  dashboard's GitHub App ([managed-runs.md](managed-runs.md)), and leave opening the draft pull
+  request to the user's workflow: OpsCrew holds no AI key and no write token, and opens no pull
+  request itself.
 - **R-9**: DevSync MUST run only inside the dashboard: it has no sign-in, projects or pages of its
   own.
 - **R-10**: A task made from a security finding MUST come from the finding as the dashboard gives it

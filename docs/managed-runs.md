@@ -18,8 +18,8 @@ research behind it is in [research/managed-runs.md](research/managed-runs.md); t
    `RUNNING`, with GitHub's run id. A refusal ends it `FAILED` with what to do.
 4. The workflow (the file the user adds, `WORKFLOW_FILE` in `@devsync/schemas`) runs three jobs: an
    `agent` job with Contents read only, the only one given a key (`ANTHROPIC_API_KEY` or
-   `OPENROUTER_API_KEY`), which runs Claude
-   Code headless with file tools only and uploads the change as a patch; a `publish` job with
+   `OPENROUTER_API_KEY`), which runs Claude Code headless with file tools only and uploads the
+   change as a patch; a `publish` job with
    Contents and Pull requests write and no key, which applies the patch (refusing one that touches
    `.github/`), pushes `devsync/<run id>` and opens a draft pull request; and a `report` job, always
    run, which uploads the `devsync-result` artifact.
