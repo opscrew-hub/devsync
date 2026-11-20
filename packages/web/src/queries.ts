@@ -47,7 +47,7 @@ export const useRuns = (taskId: string) =>
  * What the repository has of what a run needs. Asking costs several GitHub calls, so it is read
  * the first time a runs section opens and when the member asks again, and kept while the tab is in
  * use: never on a timer, on focus, on opening another task or after a change (its key is outside
- * the `["devsync", apiBase]` that changes read again).
+ * the `["devsync"]` that changes read again).
  */
 export function useRunSetup() {
   const { api, apiBase } = useDevSync();
@@ -63,7 +63,7 @@ export function useRunSetup() {
  * A security finding and the task linked to it, by its fingerprint in the query string (it may
  * hold a `/`). Read afresh each time the tab arrives with it (nothing is kept once the tab leaves
  * it, so a task made since opens), never on a timer, and a resolved finding's 404 is an answer, not
- * a failure to retry. Its key is outside `["devsync", apiBase]`, so creating the task doesn't read
+ * a failure to retry. Its key is outside `["devsync"]`, so creating the task doesn't read
  * it again.
  */
 export function useFinding(fingerprint: string) {
@@ -94,13 +94,16 @@ const INVALID = "Fill in the required fields and keep each within its limit, the
 
 /**
  * A change through the API: what the page sends is parsed with `schema` first (a failure is the
- * mutation's error, in plain English); then everything under the mount point is read again.
+ * mutation's error, in plain English); then every DevSync list and task is stale, under every
+ * mount point: a task changed on its project's tab is read again on the workspace page too, which
+ * the host would otherwise keep showing as it was while its answers count as fresh. The lists on
+ * screen are read at once, the others when they open again.
  */
 export function useChange<S extends z.ZodType, R>(
   schema: S,
   change: (api: ReturnType<typeof useDevSync>["api"], input: z.infer<S>) => Promise<R>,
 ) {
-  const { api, apiBase } = useDevSync();
+  const { api } = useDevSync();
   const client = useQueryClient();
   return useMutation({
     mutationFn: (input: unknown) => {
@@ -108,6 +111,6 @@ export function useChange<S extends z.ZodType, R>(
       if (!parsed.success) throw new DevSyncRequestError("invalid", INVALID, 0);
       return change(api, parsed.data);
     },
-    onSettled: () => client.invalidateQueries({ queryKey: ["devsync", apiBase] }),
+    onSettled: () => client.invalidateQueries({ queryKey: ["devsync"] }),
   });
 }
