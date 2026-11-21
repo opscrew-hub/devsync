@@ -151,17 +151,21 @@ function runStep(
     grep?: "all" | "contents" | "names";
     find?: boolean;
     emptyProfile?: boolean;
+    /** The runner's RUNNER_TEMP and HOME as the Install Codex step left them, its profile in. */
+    after?: { temp: string; home: string };
   } = {},
 ): Run {
   const root = mkdtempSync(join(tmpdir(), "devsync-workflow-"));
   folders.push(root);
-  const [bin, fake, temp, home, checkout] = ["bin", "fake", "temp", "home", "checkout"].map(
+  const [bin, fake, ownTemp, ownHome, checkout] = ["bin", "fake", "temp", "home", "checkout"].map(
     (name) => {
       const folder = join(root, name);
       mkdirSync(folder);
       return folder;
     },
   ) as [string, string, string, string, string];
+  const temp = options.after?.temp ?? ownTemp;
+  const home = options.after?.home ?? ownHome;
   const fakes: [string, string][] = [
     ["codex", FAKE_CODEX],
     ["claude", FAKE_CLAUDE],
@@ -179,7 +183,7 @@ function runStep(
     '{"title":"T","description":"D","acceptanceCriteria":"C"}',
   );
   if (options.emptyProfile) writeFileSync(join(temp, "devsync-codex-sandbox-checked"), "");
-  if (options.checked ?? true) {
+  if (!options.after && (options.checked ?? true)) {
     writeFileSync(
       join(temp, "devsync-codex-sandbox-checked"),
       `${profileOf(temp, home).join("\n")}\n`,
@@ -433,7 +437,9 @@ esac
   [
     "codex",
     `#!/usr/bin/env bash
-printf '%s\n' "$@" > "$FAKE/sandbox"
+printf '%s\\n' "$@" > "$FAKE/sandbox"
+# With FAKE_SANDBOX_PASS, a sandbox whose /proc is its own: the probe passes.
+[ -z "\${FAKE_SANDBOX_PASS:-}" ] || exit 0
 while [ "$1" != -- ]; do shift; done
 shift
 exec "$@"
@@ -442,7 +448,9 @@ exec "$@"
 ];
 
 /** Runs the Install Codex step with `INSTALL_FAKES` first on PATH. */
-function install(options: { environment?: string; npm?: number; sysctl?: number } = {}) {
+function install(
+  options: { environment?: string; npm?: number; sysctl?: number; pass?: boolean } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "devsync-install-"));
   folders.push(root);
   const [bin, fake, temp, home] = ["bin", "fake", "temp", "home"].map((name) => {
@@ -464,6 +472,7 @@ function install(options: { environment?: string; npm?: number; sysctl?: number 
       FAKE: fake,
       FAKE_NPM: String(options.npm ?? 0),
       FAKE_SYSCTL_WRITE: String(options.sysctl ?? 0),
+      ...(options.pass ? { FAKE_SANDBOX_PASS: "1" } : {}),
     },
     encoding: "utf8",
   });
@@ -482,6 +491,32 @@ function install(options: { environment?: string; npm?: number; sysctl?: number 
 }
 
 describe.skipIf(!tools)("the Install Codex step, run (needs bash)", () => {
+  it("leaves the probed profile whole, and the agent step hands Codex exactly that profile", () => {
+    const installed = install({ pass: true });
+    expect(installed.status).toBe(0);
+    expect(installed.log).not.toContain("::warning::");
+    expect(installed.marked).toBe(true);
+    // One flag per line, nothing more: the profile the probe ran with, whole.
+    const marker = join(installed.temp, "devsync-codex-sandbox-checked");
+    const profile = profileOf(installed.temp, installed.home);
+    expect(readFileSync(marker, "utf8")).toBe(`${profile.join("\n")}\n`);
+    expect(existsSync(`${marker}.tmp`)).toBe(false);
+    const probe = (installed.sandbox ?? "").split("\n");
+    const probed = probe.slice(1, probe.indexOf("--"));
+    expect(probed).toEqual(profile);
+
+    // The agent step on the same runner: Codex's sandbox flags are the probe's, in order.
+    const run = runStep({ after: { temp: installed.temp, home: installed.home } });
+    expect(run.ran).toBe(true);
+    expect(run.outputs.get("failure")).toBe("");
+    const args = readFileSync(join(run.fake, "args"), "utf8").split("\n");
+    const dashes = args.indexOf("--");
+    expect(args.slice(dashes - probed.length, dashes)).toEqual(probed);
+    expect(args.filter((arg) => arg.includes("permissions"))).toEqual(
+      probed.filter((arg) => arg.includes("permissions")),
+    );
+  });
+
   it("leaves no profile when the sandbox falls back to the runner's /proc", () => {
     const run = install();
     expect(run.status).toBe(0);

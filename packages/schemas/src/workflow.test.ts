@@ -394,7 +394,10 @@ describe("the managed runs' workflow file", () => {
       "outside=$!",
       `fresh='[ -d /proc/1 ] && [ ! -e "/proc/$1" ] && [ "$(ls /proc | grep -c "^[0-9]*$")" -le 10 ]'`,
       `if codex sandbox "\${profile[@]}" -- sh -c "$fresh" probe "$outside"; then`,
-      `  printf '%s\\n' "\${profile[@]}" > "$RUNNER_TEMP/devsync-codex-sandbox-checked"`,
+      // Written whole, then moved into place: never a cut-off profile.
+      '  marker="$RUNNER_TEMP/devsync-codex-sandbox-checked"',
+      `  printf '%s\\n' "\${profile[@]}" > "$marker.tmp" && mv "$marker.tmp" "$marker" ||`,
+      `    echo "::warning::Codex's sandbox profile couldn't be saved, so Codex won't run here."`,
       'kill "$outside" 2>/dev/null || true',
     ]) {
       expect(install).toContain(part);
@@ -402,6 +405,12 @@ describe("the managed runs' workflow file", () => {
       expect(install.indexOf(part)).toBeLessThan(end);
     }
     expect(install.match(/devsync-codex-sandbox-checked/g)).toHaveLength(1);
+    expect(install.match(/> "\$marker/g)).toHaveLength(1);
+    // The step can't fail or hang the job: Claude Code's runs never wait on it.
+    const header = step("agent", "Install Codex")
+      .slice(1, 3)
+      .map((line) => line.trim());
+    expect(header).toEqual(["continue-on-error: true", "timeout-minutes: 5"]);
   });
 
   it("runs Codex headless only once its sandbox is checked: checkout writes only, no network, no key for its commands", () => {

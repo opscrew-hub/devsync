@@ -208,9 +208,12 @@ The fake answered with two shell calls, then a final message, each response with
     the profile parses before any key is there. A `sleep` outside the sandbox must not show
     inside it, and inside it at most 10 processes may show.
   - Only a passed probe writes the profile, one flag per line, to
-    `$RUNNER_TEMP/devsync-codex-sandbox-checked`.
-  - A failed install or a refused setting warns, skips the probe and writes nothing. The step
-    never fails, so Claude Code's runs go on.
+    `$RUNNER_TEMP/devsync-codex-sandbox-checked`. It is written to a `.tmp` file and moved into
+    place, so a cut-off write leaves no profile rather than a weaker one; a failed write warns.
+  - A failed install or a refused setting warns, skips the probe and writes nothing.
+  - The step has `continue-on-error: true` and `timeout-minutes: 5`: a failure or a hang (npm,
+    the probe) never stops the job, so Claude Code's runs go on, and Codex fails closed for want
+    of the profile.
   - The agent step starts Codex only on a hosted runner and with that profile, which it adds to
     Codex's flags. Otherwise the run fails `agent-failed`, and the step's log says why.
 - **How Codex runs.** With only the OpenAI key, the agent step runs Codex instead of Claude Code,

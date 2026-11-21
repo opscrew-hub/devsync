@@ -118,9 +118,10 @@ CLI.
   - It then checks, through `codex sandbox` with the run's own sandbox profile, that a sandboxed
     command gets a `/proc` of its own. Codex 0.171.0 silently keeps the runner's `/proc` when it
     can't mount one, and a command could then read the agent step's environment.
-  - Only a passed check leaves the profile for the agent step. A failed install or a refused
-    setting skips the check and leaves nothing, with a warning. The step never fails, so Claude
-    Code's runs go on.
+  - Only a passed check leaves the profile for the agent step, written whole or not at all. A
+    failed install or a refused setting skips the check and leaves nothing, with a warning.
+  - The step has `continue-on-error` and a 5-minute timeout, so nothing in it, a hang included,
+    stops the job: Claude Code's runs go on, and Codex, without the profile, doesn't start.
   - Without a hosted runner or that profile, the agent step doesn't start Codex. The run fails
     `agent-failed`, and the step's log says why.
 - With only the OpenAI key, the agent step runs `codex exec --json` with the same prompt and the

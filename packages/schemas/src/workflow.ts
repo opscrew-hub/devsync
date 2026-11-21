@@ -118,8 +118,11 @@ jobs:
         run: npm install --global @anthropic-ai/claude-code@2.1.311
 
       # Codex runs only with an OpenAI key, pinned as above, and only on GitHub's own runners. A
-      # problem here keeps Codex from running, never Claude Code.
+      # problem here, a hang included, keeps Codex from running, never Claude Code: the job goes
+      # on whatever this step does, and only a passed check leaves what Codex needs.
       - name: Install Codex
+        continue-on-error: true
+        timeout-minutes: 5
         run: |
           # As OpenAI's own action does, only on GitHub's runners, which are thrown away after the
           # job: on another runner Codex doesn't run, and this step changes nothing on the host.
@@ -156,7 +159,10 @@ jobs:
               outside=$!
               fresh='[ -d /proc/1 ] && [ ! -e "/proc/$1" ] && [ "$(ls /proc | grep -c "^[0-9]*$")" -le 10 ]'
               if codex sandbox "\${profile[@]}" -- sh -c "$fresh" probe "$outside"; then
-                printf '%s\\n' "\${profile[@]}" > "$RUNNER_TEMP/devsync-codex-sandbox-checked"
+                # Whole or not at all: a cut-off profile would be a weaker sandbox.
+                marker="$RUNNER_TEMP/devsync-codex-sandbox-checked"
+                printf '%s\\n' "\${profile[@]}" > "$marker.tmp" && mv "$marker.tmp" "$marker" ||
+                  echo "::warning::Codex's sandbox profile couldn't be saved, so Codex won't run here."
               else
                 echo "::warning::Codex's sandbox has no /proc of its own on this runner, so Codex won't run here."
               fi
