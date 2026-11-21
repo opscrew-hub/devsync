@@ -66,14 +66,31 @@ agent, the Codex CLI. Official sources only (OpenAI's Codex docs, the `openai/co
   - Each command runs in new user, PID and IPC namespaces, with a fresh `/proc` and all
     capabilities dropped.
   - It also gets a new network namespace when network is off. So a command can't read Codex's own
-    environment through `/proc`.
+    environment, nor the agent step's, through `/proc`.
+  - **The fresh `/proc` can silently go**
+    ([`linux-sandbox/src/linux_run_main.rs`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/linux-sandbox/src/linux_run_main.rs),
+    `run_bwrap_with_proc_fallback`). A preflight runs `/bin/true` under bubblewrap with
+    `--proc /proc`. If that mount fails ("restricted containers"), the real command runs without
+    a fresh `/proc`, and nothing is reported. The command then sees the runner's `/proc`,
+    including the `/proc/<pid>/environ` of the step that holds the key.
   - `workspace-write` mounts `/` read-only: **commands can read the whole runner**, not only the
     checkout.
   - Permission profiles (`default_permissions`, `[permissions.<name>]`, beta per the
-    [permissions page](https://learn.chatgpt.com/docs/permissions)) can deny reads outside the
-    workspace.
+    [permissions page](https://learn.chatgpt.com/docs/permissions)) can deny reads of chosen
+    paths. `--sandbox` sets them aside, so a profile replaces it.
+  - **What the commands can't do** ([`linux-sandbox/src/seccomp.rs`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/linux-sandbox/src/seccomp.rs)):
+    - `no_new_privs` is set before seccomp, so a setuid `sudo` gains nothing inside the sandbox.
+    - seccomp denies `ptrace`, `process_vm_readv` and `process_vm_writev`, so commands can't
+      read another process's memory.
+    - With network off, seccomp also denies `connect`, `accept`, `bind`, `listen` and the
+      sending calls.
 - **AGENTS.md** ([`core/src/agents_md.rs`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/core/src/agents_md.rs)):
   - It isn't read for an untrusted project, nor with `project_doc_max_bytes = 0`.
+- **Repository skills**
+  ([`ext/skills/src/host_roots.rs`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/ext/skills/src/host_roots.rs),
+  lines 113-121; [`config/src/skills_config.rs`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/config/src/skills_config.rs)):
+  - The repository's `.agents/skills` are skill roots whether the project is trusted or not.
+  - `skills.include_instructions = false` keeps the skills catalog out of the model's context.
 - **Models** ([models](https://learn.chatgpt.com/docs/models)):
   - GPT-6.2 Sol (`gpt-6.2-sol`) is for everyday tasks such as editing code, and is the page's
     sample `model`.
@@ -84,16 +101,21 @@ agent, the Codex CLI. Official sources only (OpenAI's Codex docs, the `openai/co
   page shows no date of its own):
   - Standard tier, per million tokens, for at most 272K input tokens:
 
-    | Model | Input | Cached input | Output |
-    | - | - | - | - |
-    | `gpt-6.2-sol` | $2.00 | $0.10 | $10.00 |
-    | `gpt-6.2-astra` | $8.00 | $0.40 | $40.00 |
+    | Model | Input | Cached input | 30m write | 12h write | Output |
+    | - | - | - | - | - | - |
+    | `gpt-6.2-sol` | $2.00 | $0.10 | $2.50 | $5.00 | $10.00 |
+    | `gpt-6.2-astra` | $8.00 | $0.40 | $10.00 | $20.00 | $40.00 |
 
-  - Above 272K input tokens, Sol costs $4.00, $0.20 and $15.00.
-  - The page doesn't say how reasoning tokens are billed.
+  - Above 272K input tokens, Sol costs $4.00, $0.20, $5.00, $10.00 and $15.00.
+  - The page doesn't say what decides between the 30-minute and the 12-hour write, nor how
+    reasoning tokens are billed.
 - **Token counts** ([`protocol/src/protocol.rs`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/protocol/src/protocol.rs),
   [`exec/src/event_processor_with_jsonl_output.rs`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/exec/src/event_processor_with_jsonl_output.rs)):
   - `input_tokens` includes the cached ones (`non_cached_input = input - cached`).
+  - It includes the cache-written ones too. `cache_write_input_tokens` comes from the API's
+    `input_tokens_details.cache_write_tokens`, and Codex's own test
+    ([`codex-api/src/sse/responses.rs`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/codex-api/src/sse/responses.rs),
+    `parses_cache_write_token_usage`) has 100 input tokens made of 40 cached and 60 written.
   - `turn.completed`'s usage is the thread's running total.
   - `turn.failed` carries only an error message.
 - **Version:** `@openai/codex` 0.171.0 is the latest on npm (2026-11-21), `codex-cli 0.171.0`.
@@ -127,19 +149,40 @@ The fake answered with two shell calls, then a final message, each response with
   - So `error` events alone don't mean failure; `turn.failed` does.
 - **Strict config.**
   - `--strict-config` refused an unknown `-c` key and a bad `web_search` value, and accepted all of
-    DevSync's settings.
+    DevSync's settings, `skills.include_instructions` and the permission profile's included.
   - With the API unreachable, Codex waited and kept retrying.
-- **A permission profile** that denies reads outside the workspace (`":root" = "deny"`,
-  `":minimal" = "read"`, the workspace writable) made every command fail with exit code 2 on that
-  image.
+- **Repository skills.** A `.agents/skills/pwn/SKILL.md` in the repository reached the model's
+  context without `-c skills.include_instructions=false`, and didn't with it.
+- **Deny-read profiles.**
+  - A profile that denies reads outside the workspace (`":root" = "deny"`, `":minimal" = "read"`,
+    the workspace writable) made every command fail with exit code 2 on that image.
+  - So did one that extends `:workspace` and denies all of `$HOME` when the checkout is inside
+    it, as on a runner (`$HOME/work/<repo>/<repo>`). The deny on the parent wins over the
+    workspace.
+  - Narrow entries work: a profile that extends `:workspace` and denies `$HOME/work/_temp` (the
+    runner's `RUNNER_TEMP`), `$HOME/runners` and `$HOME/.*`. Those reads failed with
+    "Permission denied".
+  - With those entries the checkout stayed readable and writable, `git status` worked, `.git`
+    stayed read-only, `/tmp` was writable and the network was blocked
+    (`permissions.<name>.network.enabled = false`).
+- **The `/proc` probe**, the workflow's own Install Codex script (without its `npm install`):
+  - With the real `codex sandbox` it saw 5 processes and not the outside one, and left its marker.
+  - With a `codex` shim whose `sandbox` runs the command with no sandbox (what the fallback
+    leaves of `/proc`), it warned and left none.
+  - Docker refuses mounts inside `/proc`, so the real fallback couldn't be triggered here.
 - **The workflow's own step script** ran with a fake Codex address, a real `jq` and only
-  `OPENAI_API_KEY` set:
-  - It wrote `provider=openai` and an empty `failure`.
+  `OPENAI_API_KEY` set, on a runner marked `github-hosted` whose probe passed:
+  - The fake reported 200 cache-written tokens per response, and Codex's `turn.completed` was
+    `{"input_tokens":3000,"cached_input_tokens":1200,"cache_write_input_tokens":600,"output_tokens":600,"reasoning_output_tokens":150}`.
+  - The step wrote `provider=openai` and an empty `failure`.
   - It wrote
-    `usage={"inputTokens":1800,"outputTokens":600,"cacheCreationInputTokens":0,"cacheReadInputTokens":1200,"costUsd":0.00972}`
+    `usage={"inputTokens":1200,"outputTokens":600,"cacheCreationInputTokens":600,"cacheReadInputTokens":1200,"costUsd":0.01002}`
     and `models=["gpt-6.2-sol"]`, and the patch step found the change.
-  - With no key it failed `no-key`. With a Codex that exits non-zero it failed `agent-failed`,
-    with zero usage.
+  - Its commands couldn't read the step's temp folder or `$HOME/runners`.
+  - On a runner marked `self-hosted`, or after a failed probe, it failed `agent-failed` with its
+    reason and never started Codex.
+  - With no key it failed `no-key`. With a Codex that exits non-zero it failed `agent-failed`.
+  - `workflow.run.test.ts` runs that step with a fake `codex` printing these recorded events.
 
 ## Decision
 
@@ -148,45 +191,91 @@ The fake answered with two shell calls, then a final message, each response with
   - The two Claude keys run the same agent and models, and stay ahead.
   - An OpenAI key changes the agent, so it is used only when neither of the others is set. A
     workspace that adds an OpenAI key for other work keeps its Claude runs.
+- **Where Codex runs.** Only on GitHub-hosted runners (`RUNNER_ENVIRONMENT=github-hosted`), as
+  OpenAI's action sets its sandbox up only there.
+  - A keyless "Install Codex" step installs `@openai/codex@0.171.0` for every run, since only the
+    agent step knows which key is set.
+  - On a hosted runner only, the step sets the two user-namespace settings, and a refused setting
+    fails the step. On another runner it changes nothing on the host.
+  - It then runs the `/proc` probe through `codex sandbox`: a `sleep` outside the sandbox must
+    not show inside it, and inside it at most 10 processes may show. Only a passed probe writes
+    `$RUNNER_TEMP/devsync-codex-sandbox-checked`.
+  - The agent step starts Codex only on a hosted runner and with that marker. Otherwise the run
+    fails `agent-failed`, and the step's log says why.
 - **How Codex runs.** With only the OpenAI key, the agent step runs Codex instead of Claude Code,
   with the same prompt and task on stdin:
 
   ```
-  codex exec --json --ephemeral --strict-config --model "$DEVSYNC_OPENAI_MODEL" --sandbox workspace-write
-    -c sandbox_workspace_write.network_access=false -c approval_policy=never -c web_search=disabled
+  codex exec --json --ephemeral --strict-config --model "$DEVSYNC_OPENAI_MODEL"
+    -c default_permissions=devsync -c 'permissions.devsync.extends=":workspace"'
+    -c "permissions.devsync.filesystem={'$RUNNER_TEMP'='deny','$HOME/runners'='deny'}"
+    -c permissions.devsync.network.enabled=false -c approval_policy=never -c web_search=disabled
     -c shell_environment_policy.inherit=core -c shell_environment_policy.ignore_default_excludes=false
-    -c project_doc_max_bytes=0 -c history.persistence=none --ignore-user-config --ignore-rules
+    -c project_doc_max_bytes=0 -c skills.include_instructions=false -c history.persistence=none
+    --ignore-user-config --ignore-rules
   ```
 
   - The key reaches Codex as `CODEX_API_KEY` only, and `OPENAI_API_KEY` is unset for it.
   - A run succeeds on exit 0 with a `turn.completed` event and no `turn.failed`. Anything else is
     `agent-failed`.
-- **Installing.** A keyless "Install Codex" step installs `@openai/codex@0.171.0` and sets the two
-  user-namespace settings, as OpenAI's action does. It runs for every run, since only the agent
-  step knows which key is set.
+- **The sandbox's reads.**
+  - The profile keeps `:workspace`'s writes and `.git` protection, and denies the step's
+    temporary folder (`RUNNER_TEMP`: the step scripts, the task, Codex's output) and the
+    runner's own folder (`$HOME/runners`).
+  - Denying `$HOME` itself breaks every command, because the checkout is inside it.
+  - `$HOME/.*` worked locally, but it would also hide any toolchain the runner keeps in a dot
+    folder of `$HOME` and puts on `PATH`. It waits for the live listing below.
+- **Sudo stays.** OpenAI's action takes sudo away from the runner user (`drop-sudo`) before Codex
+  starts; DevSync doesn't.
+  - The install step needs sudo for the two settings, and it runs before any key is present.
+  - Inside the sandbox `no_new_privs` stops a setuid `sudo` from gaining anything.
+  - seccomp denies `ptrace`, `process_vm_readv` and `process_vm_writev`, and with network off
+    `connect` too. So a command can neither use sudo nor read Codex's or the step's memory.
+  - Codex itself runs nothing outside its sandbox: approvals are `never`, with no bypass flag.
 - **The model.** `gpt-6.2-sol`, set as `DEVSYNC_OPENAI_MODEL` in the workflow. `models` names it,
   since Codex's events don't name the model.
 - **Usage.**
-  - `inputTokens = input_tokens − cached_input_tokens`, `cacheReadInputTokens = cached_input_tokens`,
-    `outputTokens = output_tokens` (reasoning included) and `cacheCreationInputTokens = 0`.
+  - `cacheReadInputTokens = cached_input_tokens` and `cacheCreationInputTokens = cache_write_input_tokens`.
+  - `inputTokens` is `input_tokens` less both, and `outputTokens = output_tokens` (reasoning
+    included).
   - The cost is worked out in the workflow from those tokens at the prices noted next to the model
-    (`DEVSYNC_OPENAI_INPUT_USD` and the rest, from the pricing page on 2026-11-21, standard tier).
-  - The dashboard labels it "estimated from OpenAI's prices".
+    (from the pricing page on 2026-11-21, standard tier): `DEVSYNC_OPENAI_INPUT_USD` $2.00,
+    `DEVSYNC_OPENAI_CACHED_INPUT_USD` $0.10, `DEVSYNC_OPENAI_CACHE_WRITE_USD` $2.50 and
+    `DEVSYNC_OPENAI_OUTPUT_USD` $10.00.
+  - Cache writes are priced at the 30-minute rate. The 12-hour rate is $5.00, and the page doesn't
+    say which one Codex's requests get.
+  - The dashboard labels the cost "estimated from OpenAI's prices".
 - **Not used.**
   - `openai/codex-action`, since it reports no tokens and adds a third-party action to the
     workflow.
-  - A workspace-only read profile, which broke every command in the local check.
 
 ## To check live
 
 - **A real run on a GitHub-hosted `ubuntu-latest` runner:**
   - the sandbox after the two settings;
+  - the `/proc` probe passing;
+  - the deny-read profile;
   - the draft pull request;
-  - the reported tokens against the OpenAI project's usage page.
-- **Reads outside the checkout.** Codex's commands can read the runner's files, where Claude Code
-  is held to the checkout. They have no network and no key, so what they read can only reach the
-  patch, which people review as a draft. A read profile that works on Ubuntu would close this; try
-  it on a real runner.
+  - the reported tokens and cache writes against the OpenAI project's usage page.
+- **The `/proc` fallback.** Codex 0.171.0 drops the fresh `/proc` silently when mounting one
+  fails.
+  - The probe and the agent step's marker keep Codex from running then, but the fallback itself
+    couldn't be triggered locally.
+  - Check that the probe fails where the mount fails, for example in a job `container:`.
+  - Watch for a Codex release that reports the fallback or lets a run refuse it.
+- **What the runner user can read.** List it on a hosted runner, from a step with no key, with
+  `ls -la` and `find -maxdepth 3`:
+  - `/home/runner/runners`: the runner's own files, credentials included, if any. Denied to
+    Codex's commands now.
+  - `/home/runner/work/_temp` (`RUNNER_TEMP`): the step scripts, `GITHUB_OUTPUT`'s files and
+    the task. Denied now.
+  - `$HOME`'s dot files and folders: `.gitconfig`, `.docker`, `.npm`, toolchains. They are
+    readable now. Decide from the listing whether `$HOME/.*` can be denied without hiding a
+    toolchain on `PATH`.
+- **Anything readable can be published.** Codex's commands can still read the rest of the runner.
+  - They have no network and no key, so what they read can leave only in the change.
+  - The `publish` job pushes the branch and opens the draft pull request before anyone reviews
+    it. In a public repository the change is public at once.
 - **No caps.**
   - Codex has no turn or spend cap: the job's 45-minute timeout and the OpenAI project's budget
     are the limits.
@@ -194,7 +283,7 @@ The fake answered with two shell calls, then a final message, each response with
 - **The cost estimate.**
   - It uses the standard rate even for a request above 272K input tokens, which Sol's 500K window
     allows, so it can come out low.
-  - Whether `cache_write_input_tokens` is ever non-zero with OpenAI is to check. It is counted
-    inside `input_tokens` here.
+  - Cache writes are priced at the 30-minute rate. A request that gets the 12-hour write costs
+    more.
 - **Whether `gpt-6.2-sol` is open to the user's API project.** The models page's table didn't
   render its API column.
