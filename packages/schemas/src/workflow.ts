@@ -75,11 +75,13 @@ jobs:
       DEVSYNC_MAX_TURNS: "40"
       DEVSYNC_MAX_BUDGET_USD: "5.00"
       # With only an OpenAI key: Codex's model, and its prices in US dollars per million input,
-      # cached input and output tokens, from OpenAI's pricing page on 2026-11-21. Change the prices
-      # with the model. Codex has no turn or spend cap: set a budget on the key's OpenAI project.
+      # cached input, cache-written input (at the 30-minute rate) and output tokens, from OpenAI's
+      # pricing page on 2026-11-21. Change the prices with the model. Codex has no turn or spend
+      # cap: set a budget on the key's OpenAI project.
       DEVSYNC_OPENAI_MODEL: gpt-6.2-sol
       DEVSYNC_OPENAI_INPUT_USD: "2.00"
       DEVSYNC_OPENAI_CACHED_INPUT_USD: "0.10"
+      DEVSYNC_OPENAI_CACHE_WRITE_USD: "2.50"
       DEVSYNC_OPENAI_OUTPUT_USD: "10.00"
     outputs:
       failure: \${{ steps.agent.outputs.failure || steps.patch.outputs.failure }}
@@ -115,16 +117,35 @@ jobs:
       - name: Install Claude Code
         run: npm install --global @anthropic-ai/claude-code@2.1.311
 
-      # Codex runs only with an OpenAI key, pinned as above. Its sandbox needs unprivileged user
-      # namespaces, which newer Ubuntu runners restrict; this runner is thrown away after the job.
+      # Codex runs only with an OpenAI key, pinned as above, and only on GitHub's own runners.
       - name: Install Codex
         run: |
           npm install --global @openai/codex@0.171.0
-          for setting in kernel.unprivileged_userns_clone=1 kernel.apparmor_restrict_unprivileged_userns=0; do
-            current=$(sysctl -n "\${setting%=*}" 2>/dev/null) || continue
-            [ "$current" = "\${setting#*=}" ] || sudo -n sysctl -q -w "$setting" ||
-              echo "::warning::Codex's sandbox needs $setting, which this runner refused."
-          done
+          # As OpenAI's own action does, only on GitHub's runners, which are thrown away after the
+          # job: on another runner Codex doesn't run, and this step changes nothing on the host.
+          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+            # Codex's sandbox needs unprivileged user namespaces, which newer Ubuntu restricts.
+            for setting in kernel.unprivileged_userns_clone=1 kernel.apparmor_restrict_unprivileged_userns=0; do
+              current=$(sysctl -n "\${setting%=*}" 2>/dev/null) || continue
+              if [ "$current" != "\${setting#*=}" ] && ! sudo -n sysctl -q -w "$setting"; then
+                echo "::error::Codex's sandbox needs $setting, which this runner refused."
+                exit 1
+              fi
+            done
+            # The sandbox gives each command a /proc of its own, unless mounting one fails: then it
+            # silently keeps the runner's, where a command could read the agent step's environment.
+            # So check it here, with no key around: a process outside the sandbox must not show in
+            # it. The agent step runs Codex only once this check has passed.
+            sleep 120 &
+            outside=$!
+            fresh='[ -d /proc/1 ] && [ ! -e "/proc/$1" ] && [ "$(ls /proc | grep -c "^[0-9]*$")" -le 10 ]'
+            if codex sandbox -- sh -c "$fresh" probe "$outside"; then
+              touch "$RUNNER_TEMP/devsync-codex-sandbox-checked"
+            else
+              echo "::warning::Codex's sandbox has no /proc of its own on this runner, so Codex won't run here."
+            fi
+            kill "$outside" 2>/dev/null || true
+          fi
 
       - name: Run the coding agent
         id: agent
@@ -164,42 +185,61 @@ jobs:
             flags=(
               exec --json --ephemeral --strict-config  # a misspelled setting stops the run
               --model "$DEVSYNC_OPENAI_MODEL"
-              --sandbox workspace-write  # writes in the checkout and temporary folders only; .git stays read-only
-              -c sandbox_workspace_write.network_access=false
+              # Its sandbox: writes in the checkout and temporary folders only (.git stays
+              # read-only), no network, and no reads of this step's temporary folder or the runner's.
+              -c default_permissions=devsync
+              -c 'permissions.devsync.extends=":workspace"'
+              -c "permissions.devsync.filesystem={'$RUNNER_TEMP'='deny','$HOME/runners'='deny'}"
+              -c permissions.devsync.network.enabled=false
               -c approval_policy=never
               -c web_search=disabled
               -c shell_environment_policy.inherit=core  # its commands get PATH, HOME and the like, no key
               -c shell_environment_policy.ignore_default_excludes=false
               -c project_doc_max_bytes=0  # no AGENTS.md from the repository
+              -c skills.include_instructions=false  # nor its .agents/skills
               -c history.persistence=none
               --ignore-user-config --ignore-rules
             )
-            # The task reaches Codex on stdin, as data. Codex gets the OpenAI key as CODEX_API_KEY
-            # only; the shell keeps the key for the check below.
-            env -u OPENAI_API_KEY codex "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/codex.jsonl"
-            code=$?
-            events='[inputs | fromjson? | objects | .type] | any(. == "turn.completed") and all(. != "turn.failed")'
-            completed=$(jq -Rn "$events" "$RUNNER_TEMP/codex.jsonl")
-            echo "Codex exited with $code."
-            if [ "$code" = 0 ] && [ "$completed" = true ]; then
-              failure=
-            else
+            : > "$RUNNER_TEMP/codex.jsonl"
+            # Codex's sandbox is set up and checked only on GitHub's own runners (Install Codex).
+            if [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then
+              echo "::error::Codex runs only on GitHub-hosted runners, where its sandbox is set up and checked. Run this workflow on one, or add an Anthropic or OpenRouter key."
               failure=agent-failed
+            elif [ ! -f "$RUNNER_TEMP/devsync-codex-sandbox-checked" ]; then
+              echo "::error::Codex's sandbox failed its check in the Install Codex step, so Codex didn't run. See that step's log."
+              failure=agent-failed
+            else
+              # The task reaches Codex on stdin, as data. Codex gets the OpenAI key as
+              # CODEX_API_KEY only; the shell keeps the key for the check below.
+              env -u OPENAI_API_KEY codex "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/codex.jsonl"
+              code=$?
+              events='[inputs | fromjson? | objects | .type] | any(. == "turn.completed") and all(. != "turn.failed")'
+              completed=$(jq -Rn "$events" "$RUNNER_TEMP/codex.jsonl")
+              echo "Codex exited with $code."
+              if [ "$code" = 0 ] && [ "$completed" = true ]; then
+                failure=
+              else
+                failure=agent-failed
+              fi
             fi
             # The run's totals from its last turn.completed event. Codex reports no cost: it is
-            # worked out from the tokens at the prices above. Input tokens count the cached ones.
+            # worked out from the tokens at the prices above. Input tokens count the cached and the
+            # cache-written ones.
             totals='def count(k): (.[k] // 0) | if type == "number" and . > 0 then floor else 0 end;
               ([inputs | fromjson? | objects | select(.type == "turn.completed") | .usage | objects]
                 | last // {})
-              | count("cached_input_tokens") as $cached | count("output_tokens") as $output
-              | ([count("input_tokens") - $cached, 0] | max) as $fresh
-              | {inputTokens: $fresh, outputTokens: $output, cacheCreationInputTokens: 0,
+              | count("cached_input_tokens") as $cached | count("cache_write_input_tokens") as $written
+              | count("output_tokens") as $output
+              | ([count("input_tokens") - $cached - $written, 0] | max) as $fresh
+              | {inputTokens: $fresh, outputTokens: $output, cacheCreationInputTokens: $written,
                  cacheReadInputTokens: $cached,
                  costUsd: (($fresh * ($inputUsd | tonumber) + $cached * ($cachedUsd | tonumber)
-                   + $output * ($outputUsd | tonumber)) / 1000000)}'
+                   + $written * ($writeUsd | tonumber) + $output * ($outputUsd | tonumber))
+                   / 1000000)}'
             prices=(
               --arg inputUsd "$DEVSYNC_OPENAI_INPUT_USD"
               --arg cachedUsd "$DEVSYNC_OPENAI_CACHED_INPUT_USD"
+              --arg writeUsd "$DEVSYNC_OPENAI_CACHE_WRITE_USD"
               --arg outputUsd "$DEVSYNC_OPENAI_OUTPUT_USD"
             )
             usage=$(jq -cRn "\${prices[@]}" "$totals" "$RUNNER_TEMP/codex.jsonl")

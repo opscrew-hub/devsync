@@ -36,9 +36,11 @@ and their developers plan the work in DevSync, their coding agents do it, and Op
   ([docs/managed-runs.md](docs/managed-runs.md)). With an OpenRouter key, set a spending limit on
   the key and put Anthropic first in the account's provider routing, as OpenRouter recommends. A
   run's cost is Claude Code's estimate from Anthropic's prices; through OpenRouter, OpenRouter's
-  usage page has what it bills. With only an OpenAI key, Codex makes the change, and its cost is
-  worked out from its tokens at the OpenAI prices in the workflow file. Codex has no spend cap of
-  its own, so set a budget on the key's OpenAI project.
+  usage page has what it bills. With only an OpenAI key, Codex makes the change, on GitHub-hosted
+  runners only, and its cost is worked out from its tokens at the OpenAI prices in the workflow
+  file. Codex has no spend cap of its own, so set a budget on the key's OpenAI project. Its
+  sandboxed commands can read files on the runner outside the checkout, and the draft pull request
+  is pushed before anyone reviews it.
 - **Security findings.** **Fix with DevSync** on one of the dashboard's security findings opens a
   task prefilled from it, or the open task already made from it
   ([docs/findings.md](docs/findings.md)).

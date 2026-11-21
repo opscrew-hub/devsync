@@ -108,16 +108,27 @@ CLI.
   with an Anthropic or an OpenRouter key too, Claude Code runs on that one. The Claude keys run the
   same agent and models; an OpenAI key changes the agent, so a workspace that has one for other
   work keeps its Claude runs.
-- A keyless step installs `@openai/codex` at a pinned version and lets the runner create the
-  unprivileged user namespaces Codex's sandbox needs, as OpenAI's own action does.
+- Codex runs only on GitHub-hosted runners, as OpenAI's own action sets its sandbox up only
+  there. A keyless step installs `@openai/codex` at a pinned version.
+  - On a hosted runner only, the step lets the runner create the unprivileged user namespaces
+    Codex's sandbox needs; a refused setting fails the step. On another runner it changes nothing.
+  - It then checks, through `codex sandbox`, that a sandboxed command gets a `/proc` of its own.
+    Codex 0.171.0 silently keeps the runner's `/proc` when it can't mount one, and a command could
+    then read the agent step's environment. Only a passed check leaves the marker the agent step
+    needs.
+  - Without a hosted runner or that marker, the agent step doesn't start Codex. The run fails
+    `agent-failed`, and the step's log says why.
 - With only the OpenAI key, the agent step runs `codex exec --json` with the same prompt and the
   task on stdin:
   - The model is the workflow's `DEVSYNC_OPENAI_MODEL` (`gpt-6.2-sol`).
-  - It runs in the `workspace-write` sandbox: writes only in the checkout and temporary folders,
-    `.git` read-only, no network, no approvals and no web search.
+  - It runs in its sandbox with a permission profile that extends `:workspace`. It writes only in
+    the checkout and temporary folders, `.git` stays read-only, and it has no network, no
+    approvals and no web search.
+  - The profile denies reads of the step's temporary folder (`RUNNER_TEMP`) and the runner's own
+    folder (`$HOME/runners`).
   - Its commands get only core variables, never the key.
-  - It reads no `AGENTS.md`, no user config and no rules, and `--strict-config` refuses a
-    misspelled setting.
+  - It reads no `AGENTS.md`, no repository skills, no user config and no rules, and
+    `--strict-config` refuses a misspelled setting.
   - The key reaches Codex as `CODEX_API_KEY` only; Claude Code never gets the OpenAI key's
     variable.
 - A Codex run succeeds on exit 0 with a `turn.completed` event and no `turn.failed`; anything
@@ -126,16 +137,23 @@ CLI.
   limits.
 - `result.json` says `provider: openai`. `models` names the workflow's model, since Codex's
   events name none.
-- The usage comes from the last `turn.completed` event: `inputTokens` are its input tokens less
-  the cached ones, which are `cacheReadInputTokens`; `outputTokens` include reasoning; nothing is
-  cache-written.
+- The usage comes from the last `turn.completed` event:
+  - `cacheReadInputTokens` are its cached tokens and `cacheCreationInputTokens` its cache-written
+    ones.
+  - `inputTokens` are its input tokens less both, and `outputTokens` include reasoning.
 - Codex reports no cost, so the workflow works it out from those tokens at the prices next to the
-  model (`DEVSYNC_OPENAI_INPUT_USD`, `DEVSYNC_OPENAI_CACHED_INPUT_USD`,
-  `DEVSYNC_OPENAI_OUTPUT_USD`: OpenAI's standard prices on 2026-11-21, $2.00, $0.10 and $10.00 per
-  million). The run shows it as estimated from OpenAI's prices. A user who changes the model
-  changes the prices with it.
-- Unlike Claude Code, Codex's commands can read files outside the checkout. They have no network
-  and no key, so what they read can only reach the patch, which people review as a draft.
+  model:
+  - The prices are `DEVSYNC_OPENAI_INPUT_USD`, `DEVSYNC_OPENAI_CACHED_INPUT_USD`,
+    `DEVSYNC_OPENAI_CACHE_WRITE_USD` and `DEVSYNC_OPENAI_OUTPUT_USD`: OpenAI's standard prices on
+    2026-11-21, $2.00, $0.10, $2.50 and $10.00 per million.
+  - Cache writes are priced at the 30-minute rate; the 12-hour rate is $5.00.
+  - The run shows the cost as estimated from OpenAI's prices. A user who changes the model changes
+    the prices with it.
+- Unlike Claude Code, Codex's commands can read the rest of the runner outside the checkout and
+  the two denied folders. They have no network and no key, so what they read can leave only in the
+  change.
+  - But `publish` pushes the branch and opens the draft pull request before anyone reviews it.
+  - In a public repository, anything a command copied into the change is public at once.
 
 ## Not in the first version
 
@@ -180,8 +198,11 @@ time.
   for each, including the workflow text's env lines and that no other job gets either key.
 - [x] **D6, paying through OpenAI** (`packages/**`, `docs/host.md`, `docs/requirements.md`'s story
   4 and R-8, `README.md`). As "Paying through OpenAI" above: the third key, last in the order;
-  the Codex install and its step (its flags, the key as `CODEX_API_KEY` only, success and
-  `agent-failed`, the usage and the cost at the workflow's prices); `provider` `openai` (its
-  schema and checks); the failure messages naming Codex; the dashboard's provider, cost label,
-  approve dialog and setup wording; tests for each, including the workflow text's Codex lines.
-  Left to the live test: a Codex run on a hosted runner, its draft pull request and its tokens.
+  the Codex install, on hosted runners only, with its `/proc` check; its step (hosted runners
+  only and after that check, its flags and deny-read profile, the key as `CODEX_API_KEY` only,
+  success and `agent-failed`, the usage with cache writes and the cost at the workflow's prices);
+  `provider` `openai` (its schema and checks); the failure messages naming Codex; the dashboard's
+  provider, cost label, approve dialog and setup wording; tests for each, including the workflow
+  text's Codex lines and the agent step run with a fake Codex. Left to the live test: a Codex run
+  on a hosted runner, its draft pull request and its tokens, and what its commands can read
+  (research/openai.md, "To check live").

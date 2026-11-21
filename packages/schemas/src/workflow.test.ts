@@ -163,7 +163,7 @@ describe("the managed runs' workflow file", () => {
     expect(run).not.toMatch(/ANTHROPIC_\w*MODEL/);
     // Codex runs with the OpenAI key and only then; Claude Code with either of the others.
     const codex = run.indexOf('          if [ "$provider" = openai ]; then\n');
-    const claude = run.indexOf("          else\n", codex);
+    const claude = run.indexOf("\n          else\n", codex);
     expect(codex).toBeGreaterThan(said);
     expect(run.indexOf(`codex "\${flags[@]}"`)).toBeGreaterThan(codex);
     expect(run.indexOf(`codex "\${flags[@]}"`)).toBeLessThan(claude);
@@ -221,7 +221,7 @@ describe("the managed runs' workflow file", () => {
     expect(run.match(/\bclaude "\$\{flags/g)).toHaveLength(1);
     // Codex gets the OpenAI key as CODEX_API_KEY only, chosen when the other two are empty.
     expect(run).toContain(
-      `            env -u OPENAI_API_KEY codex "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/codex.jsonl"\n`,
+      `              env -u OPENAI_API_KEY codex "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/codex.jsonl"\n`,
     );
     expect(run.match(/\bcodex "\$\{flags/g)).toHaveLength(1);
     expect(run.match(/CODEX_API_KEY/g)).toHaveLength(2);
@@ -318,70 +318,114 @@ describe("the managed runs' workflow file", () => {
       'DEVSYNC_MAX_TURNS: "40"',
       'DEVSYNC_MAX_BUDGET_USD: "5.00"',
       "# With only an OpenAI key: Codex's model, and its prices in US dollars per million input,",
-      "# cached input and output tokens, from OpenAI's pricing page on 2026-11-21. Change the prices",
-      "# with the model. Codex has no turn or spend cap: set a budget on the key's OpenAI project.",
+      "# cached input, cache-written input (at the 30-minute rate) and output tokens, from OpenAI's",
+      "# pricing page on 2026-11-21. Change the prices with the model. Codex has no turn or spend",
+      "# cap: set a budget on the key's OpenAI project.",
       "DEVSYNC_OPENAI_MODEL: gpt-6.2-sol",
       'DEVSYNC_OPENAI_INPUT_USD: "2.00"',
       'DEVSYNC_OPENAI_CACHED_INPUT_USD: "0.10"',
+      'DEVSYNC_OPENAI_CACHE_WRITE_USD: "2.50"',
       'DEVSYNC_OPENAI_OUTPUT_USD: "10.00"',
     ]);
   });
 
-  it("runs a pinned Codex headless in its sandbox: checkout writes only, no network, no key for its commands", () => {
+  it("installs a pinned Codex, and on GitHub-hosted runners only enables and checks its sandbox", () => {
     const install = text(step("agent", "Install Codex"));
     const version = /npm install --global @openai\/codex@(\d+)\.(\d+)\.(\d+)\n/.exec(install);
     expect(version).not.toBeNull();
     const [major = 0, minor = 0] = (version ?? []).slice(1).map(Number);
     expect([major, minor]).toEqual([0, 171]);
-    // The sandbox's user namespaces, as OpenAI's own action enables them on hosted runners.
-    expect(install).toContain(
+    expect(install).not.toMatch(/secrets|API_KEY/);
+    // Nothing changes on a runner that isn't GitHub's: the rest sits inside this one branch.
+    const hosted = install.indexOf(
+      '          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then\n',
+    );
+    const end = install.lastIndexOf("\n          fi");
+    expect(hosted).toBeGreaterThan(install.indexOf("npm install"));
+    expect(end).toBe(install.trimEnd().length - "\n          fi".length);
+    // The sandbox's user namespaces, as OpenAI's own action enables them; a refusal fails the step.
+    const settings = install.indexOf(
       "for setting in kernel.unprivileged_userns_clone=1 kernel.apparmor_restrict_unprivileged_userns=0; do",
     );
-    expect(install).toContain('sudo -n sysctl -q -w "$setting"');
-    expect(install).not.toMatch(/secrets|API_KEY/);
+    expect(settings).toBeGreaterThan(hosted);
+    expect(install).toMatch(
+      /if \[ "\$current" != "\$\{setting#\*=\}" \] && ! sudo -n sysctl -q -w "\$setting"; then\n {16}echo "::error::Codex's sandbox needs \$setting, which this runner refused\."\n {16}exit 1\n/,
+    );
+    expect(install).not.toContain("::warning::Codex's sandbox needs");
+    // The /proc check: run through Codex's own sandbox, a process outside must not show inside,
+    // and only a passed check leaves the marker the agent step requires.
+    for (const part of [
+      "sleep 120 &",
+      "outside=$!",
+      `fresh='[ -d /proc/1 ] && [ ! -e "/proc/$1" ] && [ "$(ls /proc | grep -c "^[0-9]*$")" -le 10 ]'`,
+      'if codex sandbox -- sh -c "$fresh" probe "$outside"; then',
+      '  touch "$RUNNER_TEMP/devsync-codex-sandbox-checked"',
+      'kill "$outside" 2>/dev/null || true',
+    ]) {
+      expect(install).toContain(part);
+      expect(install.indexOf(part)).toBeGreaterThan(settings);
+      expect(install.indexOf(part)).toBeLessThan(end);
+    }
+    expect(install.match(/devsync-codex-sandbox-checked/g)).toHaveLength(1);
+  });
 
+  it("runs Codex headless only once its sandbox is checked: checkout writes only, no network, no key for its commands", () => {
     const run = text(step("agent", "Run the coding agent"));
     for (const flag of [
       "exec --json --ephemeral --strict-config",
       '--model "$DEVSYNC_OPENAI_MODEL"',
-      "--sandbox workspace-write",
-      "-c sandbox_workspace_write.network_access=false",
+      "-c default_permissions=devsync",
+      `-c 'permissions.devsync.extends=":workspace"'`,
+      `-c "permissions.devsync.filesystem={'$RUNNER_TEMP'='deny','$HOME/runners'='deny'}"`,
+      "-c permissions.devsync.network.enabled=false",
       "-c approval_policy=never",
       "-c web_search=disabled",
       "-c shell_environment_policy.inherit=core",
       "-c shell_environment_policy.ignore_default_excludes=false",
       "-c project_doc_max_bytes=0",
+      "-c skills.include_instructions=false",
       "-c history.persistence=none",
       "--ignore-user-config --ignore-rules",
     ]) {
       expect(run).toContain(flag);
     }
-    // Never outside the sandbox, never with automatic approvals, never with the network.
+    // Never outside the sandbox, never with automatic approvals, never with the network; and no
+    // --sandbox, which would set the permission profile aside.
     expect(run).not.toMatch(
-      /danger-full-access|dangerously-bypass|--yolo|--approve-for-me|--trust|--add-dir|network_access=true/,
+      /danger-full-access|dangerously-bypass|--yolo|--approve-for-me|--trust|--add-dir|--sandbox|enabled=true/,
     );
+    // Codex starts only on a GitHub-hosted runner whose sandbox passed the install step's check.
+    const hosted = run.indexOf('            if [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then\n');
+    const checked = run.indexOf(
+      '            elif [ ! -f "$RUNNER_TEMP/devsync-codex-sandbox-checked" ]; then\n',
+    );
+    const started = run.indexOf(`env -u OPENAI_API_KEY codex "\${flags[@]}"`);
+    expect(hosted).toBeGreaterThan(run.indexOf('if [ "$provider" = openai ]; then'));
+    expect(checked).toBeGreaterThan(hosted);
+    expect(started).toBeGreaterThan(checked);
+    expect(run.slice(hosted, checked)).toContain("failure=agent-failed");
+    expect(run.slice(checked, started)).toContain("failure=agent-failed");
     // It succeeds only on a clean exit with a completed turn and no failed one.
     expect(run).toContain(
       `events='[inputs | fromjson? | objects | .type] | any(. == "turn.completed") and all(. != "turn.failed")'`,
     );
     expect(run).toMatch(
-      /if \[ "\$code" = 0 \] && \[ "\$completed" = true \]; then\n {14}failure=\n {12}else\n {14}failure=agent-failed\n/,
+      /if \[ "\$code" = 0 \] && \[ "\$completed" = true \]; then\n {16}failure=\n {14}else\n {16}failure=agent-failed\n/,
     );
   });
 
-  it("reads Codex's tokens from its last turn.completed event and prices them at the workflow's prices", () => {
+  it("prices Codex's tokens at the workflow's prices, cache writes at the 30-minute rate", () => {
+    // workflow.run.test.ts runs these programs on Codex's recorded events.
     const run = text(step("agent", "Run the coding agent"));
     for (const part of [
       '[inputs | fromjson? | objects | select(.type == "turn.completed") | .usage | objects]',
-      "| last // {})",
-      '| count("cached_input_tokens") as $cached | count("output_tokens") as $output',
-      '| ([count("input_tokens") - $cached, 0] | max) as $fresh',
-      "{inputTokens: $fresh, outputTokens: $output, cacheCreationInputTokens: 0,",
-      "cacheReadInputTokens: $cached,",
-      "costUsd: (($fresh * ($inputUsd | tonumber) + $cached * ($cachedUsd | tonumber)",
-      "+ $output * ($outputUsd | tonumber)) / 1000000)}'",
+      '| count("cached_input_tokens") as $cached | count("cache_write_input_tokens") as $written',
+      '| ([count("input_tokens") - $cached - $written, 0] | max) as $fresh',
+      "{inputTokens: $fresh, outputTokens: $output, cacheCreationInputTokens: $written,",
+      "+ $written * ($writeUsd | tonumber) + $output * ($outputUsd | tonumber))",
       '--arg inputUsd "$DEVSYNC_OPENAI_INPUT_USD"',
       '--arg cachedUsd "$DEVSYNC_OPENAI_CACHED_INPUT_USD"',
+      '--arg writeUsd "$DEVSYNC_OPENAI_CACHE_WRITE_USD"',
       '--arg outputUsd "$DEVSYNC_OPENAI_OUTPUT_USD"',
       `usage=$(jq -cRn "\${prices[@]}" "$totals" "$RUNNER_TEMP/codex.jsonl")`,
       `models=$(jq -cn --arg model "$DEVSYNC_OPENAI_MODEL" '[$model]')`,
