@@ -299,7 +299,7 @@ describe("requestRun", () => {
       secret: false,
       missing: [
         "Add .github/workflows/devsync.yml from the runs section to the repository's default branch.",
-        "Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or its organization.",
+        "Add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization.",
       ],
     });
     await expect(requestRun(s.host, s.ctx("developer"), ready.id)).rejects.toMatchObject({
@@ -312,11 +312,14 @@ describe("requestRun", () => {
       code: "conflict",
       message: SETUP_STEP.secret,
     });
-    // Either key will do, in any case, or both.
+    // Any of the keys will do, in any case, or several.
     for (const secrets of [
       ["OPENROUTER_API_KEY"],
       ["openrouter_api_key", "OTHER"],
+      ["OPENAI_API_KEY"],
+      ["openai_api_key", "OTHER"],
       ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"],
+      ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"],
     ]) {
       github.repository = { workflow: true, secrets };
       expect(await runSetup(s.host, s.ctx("developer")), secrets.join()).toEqual({
@@ -728,7 +731,44 @@ describe("a workflow_run fact (devsync.github)", () => {
     expect((await getTask(s.host, s.ctx("owner"), ready.id)).pullRequestNumber).toBeNull();
   });
 
-  it("fails no-key for a run without either key, in the setup's words, with no provider", async () => {
+  it("keeps a Codex run's provider and model, and names Codex in its failure", async () => {
+    const s = setup();
+    const ready = await readyTask(s);
+    const succeeded = await startedRun(s, ready.id);
+    const codex = { provider: "openai", models: ["gpt-6.2-sol"] };
+    await complete(s, succeeded, { result: resultOf(succeeded.id, codex) });
+    const [kept] = (await listRuns(s.host, s.ctx("developer"), ready.id)).runs;
+    expect(kept).toMatchObject({
+      status: "SUCCEEDED",
+      usage: { costUsd: 0.37, models: ["gpt-6.2-sol"] },
+      provider: "openai",
+    });
+    expect(await rowOf(succeeded.id)).toMatchObject({ provider: "openai" });
+
+    const other = await readyTask(s);
+    const failed = await startedRun(s, other.id);
+    const result = resultOf(failed.id, {
+      ...codex,
+      status: "failed",
+      failure: "agent-failed",
+      pullRequestUrl: null,
+    });
+    await complete(s, failed, { result, conclusion: "success" });
+    const [ended] = (await listRuns(s.host, s.ctx("developer"), other.id)).runs;
+    expect(ended).toMatchObject({
+      failure: {
+        code: "agent-failed",
+        message:
+          "Codex stopped with an error. Open the GitHub run to see why, then ask for a new run.",
+      },
+      provider: "openai",
+    });
+    expect(failureMessage("no-changes", failed.id, "openai")).toMatch(/^Codex changed no file\./);
+    expect(failureMessage("agent-failed", failed.id, "openrouter")).toMatch(/^Claude Code /);
+    expect(failureMessage("agent-failed", failed.id)).toMatch(/^Claude Code /);
+  });
+
+  it("fails no-key for a run without any key, in the setup's words, with no provider", async () => {
     const s = setup();
     const ready = await readyTask(s);
     const started = await startedRun(s, ready.id);
@@ -756,7 +796,7 @@ describe("a workflow_run fact (devsync.github)", () => {
       failure: {
         code: "no-key",
         message:
-          "Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or its organization.",
+          "Add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization.",
       },
       provider: null,
     });
@@ -781,7 +821,7 @@ describe("a workflow_run fact (devsync.github)", () => {
       ],
       [
         "a provider DevSync doesn't know",
-        (id) => ({ result: resultOf(id, { provider: "openai" }) }),
+        (id) => ({ result: resultOf(id, { provider: "codex" }) }),
       ],
       [
         "too many changed files",

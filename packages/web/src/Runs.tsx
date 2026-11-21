@@ -1,5 +1,5 @@
 import {
-  API_KEY_SECRETS,
+  API_KEY_SECRET_NAMES,
   can,
   Id,
   RUN_TASK_CHANGED,
@@ -36,10 +36,11 @@ const STATUS: Record<RunStatus, [string, string, DevSyncIcon]> = {
 };
 
 /** Whose key a run used, as its result says. */
-const PROVIDER: Record<RunProvider, string> = { anthropic: "Anthropic", openrouter: "OpenRouter" };
-
-/** `ANTHROPIC_API_KEY or OPENROUTER_API_KEY`: the secrets a run takes its key from. */
-const KEY_SECRETS = API_KEY_SECRETS.join(" or ");
+const PROVIDER: Record<RunProvider, string> = {
+  anthropic: "Anthropic",
+  openrouter: "OpenRouter",
+  openai: "OpenAI",
+};
 
 const COUNT = new Intl.NumberFormat("en");
 const USD = new Intl.NumberFormat("en", {
@@ -285,7 +286,7 @@ function Setup({
       {data && data.missing.length === 0 && (
         <p className={`status s-good ${styles.problem}`}>
           <Icon name="check-circle" className="i-sm" />
-          The repository has the workflow and an {KEY_SECRETS} secret.
+          The repository has the workflow and an {API_KEY_SECRET_NAMES} secret.
         </p>
       )}
       {data && (
@@ -370,8 +371,9 @@ function RunFacts({ run }: { run: Run }) {
 }
 
 /**
- * What a run left: why it failed, the files it changed, its usage, its cost (Claude Code's
- * estimate), the models and whose key it used, and its links.
+ * What a run left: why it failed, the files it changed, its usage, its cost (an estimate: Claude
+ * Code's from Anthropic's prices, or with Codex the workflow's from OpenAI's), the models and whose
+ * key it used, and its links.
  */
 function RunResult({ run }: { run: Run }) {
   const { Icon } = useDevSync().ui;
@@ -392,7 +394,7 @@ function RunResult({ run }: { run: Run }) {
               <dt>Tokens</dt>
               <dd>{tokens(usage)}</dd>
               <dt>Cost</dt>
-              <dd>{`≈ ${USD.format(usage.costUsd)}, estimated from Anthropic's prices`}</dd>
+              <dd>{`≈ ${USD.format(usage.costUsd)}, estimated from ${provider === "openai" ? "OpenAI" : "Anthropic"}'s prices`}</dd>
               {(usage.models.length > 0 || provider) && (
                 <>
                   <dt>Models</dt>
@@ -536,7 +538,8 @@ function Approve({ task, run, onClose }: { task: TaskDetail; run: Run; onClose: 
       <p className="sub">
         Claude Code then works on revision {run.revision} of this task, as{" "}
         {authorName(run.requestedBy)} asked for it, in the repository's Actions, paid with its
-        ANTHROPIC_API_KEY secret or, without that, its OPENROUTER_API_KEY.
+        ANTHROPIC_API_KEY secret or, without that, its OPENROUTER_API_KEY. With only its
+        OPENAI_API_KEY, Codex works on it instead.
       </p>
       {changed ? (
         <p className={`status s-warning ${styles.problem}`}>

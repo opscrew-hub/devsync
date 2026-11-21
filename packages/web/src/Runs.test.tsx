@@ -136,7 +136,7 @@ describe("the runs section's setup", () => {
     const runs = await section();
     expect(
       within(runs).getByText(
-        "The repository has the workflow and an ANTHROPIC_API_KEY or OPENROUTER_API_KEY secret.",
+        "The repository has the workflow and an ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY secret.",
       ),
     ).toBeTruthy();
     expect(runs.querySelector("pre")).toBeNull();
@@ -425,6 +425,9 @@ describe("a run waiting for approval", () => {
     const dialog = screen.getByRole("dialog", { name: "Approve the run" });
     expect(dialog.textContent).toContain("revision 2");
     expect(dialog.textContent).toContain("Ben Okafor");
+    expect(dialog.textContent).toContain(
+      "paid with its ANTHROPIC_API_KEY secret or, without that, its OPENROUTER_API_KEY. With only its OPENAI_API_KEY, Codex works on it instead.",
+    );
     expect(
       within(dialog)
         .getAllByRole("definition")
@@ -656,10 +659,16 @@ describe("a run's state and result", () => {
     const noKey = {
       code: "no-key" as const,
       message:
-        "Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or its organization.",
+        "Add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization.",
     };
     show({
       runs: [
+        run(74, {
+          ...ended,
+          status: "SUCCEEDED",
+          usage: { ...usage, costUsd: 0.012, models: ["gpt-6.2-sol"] },
+          provider: "openai",
+        }),
         run(73, { ...ended, status: "SUCCEEDED", usage, provider: "anthropic" }),
         run(72, {
           ...ended,
@@ -672,8 +681,11 @@ describe("a run's state and result", () => {
       ],
     });
     const runs = await section();
-    const [anthropic, failed] = items(runs);
-    if (!anthropic || !failed) throw new Error("Two runs should be listed.");
+    const [openai, anthropic, failed] = items(runs);
+    if (!openai || !anthropic || !failed) throw new Error("Three runs should be listed.");
+    expect(within(openai).getByText("gpt-6.2-sol")).toBeTruthy();
+    expect(within(openai).getByText("via OpenAI")).toBeTruthy();
+    expect(within(openai).getByText("≈ $0.012, estimated from OpenAI's prices")).toBeTruthy();
     expect(within(anthropic).getByText("via Anthropic")).toBeTruthy();
     expect(within(anthropic).getByText("≈ $0.05, estimated from Anthropic's prices")).toBeTruthy();
     expect(within(failed).getByText(noKey.message)).toBeTruthy();

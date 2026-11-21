@@ -178,11 +178,13 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
   (who approved, rejected or cancelled it, or null), `createdAt`, `decidedAt`, `startedAt`,
   `finishedAt`, `failure` (`{ code, message }`: why it failed and what to do, or null),
   `changedFiles`, `usage` (`inputTokens`, `outputTokens`, `cacheCreationInputTokens`,
-  `cacheReadInputTokens`, `costUsd` (Claude Code's estimate), `models`, or null), `provider`
-  (`anthropic` or `openrouter`: whose key it used, or null), `draftPullRequestUrl` and
+  `cacheReadInputTokens`, `costUsd` (an estimate: Claude Code's, or with Codex the workflow's from
+  OpenAI's prices), `models`, or null), `provider` (`anthropic`, `openrouter` or `openai`: whose
+  key it used, or null), `draftPullRequestUrl` and
   `githubRunUrl` (`https://github.com/<owner>/<repo>/actions/runs/<id>`, once GitHub started it).
 - `RunSetup`: `workflow` (`.github/workflows/devsync.yml` is on the default branch), `secret`
-  (runs can read the `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` Actions secret), `missing` (what to
+  (runs can read the `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` Actions secret),
+  `missing` (what to
   add, in plain English; empty when nothing is).
 
 ### Task statuses
@@ -311,7 +313,8 @@ names (the host's sprite must have them, Phosphor regular): `kanban`, `plus`, `r
 
 A member asks for a run on a Ready task; an Owner, Admin or Approver approves it; the host starts
 DevSync's workflow in the project's own GitHub Actions, which runs Claude Code on an Anthropic or
-OpenRouter key of the workspace's own and opens a draft pull request itself. The design is
+OpenRouter key of the workspace's own (or Codex on an OpenAI key) and opens a draft pull request
+itself. The design is
 [managed-runs.md](managed-runs.md); this is what DevSync asks of the host.
 
 `serverModule` declares `workflows: ["devsync.yml"]` (with `github: true`), so the host lets DevSync
@@ -321,7 +324,7 @@ throw GitHub's errors:
 
 | Call | When | What DevSync does with the answer |
 |---|---|---|
-| `setup(projectId, "devsync.yml")` | `GET /runs/setup`, and before a run is asked for | `workflow`, and whether `secrets` holds `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`, give `RunSetup`; asking for a run while either is missing answers 409 with `missing`'s words |
+| `setup(projectId, "devsync.yml")` | `GET /runs/setup`, and before a run is asked for | `workflow`, and whether `secrets` holds `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, give `RunSetup`; asking for a run while either is missing answers 409 with `missing`'s words |
 | `dispatch(projectId, "devsync.yml", { run_id, task })` | `devsync.runs`, at most once per approved run | `run_id` is the run's id; `task` is `{ "title", "description", "acceptanceCriteria" }` of the requested revision as JSON, at most 60,000 characters (a longer task is refused when the run is asked for). The run is then `RUNNING` with `githubRunId`; a failure ends it `FAILED` with that failure as its reason |
 | `artifact(projectId, githubRunId, "devsync-result")` | a `workflow_run` fact, and the six-hour sweep | `result.json` (schema version 1, `RunResult` in `@devsync/schemas`) is checked (the run's own id, a pull request of the project's own repository, at most 1,000 changed paths of at most 400 characters with no NUL or lone surrogate, every figure non-negative, a known `provider`, which a succeeded run must have) and kept; a result that fails a check ends the run `bad-result`, none `no-result`. A failure fails the fact's job, so the host retries it |
 | `deleteArtifact(projectId, githubRunId, name)` | once the run has ended | both `devsync-result` and `devsync-patch`; a failure is logged, and GitHub removes them when they expire |

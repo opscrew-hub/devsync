@@ -9,6 +9,7 @@
  * timeline (an outbox event) and audited, in its transaction. Every query filters by the project.
  */
 import {
+  API_KEY_SECRET_NAMES,
   API_KEY_SECRETS,
   can,
   checkRunResult,
@@ -81,7 +82,7 @@ const RESULT_MAX_BYTES = 1024 * 1024;
 /** What the setup asks the user to add, word for word in the runs section and in a refusal. */
 export const SETUP_STEP = {
   workflow: `Add ${WORKFLOW_PATH} from the runs section to the repository's default branch.`,
-  secret: `Add the ${API_KEY_SECRETS.join(" or ")} Actions secret to the repository or its organization.`,
+  secret: `Add the ${API_KEY_SECRET_NAMES} Actions secret to the repository or its organization.`,
 } as const;
 
 const REFUSED = {
@@ -120,17 +121,23 @@ const SETUP_REFUSAL: Record<GithubFailure, [ErrorCode, string]> = {
   ],
 };
 
-/** A failed run's reason in plain English, saying what to do next. */
-export function failureMessage(failure: RunFailure, runId: string): string {
+/**
+ * A failed run's reason in plain English, saying what to do next. `provider` names the agent: Codex
+ * with an OpenAI key, else Claude Code (which alone has the workflow's budget and turn limit).
+ */
+export function failureMessage(
+  failure: RunFailure,
+  runId: string,
+  provider: RunProvider | null = null,
+): string {
   const branch = `devsync/${runId}`;
+  const agent = provider === "openai" ? "Codex" : "Claude Code";
   const messages: Record<RunFailure, string> = {
     "no-key": SETUP_STEP.secret,
-    "agent-failed":
-      "Claude Code stopped with an error. Open the GitHub run to see why, then ask for a new run.",
+    "agent-failed": `${agent} stopped with an error. Open the GitHub run to see why, then ask for a new run.`,
     budget: `Claude Code reached the workflow's budget before it finished. Raise --max-budget-usd in ${WORKFLOW_PATH}, or narrow the task, then ask for a new run.`,
     turns: `Claude Code reached the workflow's turn limit before it finished. Raise --max-turns in ${WORKFLOW_PATH}, or narrow the task, then ask for a new run.`,
-    "no-changes":
-      "Claude Code changed no file. Make the task's description or acceptance criteria clearer, then ask for a new run.",
+    "no-changes": `${agent} changed no file. Make the task's description or acceptance criteria clearer, then ask for a new run.`,
     "patch-did-not-apply":
       "The change didn't apply to the default branch, which moved during the run. Ask for a new run.",
     "patch-touches-workflows":
@@ -175,7 +182,10 @@ function toRun(row: RunRow, names: Map<string, string>, fullName: string): Run {
     startedAt: row.startedAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,
     failure: failure.success
-      ? { code: failure.data, message: failureMessage(failure.data, row.id) }
+      ? {
+          code: failure.data,
+          message: failureMessage(failure.data, row.id, provider.success ? provider.data : null),
+        }
       : null,
     changedFiles: changedFiles.success ? changedFiles.data : null,
     usage: usage.success ? usage.data : null,
@@ -338,7 +348,7 @@ async function recordEnd(
       message:
         ending.failure === null
           ? `Managed run succeeded: draft pull request #${pullRequestNumber}`
-          : `Managed run failed: ${failureMessage(ending.failure, row.id)}`,
+          : `Managed run failed: ${failureMessage(ending.failure, row.id, result?.provider)}`,
       actor: null,
       detail: {
         status: ending.status,
@@ -399,7 +409,8 @@ export async function listRuns(
 
 /**
  * `GET /runs/setup` (read): whether the repository has `devsync.yml` on its default branch and an
- * `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` secret its runs can read, and what to add.
+ * `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` secret its runs can read, and what
+ * to add.
  */
 export async function runSetup(host: DevSyncHost, ctx: ProjectContext): Promise<RunSetup> {
   const answer = await host.github.setup(ctx.project.projectId, WORKFLOW_FILE);

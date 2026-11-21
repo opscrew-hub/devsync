@@ -164,7 +164,7 @@ export const SETUP_WORDS = {
   workflow:
     "Add .github/workflows/devsync.yml from the runs section to the repository's default branch.",
   secret:
-    "Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or its organization.",
+    "Add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization.",
 } as const;
 
 export const setupComplete: RunSetup = { workflow: true, secret: true, missing: [] };

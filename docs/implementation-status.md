@@ -1,6 +1,6 @@
 # Implementation status
 
-As of 2026-11-15. What DevSync must do is in [requirements.md](requirements.md); its contract with
+As of 2026-11-21. What DevSync must do is in [requirements.md](requirements.md); its contract with
 OpsCrew's dashboard is in [host.md](host.md).
 
 ## Done
@@ -39,10 +39,12 @@ their findings fixed.
   [research/managed-runs.md](research/managed-runs.md)): asking, approving the exact text,
   rejecting and cancelling; one dispatch per run, never repeated; the result read from the run's
   artifact through the dashboard's GitHub App and checked; the draft pull request linked; the
-  six-hour sweep; the workflow file the user adds (the `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`
-  key only in the agent's job, which has no write token; a change holding either key never
-  published); the task's runs section. Verified
-  through the dashboard's real host with a fake GitHub, end to end.
+  six-hour sweep; the workflow file the user adds (the `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`
+  or `OPENAI_API_KEY` key only in the agent's job, which has no write token; a change holding any
+  key never published); the task's runs section. Verified through the dashboard's real host with
+  a fake GitHub, end to end. With only an OpenAI key the run uses Codex in its sandbox, its cost
+  worked out from its tokens at OpenAI's prices ([research/openai.md](research/openai.md)):
+  checked locally against a fake OpenAI API, not yet live.
 - **Fixing a security finding** ([findings.md](findings.md)): `host.finding` and the manifest's
   `findingAction`; `GET /findings` with the open task already linked to the finding (the same
   fingerprint, or the same rule and file); the task prefilled from the finding within DevSync's
@@ -59,9 +61,10 @@ updates over SSE (the dashboard polls), Redis, and the dedicated Codex and Claud
 1. **A live test** on a real project (under way): Claude Code and Codex connected
    over MCP, and one managed run on a private test repository (what the research left to check
    live: the CLI's flags together, the reads it refuses, GitHub's answer when pull requests from
-   Actions are off).
+   Actions are off), and one with only an OpenAI key (Codex's sandbox on a hosted runner, its
+   tokens against the OpenAI project's usage).
 
 ## Later
 
-More models for managed runs; task dependencies, labels and priorities; status and assignment
+A model chosen per managed run; task dependencies, labels and priorities; status and assignment
 events in the timeline; check runs on linked pull requests.

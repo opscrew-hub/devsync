@@ -70,7 +70,10 @@ const TokenUsage = z.object({
   outputTokens: Tokens,
   cacheCreationInputTokens: Tokens,
   cacheReadInputTokens: Tokens,
-  /** Claude Code's client-side estimate of the run's cost, in US dollars. */
+  /**
+   * The run's cost in US dollars, an estimate: Claude Code's own, from Anthropic's prices; with
+   * Codex, the workflow's, from its tokens at OpenAI's prices.
+   */
   costUsd: z.number().nonnegative(),
 });
 
@@ -80,9 +83,10 @@ export type RunUsage = z.infer<typeof RunUsage>;
 
 /**
  * Whose key a run used: the `ANTHROPIC_API_KEY` secret's, or the `OPENROUTER_API_KEY` secret's
- * through OpenRouter. Its cost is Claude Code's estimate from Anthropic's prices either way.
+ * through OpenRouter, both with Claude Code and its estimate from Anthropic's prices; or the
+ * `OPENAI_API_KEY` secret's, with Codex, priced by the workflow at OpenAI's prices.
  */
-export const RunProvider = z.enum(["anthropic", "openrouter"]);
+export const RunProvider = z.enum(["anthropic", "openrouter", "openai"]);
 export type RunProvider = z.infer<typeof RunProvider>;
 
 /** A run, as `GET /tasks/:taskId/runs` and every change to a run answer it. */
@@ -121,8 +125,8 @@ export const RunSetup = z.object({
   /** `.github/workflows/devsync.yml` is on the repository's default branch. */
   workflow: z.boolean(),
   /**
-   * Runs can read the `ANTHROPIC_API_KEY` or the `OPENROUTER_API_KEY` Actions secret (the
-   * repository's or its organization's).
+   * Runs can read the `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` Actions
+   * secret (the repository's or its organization's).
    */
   secret: z.boolean(),
   /** What to add before asking for a run, each in plain English; empty when nothing is missing. */

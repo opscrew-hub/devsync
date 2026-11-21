@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  API_KEY_SECRET_NAMES,
   API_KEY_SECRETS,
   PATCH_ARTIFACT,
   RESULT_ARTIFACT,
@@ -108,19 +109,22 @@ describe("the managed runs' workflow file", () => {
     expect(job("report")).toContain("    permissions: {}");
   });
 
-  it("names the two secrets a run takes its key from, Anthropic's first", () => {
-    expect(API_KEY_SECRETS).toEqual(["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
+  it("names the three secrets a run takes its key from, in the order it picks them", () => {
+    expect(API_KEY_SECRETS).toEqual(["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"]);
+    expect(API_KEY_SECRET_NAMES).toBe("ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY");
   });
 
-  it("gives either key only to the step that runs Claude Code, through its env", () => {
-    const run = step("agent", "Run Claude Code");
+  it("gives every key only to the step that runs the coding agent, through its env", () => {
+    const run = step("agent", "Run the coding agent");
     expect(under(run, /^ {8}env:$/)).toEqual([
       `          ANTHROPIC_API_KEY: ${expression("secrets.ANTHROPIC_API_KEY")}`,
       `          OPENROUTER_API_KEY: ${expression("secrets.OPENROUTER_API_KEY")}`,
+      `          OPENAI_API_KEY: ${expression("secrets.OPENAI_API_KEY")}`,
     ]);
-    expect(WORKFLOW.match(/secrets\./g)).toHaveLength(2);
-    // The keys' names, and what carries a key to Claude Code: in that step and no other.
-    const keys = /ANTHROPIC_API_KEY|OPENROUTER_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_BASE_URL/g;
+    expect(WORKFLOW.match(/secrets\./g)).toHaveLength(3);
+    // The keys' names, and what carries a key to Claude Code or Codex: in that step and no other.
+    const keys =
+      /ANTHROPIC_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CODEX_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_BASE_URL/g;
     const mentions = (source: string) => source.match(keys)?.length ?? 0;
     expect(mentions(text(run))).toBeGreaterThan(0);
     expect(mentions(WORKFLOW)).toBe(mentions(text(run)));
@@ -128,10 +132,11 @@ describe("the managed runs' workflow file", () => {
       expect(text(job(name)), name).not.toMatch(/secrets|API_KEY|AUTH_TOKEN/);
     }
     expect(text(run)).toContain(`claude "\${flags[@]}"`);
+    expect(text(run)).toContain(`codex "\${flags[@]}"`);
   });
 
-  it("runs on the Anthropic key, else on the OpenRouter key through OpenRouter", () => {
-    const run = text(step("agent", "Run Claude Code"));
+  it("runs on the Anthropic key, else on the OpenRouter key through OpenRouter, else Codex on the OpenAI key", () => {
+    const run = text(step("agent", "Run the coding agent"));
     const choice = [
       'if [ -n "$ANTHROPIC_API_KEY" ]; then',
       "  provider=anthropic",
@@ -140,6 +145,9 @@ describe("the managed runs' workflow file", () => {
       "  export ANTHROPIC_BASE_URL=https://openrouter.ai/api",
       '  export ANTHROPIC_AUTH_TOKEN="$OPENROUTER_API_KEY"',
       "  export ANTHROPIC_API_KEY=",
+      'elif [ -n "$OPENAI_API_KEY" ]; then',
+      "  provider=openai",
+      '  export CODEX_API_KEY="$OPENAI_API_KEY"',
       "else",
     ]
       .map((line) => `          ${line}`)
@@ -148,20 +156,27 @@ describe("the managed runs' workflow file", () => {
     expect(chosen).toBeGreaterThan(run.indexOf("set +e"));
     const said = run.indexOf('echo "provider=$provider" >> "$GITHUB_OUTPUT"');
     expect(said).toBeGreaterThan(chosen);
+    expect(said).toBeLessThan(run.indexOf(`codex "\${flags[@]}"`));
     expect(said).toBeLessThan(run.indexOf(`claude "\${flags[@]}"`));
-    // The gateway is set in that branch only; the models stay the workflow's own.
+    // The gateway is set in OpenRouter's branch only; the models stay the workflow's own.
     expect(run.match(/ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN/g)).toHaveLength(2);
     expect(run).not.toMatch(/ANTHROPIC_\w*MODEL/);
-    expect(job("agent")).toContain(
-      `      provider: ${expression("steps.claude.outputs.provider")}`,
-    );
+    // Codex runs with the OpenAI key and only then; Claude Code with either of the others.
+    const codex = run.indexOf('          if [ "$provider" = openai ]; then\n');
+    const claude = run.indexOf("          else\n", codex);
+    expect(codex).toBeGreaterThan(said);
+    expect(run.indexOf(`codex "\${flags[@]}"`)).toBeGreaterThan(codex);
+    expect(run.indexOf(`codex "\${flags[@]}"`)).toBeLessThan(claude);
+    expect(run.indexOf(`claude "\${flags[@]}"`)).toBeGreaterThan(claude);
+    expect(job("agent")).toContain(`      provider: ${expression("steps.agent.outputs.provider")}`);
+    expect(WORKFLOW).not.toContain("steps.claude.");
   });
 
-  it("fails no-key with neither key, before Claude Code runs", () => {
-    const run = text(step("agent", "Run Claude Code"));
+  it("fails no-key with no key, before an agent runs", () => {
+    const run = text(step("agent", "Run the coding agent"));
     const missing = [
       "else",
-      '  echo "::error::Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or its organization."',
+      '  echo "::error::Add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization."',
       '  echo "failure=no-key" >> "$GITHUB_OUTPUT"',
       "  exit 0",
       "fi",
@@ -169,17 +184,19 @@ describe("the managed runs' workflow file", () => {
       .map((line) => `          ${line}`)
       .join("\n");
     const at = run.indexOf(missing);
-    expect(at).toBeGreaterThan(run.indexOf('elif [ -n "$OPENROUTER_API_KEY" ]; then'));
+    expect(at).toBeGreaterThan(run.indexOf('elif [ -n "$OPENAI_API_KEY" ]; then'));
+    expect(at).toBeLessThan(run.indexOf(`codex "\${flags[@]}"`));
     expect(at).toBeLessThan(run.indexOf(`claude "\${flags[@]}"`));
     // The patch is built only without a failure, so a run without a key publishes nothing.
     expect(step("agent", "Build the patch")).toContain(
-      "        if: steps.claude.outputs.failure == ''",
+      "        if: steps.agent.outputs.failure == ''",
     );
   });
 
   it("never prints a key, nor traces the script that holds them", () => {
-    const run = text(step("agent", "Run Claude Code"));
-    const key = /\$\{?(ANTHROPIC_API_KEY|OPENROUTER_API_KEY|ANTHROPIC_AUTH_TOKEN|!key)\b/;
+    const run = text(step("agent", "Run the coding agent"));
+    const key =
+      /\$\{?(ANTHROPIC_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CODEX_API_KEY|ANTHROPIC_AUTH_TOKEN|!key)\b/;
     for (const script of scripts()) {
       for (const line of script.split("\n").filter((l) => /\b(echo|printf)\b/.test(l))) {
         expect(line).not.toMatch(key);
@@ -189,32 +206,40 @@ describe("the managed runs' workflow file", () => {
     // A key's value is read only where the run chooses, hands over and checks it.
     expect(run.match(/\$ANTHROPIC_API_KEY/g)).toHaveLength(1);
     expect(run.match(/\$OPENROUTER_API_KEY/g)).toHaveLength(2);
+    expect(run.match(/\$OPENAI_API_KEY/g)).toHaveLength(2);
+    expect(run).not.toMatch(/\$\{?CODEX_API_KEY/);
     expect(run.match(/\$\{!key\}/g)).toHaveLength(1);
   });
 
-  it("starts Claude Code without the OpenRouter key's own variable, the shell keeping both keys", () => {
-    const run = text(step("agent", "Run Claude Code"));
+  it("starts each agent with only its own key's variable, the shell keeping every key", () => {
+    const run = text(step("agent", "Run the coding agent"));
     // Through OpenRouter the key reaches Claude Code only as ANTHROPIC_AUTH_TOKEN; with the
-    // Anthropic key, Claude Code never sees the OpenRouter key.
+    // Anthropic key, Claude Code never sees the OpenRouter or the OpenAI key.
     expect(run).toContain(
-      `          env -u OPENROUTER_API_KEY claude "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/claude.json"\n`,
+      `            env -u OPENROUTER_API_KEY -u OPENAI_API_KEY claude "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/claude.json"\n`,
     );
     expect(run.match(/\bclaude "\$\{flags/g)).toHaveLength(1);
+    // Codex gets the OpenAI key as CODEX_API_KEY only, chosen when the other two are empty.
+    expect(run).toContain(
+      `            env -u OPENAI_API_KEY codex "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/codex.jsonl"\n`,
+    );
+    expect(run.match(/\bcodex "\$\{flags/g)).toHaveLength(1);
+    expect(run.match(/CODEX_API_KEY/g)).toHaveLength(2);
     // The shell drops and changes no key the check reads: the Anthropic key is emptied only
     // through OpenRouter, which is chosen only when that key is empty already.
-    expect(run).not.toMatch(/\bunset\b|export -n|OPENROUTER_API_KEY=/);
+    expect(run).not.toMatch(/\bunset\b|export -n|OPENROUTER_API_KEY=|OPENAI_API_KEY=/);
     const emptied = run.indexOf("export ANTHROPIC_API_KEY=");
     expect(run.match(/ANTHROPIC_API_KEY=/g)).toHaveLength(1);
     expect(emptied).toBeGreaterThan(run.indexOf('elif [ -n "$OPENROUTER_API_KEY" ]; then'));
-    expect(emptied).toBeLessThan(run.indexOf("          else\n"));
-    expect(run.indexOf("for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY; do")).toBeGreaterThan(
-      run.indexOf("env -u OPENROUTER_API_KEY claude"),
-    );
+    expect(emptied).toBeLessThan(run.indexOf('elif [ -n "$OPENAI_API_KEY" ]; then'));
+    const loop = run.indexOf("for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY; do");
+    expect(loop).toBeGreaterThan(run.indexOf("env -u OPENROUTER_API_KEY -u OPENAI_API_KEY claude"));
+    expect(loop).toBeGreaterThan(run.indexOf("env -u OPENAI_API_KEY codex"));
   });
 
-  it("refuses a change that holds either key, both when both are set, never putting one in argv", () => {
-    const run = text(step("agent", "Run Claude Code"));
-    const loop = run.indexOf("for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY; do");
+  it("refuses a change that holds any key, every one that is set, never putting one in argv", () => {
+    const run = text(step("agent", "Run the coding agent"));
+    const loop = run.indexOf("for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY; do");
     const guard = run.indexOf(`if [ -z "$failure" ] && [ -n "\${!key}" ]; then`);
     const files = run.indexOf('grep -rqF --exclude-dir=.git -f <(printenv "$key") .');
     const names = run.indexOf(
@@ -246,7 +271,7 @@ describe("the managed runs' workflow file", () => {
 
   it("hands the inputs to scripts only through env", () => {
     const all = scripts();
-    expect(all).toHaveLength(6);
+    expect(all).toHaveLength(7);
     for (const script of all) expect(script).not.toContain("${{");
     const uses = lines.filter((line) => line.includes("inputs."));
     expect(uses.length).toBeGreaterThan(0);
@@ -265,7 +290,7 @@ describe("the managed runs' workflow file", () => {
     expect(major).toBe(2);
     expect(minor * 1000 + patch).toBeGreaterThanOrEqual(1259);
 
-    const run = text(step("agent", "Run Claude Code"));
+    const run = text(step("agent", "Run the coding agent"));
     for (const flag of [
       "--bare -p --output-format json",
       '--model "$DEVSYNC_MODEL"',
@@ -292,7 +317,82 @@ describe("the managed runs' workflow file", () => {
       "DEVSYNC_MODEL: sonnet",
       'DEVSYNC_MAX_TURNS: "40"',
       'DEVSYNC_MAX_BUDGET_USD: "5.00"',
+      "# With only an OpenAI key: Codex's model, and its prices in US dollars per million input,",
+      "# cached input and output tokens, from OpenAI's pricing page on 2026-11-21. Change the prices",
+      "# with the model. Codex has no turn or spend cap: set a budget on the key's OpenAI project.",
+      "DEVSYNC_OPENAI_MODEL: gpt-6.2-sol",
+      'DEVSYNC_OPENAI_INPUT_USD: "2.00"',
+      'DEVSYNC_OPENAI_CACHED_INPUT_USD: "0.10"',
+      'DEVSYNC_OPENAI_OUTPUT_USD: "10.00"',
     ]);
+  });
+
+  it("runs a pinned Codex headless in its sandbox: checkout writes only, no network, no key for its commands", () => {
+    const install = text(step("agent", "Install Codex"));
+    const version = /npm install --global @openai\/codex@(\d+)\.(\d+)\.(\d+)\n/.exec(install);
+    expect(version).not.toBeNull();
+    const [major = 0, minor = 0] = (version ?? []).slice(1).map(Number);
+    expect([major, minor]).toEqual([0, 171]);
+    // The sandbox's user namespaces, as OpenAI's own action enables them on hosted runners.
+    expect(install).toContain(
+      "for setting in kernel.unprivileged_userns_clone=1 kernel.apparmor_restrict_unprivileged_userns=0; do",
+    );
+    expect(install).toContain('sudo -n sysctl -q -w "$setting"');
+    expect(install).not.toMatch(/secrets|API_KEY/);
+
+    const run = text(step("agent", "Run the coding agent"));
+    for (const flag of [
+      "exec --json --ephemeral --strict-config",
+      '--model "$DEVSYNC_OPENAI_MODEL"',
+      "--sandbox workspace-write",
+      "-c sandbox_workspace_write.network_access=false",
+      "-c approval_policy=never",
+      "-c web_search=disabled",
+      "-c shell_environment_policy.inherit=core",
+      "-c shell_environment_policy.ignore_default_excludes=false",
+      "-c project_doc_max_bytes=0",
+      "-c history.persistence=none",
+      "--ignore-user-config --ignore-rules",
+    ]) {
+      expect(run).toContain(flag);
+    }
+    // Never outside the sandbox, never with automatic approvals, never with the network.
+    expect(run).not.toMatch(
+      /danger-full-access|dangerously-bypass|--yolo|--approve-for-me|--trust|--add-dir|network_access=true/,
+    );
+    // It succeeds only on a clean exit with a completed turn and no failed one.
+    expect(run).toContain(
+      `events='[inputs | fromjson? | objects | .type] | any(. == "turn.completed") and all(. != "turn.failed")'`,
+    );
+    expect(run).toMatch(
+      /if \[ "\$code" = 0 \] && \[ "\$completed" = true \]; then\n {14}failure=\n {12}else\n {14}failure=agent-failed\n/,
+    );
+  });
+
+  it("reads Codex's tokens from its last turn.completed event and prices them at the workflow's prices", () => {
+    const run = text(step("agent", "Run the coding agent"));
+    for (const part of [
+      '[inputs | fromjson? | objects | select(.type == "turn.completed") | .usage | objects]',
+      "| last // {})",
+      '| count("cached_input_tokens") as $cached | count("output_tokens") as $output',
+      '| ([count("input_tokens") - $cached, 0] | max) as $fresh',
+      "{inputTokens: $fresh, outputTokens: $output, cacheCreationInputTokens: 0,",
+      "cacheReadInputTokens: $cached,",
+      "costUsd: (($fresh * ($inputUsd | tonumber) + $cached * ($cachedUsd | tonumber)",
+      "+ $output * ($outputUsd | tonumber)) / 1000000)}'",
+      '--arg inputUsd "$DEVSYNC_OPENAI_INPUT_USD"',
+      '--arg cachedUsd "$DEVSYNC_OPENAI_CACHED_INPUT_USD"',
+      '--arg outputUsd "$DEVSYNC_OPENAI_OUTPUT_USD"',
+      `usage=$(jq -cRn "\${prices[@]}" "$totals" "$RUNNER_TEMP/codex.jsonl")`,
+      `models=$(jq -cn --arg model "$DEVSYNC_OPENAI_MODEL" '[$model]')`,
+    ]) {
+      expect(run).toContain(part);
+    }
+    // Both agents' usage and models leave the step the same way.
+    expect(run).toContain('echo "usage=$usage" >> "$GITHUB_OUTPUT"');
+    expect(run).toContain('echo "models=$models" >> "$GITHUB_OUTPUT"');
+    expect(run.match(/\busage=\$\(/g)).toHaveLength(2);
+    expect(run.match(/\bmodels=\$\(/g)).toHaveLength(2);
   });
 
   it("hands the change over as one patch artifact and leaves the result in another", () => {
@@ -344,8 +444,8 @@ describe("the managed runs' workflow file", () => {
       expect(write).toContain(field);
     }
     expect(write).toContain(`PROVIDER: ${expression("needs.agent.outputs.provider")}`);
-    expect(text(step("agent", "Run Claude Code"))).toMatch(
-      /error_max_budget_usd \]; then\n {12}failure=budget\n.*error_max_turns \]; then\n {12}failure=turns/,
+    expect(text(step("agent", "Run the coding agent"))).toMatch(
+      /error_max_budget_usd \]; then\n {14}failure=budget\n.*error_max_turns \]; then\n {14}failure=turns/,
     );
     const written = [...WORKFLOW.matchAll(/(?:failure=|fail )([a-z][a-z-]*)/g)].map((m) => m[1]);
     expect(new Set(written)).toEqual(new Set(FAILURES));

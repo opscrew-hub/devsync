@@ -57,6 +57,8 @@ describe("checkRunResult", () => {
       ok: true,
       result: { provider: "openrouter" },
     });
+    const codex = { provider: "openai", models: ["gpt-6.2-sol"] };
+    expect(check(codex)).toMatchObject({ ok: true, result: codex });
     const noKey = { status: "failed", failure: "no-key", provider: null, pullRequestUrl: null };
     expect(check(noKey)).toMatchObject({
       ok: true,
@@ -68,7 +70,8 @@ describe("checkRunResult", () => {
   it("refuses an unknown or missing provider, and a succeeded run without one", () => {
     const check = (fields: Record<string, unknown>) =>
       checkRunResult(result(fields), { runId, fullName }).ok;
-    expect(check({ provider: "openai" })).toBe(false);
+    expect(check({ provider: "codex" })).toBe(false);
+    expect(check({ provider: "OpenAI" })).toBe(false);
     expect(check({ provider: "Anthropic" })).toBe(false);
     expect(check({ provider: null })).toBe(false);
     const { provider: _, ...withoutProvider } = result();
@@ -224,7 +227,8 @@ describe("Run and RunSetup", () => {
     expect(Run.parse(run)).toEqual(run);
     expect(Run.parse({ ...run, provider: null }).provider).toBeNull();
     expect(Run.safeParse({ ...run, status: "DONE" }).success).toBe(false);
-    expect(Run.safeParse({ ...run, provider: "openai" }).success).toBe(false);
+    expect(Run.parse({ ...run, provider: "openai" }).provider).toBe("openai");
+    expect(Run.safeParse({ ...run, provider: "codex" }).success).toBe(false);
     expect(RunSetup.parse({ workflow: true, secret: false, missing: ["Add it."] })).toEqual({
       workflow: true,
       secret: false,

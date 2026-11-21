@@ -1,8 +1,10 @@
 # Managed runs
 
-How DevSync runs Claude Code on a task in the project's own GitHub Actions (story 4, R-8). The
-research behind it is in [research/managed-runs.md](research/managed-runs.md); the host's side is
-`ModuleHost.github` (see [host.md](host.md), "Managed runs").
+How DevSync runs a coding agent on a task in the project's own GitHub Actions (story 4, R-8):
+Claude Code, or Codex with an OpenAI key. The research behind it is in
+[research/managed-runs.md](research/managed-runs.md), [research/openrouter.md](research/openrouter.md)
+and [research/openai.md](research/openai.md); the host's side is `ModuleHost.github` (see
+[host.md](host.md), "Managed runs").
 
 ## The flow
 
@@ -17,9 +19,10 @@ research behind it is in [research/managed-runs.md](research/managed-runs.md); t
    requested revision's title, description and acceptance criteria as JSON). The run is then
    `RUNNING`, with GitHub's run id. A refusal ends it `FAILED` with what to do.
 4. The workflow (the file the user adds, `WORKFLOW_FILE` in `@devsync/schemas`) runs three jobs: an
-   `agent` job with Contents read only, the only one given a key (`ANTHROPIC_API_KEY` or
-   `OPENROUTER_API_KEY`), which runs Claude Code headless with file tools only and uploads the
-   change as a patch; a `publish` job with
+   `agent` job with Contents read only, the only one given a key (`ANTHROPIC_API_KEY`,
+   `OPENROUTER_API_KEY` or `OPENAI_API_KEY`), which runs Claude Code headless with file tools
+   only (or Codex in its sandbox, with only the OpenAI key) and uploads the change as a patch; a
+   `publish` job with
    Contents and Pull requests write and no key, which applies the patch (refusing one that touches
    `.github/`), pushes `devsync/<run id>` and opens a draft pull request; and a `report` job, always
    run, which uploads the `devsync-result` artifact.
@@ -56,21 +59,22 @@ repository's Actions runs can read the inputs.
 
 DevSync accepts it only when `runId` is the run's, `pullRequestUrl` is a pull request of the
 project's own repository, `changedFiles` has at most 1,000 paths of at most 400 characters each,
-every figure is a non-negative number, and `provider` is `anthropic` or `openrouter` (null only on
-a failed run); otherwise the run fails `bad-result`. `failure` is one of `no-key`,
+every figure is a non-negative number, and `provider` is `anthropic`, `openrouter` or `openai`
+(null only on a failed run); otherwise the run fails `bad-result`. `failure` is one of `no-key`,
 `agent-failed`, `budget`, `turns`, `no-changes`, `patch-did-not-apply`,
 `patch-touches-workflows`, `push-failed`, `pull-request-not-allowed`, each shown with what to do
 (`pull-request-not-allowed`: "Turn on Settings > Actions > General > Allow GitHub Actions to create
 and approve pull requests, or open the pull request from the `devsync/<run id>` branch").
 
-The model, turn cap and budget cap are in the workflow file, which the user may edit.
+The models, turn cap and budget cap are in the workflow file, which the user may edit: Claude
+Code's model, turn cap and budget cap, and Codex's model with its prices.
 
 ## Setup
 
 The task panel's runs section asks the host's `github.setup` for `devsync.yml` and the secrets'
 names, and shows what is missing: the workflow file (shown in full, to copy), a key (the
-`ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` secret, repository or organization), and the
-pull-request setting. Asking for a
+`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` secret, repository or
+organization), and the pull-request setting. Asking for a
 run while the file or the secret is missing answers 409 with the same words.
 
 ## Paying through OpenRouter
@@ -80,21 +84,62 @@ A run can use an OpenRouter API key instead of an Anthropic one (research:
 
 - The user adds `OPENROUTER_API_KEY` as an Actions secret, repository or organization, instead of
   `ANTHROPIC_API_KEY`. With both, the Anthropic key is used.
-- The `agent` job gets both secrets. Without an Anthropic key, it runs Claude Code with
+- The `agent` job gets the secrets. Without an Anthropic key, it runs Claude Code with
   `ANTHROPIC_BASE_URL=https://openrouter.ai/api`, `ANTHROPIC_AUTH_TOKEN` set to the OpenRouter
-  key and `ANTHROPIC_API_KEY` empty; the models stay Claude's. With neither, the run fails
-  `no-key`: "Add the ANTHROPIC_API_KEY or OPENROUTER_API_KEY Actions secret to the repository or
-  its organization."
-- The backstop refuses a change that contains either key, and no other job gets either.
+  key and `ANTHROPIC_API_KEY` empty; the models stay Claude's. Without either, it takes the OpenAI
+  key ("Paying through OpenAI"). With no key at all, the run fails `no-key`: "Add the
+  ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its
+  organization."
+- The backstop refuses a change that contains any key, and no other job gets one.
 - `result.json` says which provider the run used (`provider`: `anthropic` or `openrouter`). The
   run shows it, and its cost reads as Claude Code's estimate, from Anthropic's prices: through
   OpenRouter, OpenRouter's own usage page has what it bills.
-- The setup counts either secret. The README tells OpenRouter users to set a spending limit on
-  the key and to put Anthropic first in the account's provider routing, as OpenRouter recommends.
+- The setup counts any of the secrets. The README tells OpenRouter users to set a spending limit
+  on the key and to put Anthropic first in the account's provider routing, as OpenRouter
+  recommends.
+
+## Paying through OpenAI
+
+A run can use an OpenAI API key (research: [research/openai.md](research/openai.md)). An OpenAI
+key can't run Claude's models, so with it the run uses OpenAI's own headless coding agent, the Codex
+CLI.
+
+- The user adds `OPENAI_API_KEY` as an Actions secret, repository or organization. It comes last:
+  with an Anthropic or an OpenRouter key too, Claude Code runs on that one. The Claude keys run the
+  same agent and models; an OpenAI key changes the agent, so a workspace that has one for other
+  work keeps its Claude runs.
+- A keyless step installs `@openai/codex` at a pinned version and lets the runner create the
+  unprivileged user namespaces Codex's sandbox needs, as OpenAI's own action does.
+- With only the OpenAI key, the agent step runs `codex exec --json` with the same prompt and the
+  task on stdin:
+  - The model is the workflow's `DEVSYNC_OPENAI_MODEL` (`gpt-6.2-sol`).
+  - It runs in the `workspace-write` sandbox: writes only in the checkout and temporary folders,
+    `.git` read-only, no network, no approvals and no web search.
+  - Its commands get only core variables, never the key.
+  - It reads no `AGENTS.md`, no user config and no rules, and `--strict-config` refuses a
+    misspelled setting.
+  - The key reaches Codex as `CODEX_API_KEY` only; Claude Code never gets the OpenAI key's
+    variable.
+- A Codex run succeeds on exit 0 with a `turn.completed` event and no `turn.failed`; anything
+  else is `agent-failed`, and its message names Codex. Codex has no turn or spend cap, so
+  `budget` and `turns` never happen: the job's timeout and the OpenAI project's budget are the
+  limits.
+- `result.json` says `provider: openai`. `models` names the workflow's model, since Codex's
+  events name none.
+- The usage comes from the last `turn.completed` event: `inputTokens` are its input tokens less
+  the cached ones, which are `cacheReadInputTokens`; `outputTokens` include reasoning; nothing is
+  cache-written.
+- Codex reports no cost, so the workflow works it out from those tokens at the prices next to the
+  model (`DEVSYNC_OPENAI_INPUT_USD`, `DEVSYNC_OPENAI_CACHED_INPUT_USD`,
+  `DEVSYNC_OPENAI_OUTPUT_USD`: OpenAI's standard prices on 2026-11-21, $2.00, $0.10 and $10.00 per
+  million). The run shows it as estimated from OpenAI's prices. A user who changes the model
+  changes the prices with it.
+- Unlike Claude Code, Codex's commands can read files outside the checkout. They have no network
+  and no key, so what they read can only reach the patch, which people review as a draft.
 
 ## Not in the first version
 
-More models (Codex), a model chosen per run, cancelling a run already in GitHub (the user cancels
+A model chosen per run, cancelling a run already in GitHub (the user cancels
 it there; DevSync then records it `FAILED`, `cancelled`), and CI on the draft pull request (GitHub
 starts no workflow for a pull request opened with the workflow's own token; the user pushes a
 commit or reopens it).
@@ -133,3 +178,10 @@ time.
   `provider` in `result.json` (its schema and checks) and on the run, the cost labelled an estimate,
   the setup counting either secret (its step and the dashboard's link wording), the README; tests
   for each, including the workflow text's env lines and that no other job gets either key.
+- [x] **D6, paying through OpenAI** (`packages/**`, `docs/host.md`, `docs/requirements.md`'s story
+  4 and R-8, `README.md`). As "Paying through OpenAI" above: the third key, last in the order;
+  the Codex install and its step (its flags, the key as `CODEX_API_KEY` only, success and
+  `agent-failed`, the usage and the cost at the workflow's prices); `provider` `openai` (its
+  schema and checks); the failure messages naming Codex; the dashboard's provider, cost label,
+  approve dialog and setup wording; tests for each, including the workflow text's Codex lines.
+  Left to the live test: a Codex run on a hosted runner, its draft pull request and its tokens.
