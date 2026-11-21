@@ -258,6 +258,23 @@ describe("the managed runs' workflow file", () => {
     expect(run.slice(refusal, done)).toContain("failure=agent-failed");
     // Each key that is set is checked: the loop never stops early.
     expect(run.slice(loop, done)).not.toMatch(/\bbreak\b/);
+    // It fails closed: only grep's 1 (nothing found) on both checks, and a clean find, pass.
+    const failedCheck = run.indexOf(
+      'echo "::error::The check for the $key secret in the change failed, so the change is not published."',
+    );
+    for (const part of [
+      "contents=$?",
+      `names=("\${PIPESTATUS[@]}")`,
+      `if [ "$contents" = 0 ] || [ "\${names[1]}" = 0 ]; then`,
+      `elif [ "$contents" != 1 ] || [ "\${names[0]}" != 0 ] || [ "\${names[1]}" != 1 ]; then`,
+    ]) {
+      expect(run.slice(loop, done)).toContain(part);
+    }
+    expect(failedCheck).toBeGreaterThan(refusal);
+    expect(failedCheck).toBeLessThan(done);
+    expect(run.slice(failedCheck, done)).toContain("failure=agent-failed");
+    // No grep's answer is folded into another's: each is read on its own.
+    expect(run.slice(loop, done)).not.toMatch(/grep[^\n]*\|\|/);
   });
 
   it("keeps the write token out of the agent job, which checks out without credentials", () => {

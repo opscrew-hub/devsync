@@ -286,12 +286,19 @@ jobs:
             models=$(jq -c '.modelUsage // {} | keys' "$RUNNER_TEMP/claude.json")
           fi
           # No key leaves in the change: not in a file's content, not in a path's name. Each key
-          # that is set is checked, every one when several are.
+          # that is set is checked, every one when several are. Only grep's 1 says it found
+          # nothing: any other answer, an error included, keeps the change from being published.
           for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY; do
             if [ -z "$failure" ] && [ -n "\${!key}" ]; then
-              if grep -rqF --exclude-dir=.git -f <(printenv "$key") . ||
-                find . -name .git -prune -o -print | grep -qF -f <(printenv "$key"); then
+              grep -rqF --exclude-dir=.git -f <(printenv "$key") .
+              contents=$?
+              find . -name .git -prune -o -print | grep -qF -f <(printenv "$key")
+              names=("\${PIPESTATUS[@]}")
+              if [ "$contents" = 0 ] || [ "\${names[1]}" = 0 ]; then
                 echo "::error::The change holds the $key secret, so it is not published."
+                failure=agent-failed
+              elif [ "$contents" != 1 ] || [ "\${names[0]}" != 0 ] || [ "\${names[1]}" != 1 ]; then
+                echo "::error::The check for the $key secret in the change failed, so the change is not published."
                 failure=agent-failed
               fi
             fi

@@ -90,7 +90,9 @@ A run can use an OpenRouter API key instead of an Anthropic one (research:
   key ("Paying through OpenAI"). With no key at all, the run fails `no-key`: "Add the
   ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its
   organization."
-- The backstop refuses a change that contains any key, and no other job gets one.
+- The backstop refuses a change that contains any key, and no other job gets one. It fails
+  closed: a check that errors (a `grep` that answers neither "found" nor "nothing found") fails the
+  run `agent-failed` too, and the change isn't published.
 - `result.json` says which provider the run used (`provider`: `anthropic` or `openrouter`). The
   run shows it, and its cost reads as Claude Code's estimate, from Anthropic's prices: through
   OpenRouter, OpenRouter's own usage page has what it bills.

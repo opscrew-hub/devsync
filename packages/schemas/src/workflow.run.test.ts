@@ -53,8 +53,46 @@ cat "$FAKE/events"
 exit "\${FAKE_EXIT:-0}"
 `;
 
+/** Stands in for Claude Code: changes a file and prints `FAKE/claude.json`. */
+const FAKE_CLAUDE = `#!/usr/bin/env bash
+printf '%s\\n' "$@" > "$FAKE/args"
+cat > "$FAKE/stdin"
+[ -z "\${FAKE_LEAK:-}" ] || printenv ANTHROPIC_API_KEY > leaked.txt
+printf 'changed\\n' > change.txt
+cat "$FAKE/claude.json"
+`;
+
+const CLAUDE_RESULT = JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  total_cost_usd: 0.05,
+  modelUsage: {
+    "claude-sonnet-5-5": {
+      inputTokens: 900,
+      outputTokens: 100,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    },
+  },
+});
+
+/**
+ * A grep that errors (exit 2) as BusyBox's does on `--exclude-dir`: on the contents check (`-rqF`),
+ * on the names check (the other one), or on both, else the real grep at `REAL_GREP`.
+ */
+const FAKE_GREP = `#!/usr/bin/env bash
+case "$FAKE_GREP:$1" in
+  all:*|contents:-rqF) exit 2 ;;
+  names:-rqF) ;;
+  names:*) exit 2 ;;
+esac
+exec "$REAL_GREP" "$@"
+`;
+
 const tools =
   process.platform !== "win32" && spawnSync("bash", ["-c", "command -v jq"]).status === 0;
+const realGrep = tools ? spawnSync("bash", ["-c", "command -v grep"], { encoding: "utf8" }) : null;
 
 const folders: string[] = [];
 afterEach(() => {
@@ -65,21 +103,29 @@ interface Run {
   outputs: Map<string, string>;
   log: string;
   ran: boolean;
+  /** The patch step ran after the agent step and handed a change on to `publish`. */
+  published: boolean;
   fake: string;
   temp: string;
   home: string;
   key: string;
 }
 
-/** Runs the agent step with only an OpenAI key, as a runner would, Codex being `FAKE_CODEX`. */
+/**
+ * Runs the agent step as a runner would, with only an OpenAI key (Codex being `FAKE_CODEX`) or with
+ * only an Anthropic key (Claude Code being `FAKE_CLAUDE`); then, as the job does when the step
+ * reports no failure, the patch step.
+ */
 function runStep(
   options: {
+    provider?: "openai" | "anthropic";
     environment?: string;
     checked?: boolean;
     events?: string[];
     exit?: number;
     leak?: boolean;
     key?: boolean;
+    grep?: "all" | "contents" | "names";
   } = {},
 ): Run {
   const root = mkdtempSync(join(tmpdir(), "devsync-workflow-"));
@@ -91,16 +137,31 @@ function runStep(
       return folder;
     },
   ) as [string, string, string, string, string];
-  writeFileSync(join(bin, "codex"), FAKE_CODEX);
-  chmodSync(join(bin, "codex"), 0o755);
+  const fakes: [string, string][] = [
+    ["codex", FAKE_CODEX],
+    ["claude", FAKE_CLAUDE],
+  ];
+  if (options.grep) fakes.push(["grep", FAKE_GREP]);
+  for (const [name, text] of fakes) {
+    writeFileSync(join(bin, name), text);
+    chmodSync(join(bin, name), 0o755);
+  }
   writeFileSync(join(fake, "events"), `${(options.events ?? RECORDED).join("\n")}\n`);
+  writeFileSync(join(fake, "claude.json"), CLAUDE_RESULT);
   writeFileSync(
     join(temp, "task.json"),
     '{"title":"T","description":"D","acceptanceCriteria":"C"}',
   );
   if (options.checked ?? true) writeFileSync(join(temp, "devsync-codex-sandbox-checked"), "");
   writeFileSync(join(checkout, "README.md"), "base\n");
+  const git = (...args: string[]) =>
+    spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: checkout });
+  git("init", "-q");
+  git("add", "--all");
+  git("commit", "-qm", "base");
   const key = `test-${randomUUID()}`;
+  const anthropic = options.provider === "anthropic";
+  const given = options.key === false ? "" : key;
   const env: Record<string, string> = {
     PATH: `${bin}:${process.env.PATH ?? ""}`,
     HOME: home,
@@ -116,11 +177,13 @@ function runStep(
     DEVSYNC_OPENAI_CACHED_INPUT_USD: "0.10",
     DEVSYNC_OPENAI_CACHE_WRITE_USD: "2.50",
     DEVSYNC_OPENAI_OUTPUT_USD: "10.00",
-    ANTHROPIC_API_KEY: "",
+    ANTHROPIC_API_KEY: anthropic ? given : "",
     OPENROUTER_API_KEY: "",
-    OPENAI_API_KEY: options.key === false ? "" : key,
+    OPENAI_API_KEY: anthropic ? "" : given,
     FAKE_EXIT: String(options.exit ?? 0),
+    REAL_GREP: realGrep?.stdout.trim() ?? "grep",
     ...(options.leak ? { FAKE_LEAK: "1" } : {}),
+    ...(options.grep ? { FAKE_GREP: options.grep } : {}),
   };
   const step = spawnSync("bash", ["-e", "-c", script("Run the coding agent")], {
     cwd: checkout,
@@ -128,24 +191,39 @@ function runStep(
     encoding: "utf8",
   });
   expect(step.status, step.stderr).toBe(0);
-  const written = existsSync(env.GITHUB_OUTPUT ?? "")
-    ? readFileSync(join(root, "output"), "utf8")
-    : "";
-  const outputs = new Map(
-    written
-      .split("\n")
-      .filter((line) => line.includes("="))
-      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
-  );
+  const outputs = outputsOf(join(root, "output"));
+  let published = false;
+  if (outputs.get("failure") === "") {
+    // The job's `if: steps.agent.outputs.failure == ''` on the patch step.
+    const patch = spawnSync("bash", ["-e", "-c", script("Build the patch")], {
+      cwd: checkout,
+      env: { ...env, GITHUB_OUTPUT: join(root, "patch-output") },
+      encoding: "utf8",
+    });
+    expect(patch.status, patch.stderr).toBe(0);
+    published = outputsOf(join(root, "patch-output")).get("has_changes") === "true";
+  }
   return {
     outputs,
     log: `${step.stdout}${step.stderr}`,
     ran: existsSync(join(fake, "args")),
+    published,
     fake,
     temp,
     home,
     key,
   };
+}
+
+/** A `GITHUB_OUTPUT` file's `name=value` lines. */
+function outputsOf(file: string): Map<string, string> {
+  const written = existsSync(file) ? readFileSync(file, "utf8") : "";
+  return new Map(
+    written
+      .split("\n")
+      .filter((line) => line.includes("="))
+      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+  );
 }
 
 const usageOf = (run: Run) => JSON.parse(run.outputs.get("usage") ?? "null");
@@ -157,11 +235,12 @@ const ZERO = {
   costUsd: 0,
 };
 
-describe.skipIf(!tools)("the agent step with only an OpenAI key, run (needs bash and jq)", () => {
+describe.skipIf(!tools)("the agent step, run (needs bash and jq)", () => {
   it("runs Codex on a checked GitHub-hosted runner and reads its tokens and cost from its events", () => {
     const run = runStep();
     expect(run.outputs.get("provider")).toBe("openai");
     expect(run.outputs.get("failure")).toBe("");
+    expect(run.published).toBe(true);
     expect(JSON.parse(run.outputs.get("models") ?? "null")).toEqual(["gpt-6.2-sol"]);
     // 3,000 input tokens hold 1,200 cached and 600 cache-written ones: 1,200 are fresh.
     const usage = usageOf(run);
@@ -226,13 +305,48 @@ describe.skipIf(!tools)("the agent step with only an OpenAI key, run (needs bash
     expect(usageOf(run)).toMatchObject({ inputTokens: 1200, cacheCreationInputTokens: 600 });
   });
 
-  it("refuses a change that holds the key", () => {
-    const run = runStep({ leak: true });
+  it.each([
+    ["openai", "OPENAI_API_KEY"],
+    ["anthropic", "ANTHROPIC_API_KEY"],
+  ] as const)("refuses a change that holds the key, with %s's", (provider, secret) => {
+    const run = runStep({ provider, leak: true });
+    expect(run.outputs.get("provider")).toBe(provider);
     expect(run.outputs.get("failure")).toBe("agent-failed");
+    expect(run.published).toBe(false);
     expect(run.log).toContain(
-      "::error::The change holds the OPENAI_API_KEY secret, so it is not published.",
+      `::error::The change holds the ${secret} secret, so it is not published.`,
     );
     expect(run.log).not.toContain(run.key);
+  });
+
+  it.each([
+    ["openai", "all"],
+    ["openai", "contents"],
+    ["openai", "names"],
+    ["anthropic", "all"],
+    ["anthropic", "contents"],
+    ["anthropic", "names"],
+  ] as const)(
+    "fails closed with %s's key when the key check's grep errors (%s)",
+    (provider, grep) => {
+      const secret = provider === "openai" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
+      const run = runStep({ provider, grep });
+      expect(run.ran).toBe(true);
+      expect(run.outputs.get("failure")).toBe("agent-failed");
+      expect(run.published).toBe(false);
+      expect(run.log).toContain(
+        `::error::The check for the ${secret} secret in the change failed, so the change is not published.`,
+      );
+      expect(run.log).not.toContain(run.key);
+    },
+  );
+
+  it("publishes Claude Code's clean change, the key check finding nothing", () => {
+    const run = runStep({ provider: "anthropic" });
+    expect(run.outputs.get("provider")).toBe("anthropic");
+    expect(run.outputs.get("failure")).toBe("");
+    expect(run.published).toBe(true);
+    expect(usageOf(run)).toMatchObject({ inputTokens: 900, outputTokens: 100, costUsd: 0.05 });
   });
 
   it("fails no-key without any key, running nothing", () => {
