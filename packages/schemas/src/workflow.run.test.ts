@@ -78,21 +78,44 @@ const CLAUDE_RESULT = JSON.stringify({
 });
 
 /**
- * A grep that errors (exit 2) as BusyBox's does on `--exclude-dir`: on the contents check (`-rqF`),
- * on the names check (the other one), or on both, else the real grep at `REAL_GREP`.
+ * A grep that errors (exit 2) as BusyBox's does on `--exclude-dir`: on the contents check
+ * (`-rqsF`), on the names check (the other one), or on both, else the real grep at `REAL_GREP`.
  */
 const FAKE_GREP = `#!/usr/bin/env bash
 case "$FAKE_GREP:$1" in
-  all:*|contents:-rqF) exit 2 ;;
-  names:-rqF) ;;
+  all:*|contents:-rqsF) exit 2 ;;
+  names:-rqsF) ;;
   names:*) exit 2 ;;
 esac
 exec "$REAL_GREP" "$@"
 `;
 
+/** A find that lists the files, then exits 1 as on a folder it can't read. */
+const FAKE_FIND = `#!/usr/bin/env bash
+"$REAL_FIND" "$@"
+exit 1
+`;
+
+/** Where the real tools are, for the fakes that hand on to them. */
+const real = (tool: string) =>
+  tools
+    ? spawnSync("bash", ["-c", `command -v ${tool}`], { encoding: "utf8" }).stdout.trim()
+    : tool;
+
 const tools =
   process.platform !== "win32" && spawnSync("bash", ["-c", "command -v jq"]).status === 0;
-const realGrep = tools ? spawnSync("bash", ["-c", "command -v grep"], { encoding: "utf8" }) : null;
+
+/** The sandbox profile the install step leaves when its check passed: one flag per line. */
+const profileOf = (temp: string, home: string) => [
+  "-c",
+  "default_permissions=devsync",
+  "-c",
+  'permissions.devsync.extends=":workspace"',
+  "-c",
+  `permissions.devsync.filesystem={'${temp}'='deny','${home}/runners'='deny','${home}/actions-runner'='deny'}`,
+  "-c",
+  "permissions.devsync.network.enabled=false",
+];
 
 const folders: string[] = [];
 afterEach(() => {
@@ -126,6 +149,8 @@ function runStep(
     leak?: boolean;
     key?: boolean;
     grep?: "all" | "contents" | "names";
+    find?: boolean;
+    emptyProfile?: boolean;
   } = {},
 ): Run {
   const root = mkdtempSync(join(tmpdir(), "devsync-workflow-"));
@@ -142,6 +167,7 @@ function runStep(
     ["claude", FAKE_CLAUDE],
   ];
   if (options.grep) fakes.push(["grep", FAKE_GREP]);
+  if (options.find) fakes.push(["find", FAKE_FIND]);
   for (const [name, text] of fakes) {
     writeFileSync(join(bin, name), text);
     chmodSync(join(bin, name), 0o755);
@@ -152,7 +178,13 @@ function runStep(
     join(temp, "task.json"),
     '{"title":"T","description":"D","acceptanceCriteria":"C"}',
   );
-  if (options.checked ?? true) writeFileSync(join(temp, "devsync-codex-sandbox-checked"), "");
+  if (options.emptyProfile) writeFileSync(join(temp, "devsync-codex-sandbox-checked"), "");
+  if (options.checked ?? true) {
+    writeFileSync(
+      join(temp, "devsync-codex-sandbox-checked"),
+      `${profileOf(temp, home).join("\n")}\n`,
+    );
+  }
   writeFileSync(join(checkout, "README.md"), "base\n");
   const git = (...args: string[]) =>
     spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: checkout });
@@ -181,7 +213,8 @@ function runStep(
     OPENROUTER_API_KEY: "",
     OPENAI_API_KEY: anthropic ? "" : given,
     FAKE_EXIT: String(options.exit ?? 0),
-    REAL_GREP: realGrep?.stdout.trim() ?? "grep",
+    REAL_GREP: real("grep"),
+    REAL_FIND: real("find"),
     ...(options.leak ? { FAKE_LEAK: "1" } : {}),
     ...(options.grep ? { FAKE_GREP: options.grep } : {}),
   };
@@ -263,11 +296,35 @@ describe.skipIf(!tools)("the agent step, run (needs bash and jq)", () => {
     expect(names).not.toContain("OPENAI_API_KEY");
     const args = readFileSync(join(run.fake, "args"), "utf8").split("\n");
     expect(args.slice(0, 2)).toEqual(["exec", "--json"]);
-    expect(args).toContain(
-      `permissions.devsync.filesystem={'${run.temp}'='deny','${run.home}/runners'='deny'}`,
-    );
+    // The profile the install step's check passed, as it left it, right before the prompt.
+    const profile = profileOf(run.temp, run.home);
+    const dashes = args.indexOf("--");
+    expect(args.slice(dashes - profile.length, dashes)).toEqual(profile);
     expect(run.log).not.toContain(run.key);
   });
+
+  it("never starts Codex when the install step left an empty profile", () => {
+    const run = runStep({ checked: false, emptyProfile: true });
+    expect(run.ran).toBe(false);
+    expect(run.outputs.get("failure")).toBe("agent-failed");
+    expect(run.log).toContain("::error::Codex's sandbox failed its check");
+  });
+
+  it("never prints a missing profile's file error", () => {
+    const run = runStep({ checked: false });
+    expect(run.log).not.toContain("No such file");
+  });
+
+  it.each(["openai", "anthropic"] as const)(
+    "fails closed with %s's key when the names check's find exits 1",
+    (provider) => {
+      const run = runStep({ provider, find: true });
+      expect(run.ran).toBe(true);
+      expect(run.outputs.get("failure")).toBe("agent-failed");
+      expect(run.published).toBe(false);
+      expect(run.log).toContain("in the change failed, so the change is not published.");
+    },
+  );
 
   it.each([
     [
@@ -354,5 +411,116 @@ describe.skipIf(!tools)("the agent step, run (needs bash and jq)", () => {
     expect(run.ran).toBe(false);
     expect(run.outputs.get("failure")).toBe("no-key");
     expect(run.outputs.has("provider")).toBe(false);
+  });
+});
+
+/** Stand-ins for the Install Codex step's tools, each recording its arguments under `$FAKE`. */
+const INSTALL_FAKES: [string, string][] = [
+  ["npm", `#!/usr/bin/env bash\necho "$*" >> "$FAKE/npm"\nexit "\${FAKE_NPM:-0}"\n`],
+  [
+    "sysctl",
+    `#!/usr/bin/env bash
+echo "$*" >> "$FAKE/sysctl"
+case "$1" in
+  -n) [ "$2" = kernel.apparmor_restrict_unprivileged_userns ] && echo 1 && exit 0; exit 1 ;;
+  *) exit "\${FAKE_SYSCTL_WRITE:-0}" ;;
+esac
+`,
+  ],
+  ["sudo", `#!/usr/bin/env bash\n[ "$1" = -n ] && shift\nexec "$@"\n`],
+  // A sandbox that falls back as Codex's does when it can't mount a /proc: the command runs with
+  // the runner's own /proc.
+  [
+    "codex",
+    `#!/usr/bin/env bash
+printf '%s\n' "$@" > "$FAKE/sandbox"
+while [ "$1" != -- ]; do shift; done
+shift
+exec "$@"
+`,
+  ],
+];
+
+/** Runs the Install Codex step with `INSTALL_FAKES` first on PATH. */
+function install(options: { environment?: string; npm?: number; sysctl?: number } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "devsync-install-"));
+  folders.push(root);
+  const [bin, fake, temp, home] = ["bin", "fake", "temp", "home"].map((name) => {
+    const folder = join(root, name);
+    mkdirSync(folder);
+    return folder;
+  }) as [string, string, string, string];
+  for (const [name, text] of INSTALL_FAKES) {
+    writeFileSync(join(bin, name), text);
+    chmodSync(join(bin, name), 0o755);
+  }
+  const step = spawnSync("bash", ["-e", "-c", script("Install Codex")], {
+    cwd: home,
+    env: {
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      HOME: home,
+      RUNNER_TEMP: temp,
+      RUNNER_ENVIRONMENT: options.environment ?? "github-hosted",
+      FAKE: fake,
+      FAKE_NPM: String(options.npm ?? 0),
+      FAKE_SYSCTL_WRITE: String(options.sysctl ?? 0),
+    },
+    encoding: "utf8",
+  });
+  const read = (name: string) =>
+    existsSync(join(fake, name)) ? readFileSync(join(fake, name), "utf8") : null;
+  return {
+    status: step.status,
+    log: `${step.stdout}${step.stderr}`,
+    marked: existsSync(join(temp, "devsync-codex-sandbox-checked")),
+    npm: read("npm"),
+    sysctl: read("sysctl"),
+    sandbox: read("sandbox"),
+    temp,
+    home,
+  };
+}
+
+describe.skipIf(!tools)("the Install Codex step, run (needs bash)", () => {
+  it("leaves no profile when the sandbox falls back to the runner's /proc", () => {
+    const run = install();
+    expect(run.status).toBe(0);
+    expect(run.npm).toBe("install --global @openai/codex@0.171.0\n");
+    expect(run.sysctl).toContain("-q -w kernel.apparmor_restrict_unprivileged_userns=0");
+    // The probe ran through the sandbox with the run's own profile.
+    expect(run.sandbox?.split("\n").slice(0, 10)).toEqual([
+      "sandbox",
+      ...profileOf(run.temp, run.home),
+      "--",
+    ]);
+    expect(run.log).toContain(
+      "::warning::Codex's sandbox has no /proc of its own on this runner, so Codex won't run here.",
+    );
+    expect(run.marked).toBe(false);
+  });
+
+  it("warns, skips the probe and leaves no profile when a setting is refused, the step still passing", () => {
+    const run = install({ sysctl: 1 });
+    expect(run.status).toBe(0);
+    expect(run.log).toContain(
+      "::warning::Codex's sandbox needs kernel.apparmor_restrict_unprivileged_userns=0, which this runner refused, so Codex won't run here.",
+    );
+    expect(run.sandbox).toBeNull();
+    expect(run.marked).toBe(false);
+  });
+
+  it("warns, skips the probe and leaves no profile when Codex doesn't install, the step still passing", () => {
+    const run = install({ npm: 1 });
+    expect(run.status).toBe(0);
+    expect(run.log).toContain("::warning::Codex didn't install, so Codex won't run here.");
+    expect(run.sandbox).toBeNull();
+    expect(run.marked).toBe(false);
+  });
+
+  it.each(["self-hosted", ""])("changes nothing on a runner that is %j", (environment) => {
+    const run = install({ environment });
+    expect(run.status).toBe(0);
+    expect([run.npm, run.sysctl, run.sandbox]).toEqual([null, null, null]);
+    expect(run.marked).toBe(false);
   });
 });

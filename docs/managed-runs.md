@@ -91,8 +91,9 @@ A run can use an OpenRouter API key instead of an Anthropic one (research:
   ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its
   organization."
 - The backstop refuses a change that contains any key, and no other job gets one. It fails
-  closed: a check that errors (a `grep` that answers neither "found" nor "nothing found") fails the
-  run `agent-failed` too, and the change isn't published.
+  closed: a check that errors (a `grep` that answers neither "found" nor "nothing found", or a
+  `find` that fails) fails the run `agent-failed` too, and the change isn't published. It never
+  prints a file name.
 - `result.json` says which provider the run used (`provider`: `anthropic` or `openrouter`). The
   run shows it, and its cost reads as Claude Code's estimate, from Anthropic's prices: through
   OpenRouter, OpenRouter's own usage page has what it bills.
@@ -111,14 +112,16 @@ CLI.
   same agent and models; an OpenAI key changes the agent, so a workspace that has one for other
   work keeps its Claude runs.
 - Codex runs only on GitHub-hosted runners, as OpenAI's own action sets its sandbox up only
-  there. A keyless step installs `@openai/codex` at a pinned version.
-  - On a hosted runner only, the step lets the runner create the unprivileged user namespaces
-    Codex's sandbox needs; a refused setting fails the step. On another runner it changes nothing.
-  - It then checks, through `codex sandbox`, that a sandboxed command gets a `/proc` of its own.
-    Codex 0.171.0 silently keeps the runner's `/proc` when it can't mount one, and a command could
-    then read the agent step's environment. Only a passed check leaves the marker the agent step
-    needs.
-  - Without a hosted runner or that marker, the agent step doesn't start Codex. The run fails
+  there. A keyless step does the setup, on a hosted runner only; on another runner it does nothing.
+  - It installs `@openai/codex` at a pinned version, and lets the runner create the unprivileged
+    user namespaces Codex's sandbox needs.
+  - It then checks, through `codex sandbox` with the run's own sandbox profile, that a sandboxed
+    command gets a `/proc` of its own. Codex 0.171.0 silently keeps the runner's `/proc` when it
+    can't mount one, and a command could then read the agent step's environment.
+  - Only a passed check leaves the profile for the agent step. A failed install or a refused
+    setting skips the check and leaves nothing, with a warning. The step never fails, so Claude
+    Code's runs go on.
+  - Without a hosted runner or that profile, the agent step doesn't start Codex. The run fails
     `agent-failed`, and the step's log says why.
 - With only the OpenAI key, the agent step runs `codex exec --json` with the same prompt and the
   task on stdin:
@@ -126,8 +129,9 @@ CLI.
   - It runs in its sandbox with a permission profile that extends `:workspace`. It writes only in
     the checkout and temporary folders, `.git` stays read-only, and it has no network, no
     approvals and no web search.
-  - The profile denies reads of the step's temporary folder (`RUNNER_TEMP`) and the runner's own
-    folder (`$HOME/runners`).
+  - The profile denies reads of the job's temporary folder (`RUNNER_TEMP`) and of the runner's
+    own folder, wherever GitHub's images keep it (`$HOME/runners` or `$HOME/actions-runner`; a
+    missing one is skipped).
   - Its commands get only core variables, never the key.
   - It reads no `AGENTS.md`, no repository skills, no user config and no rules, and
     `--strict-config` refuses a misspelled setting.

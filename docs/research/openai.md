@@ -165,8 +165,13 @@ The fake answered with two shell calls, then a final message, each response with
   - With those entries the checkout stayed readable and writable, `git status` worked, `.git`
     stayed read-only, `/tmp` was writable and the network was blocked
     (`permissions.<name>.network.enabled = false`).
-- **The `/proc` probe**, the workflow's own Install Codex script (without its `npm install`):
-  - With the real `codex sandbox` it saw 5 processes and not the outside one, and left its marker.
+- **The `/proc` probe**, the workflow's own Install Codex script (its `npm install` a shim),
+  run from the checkout as a step is:
+  - With the real `codex sandbox` and the run's profile it saw 5 processes and not the outside
+    one, and left the profile for the agent step. A missing `$HOME/runners` was skipped, and an
+    existing `$HOME/actions-runner` was denied.
+  - Run from `/` instead, bubblewrap couldn't create the workspace's `/.codex`, and the probe
+    failed closed. A step runs in the checkout, where the probe left nothing behind.
   - With a `codex` shim whose `sandbox` runs the command with no sandbox (what the fallback
     leaves of `/proc`), it warned and left none.
   - Docker refuses mounts inside `/proc`, so the real fallback couldn't be triggered here.
@@ -178,11 +183,13 @@ The fake answered with two shell calls, then a final message, each response with
   - It wrote
     `usage={"inputTokens":1200,"outputTokens":600,"cacheCreationInputTokens":600,"cacheReadInputTokens":1200,"costUsd":0.01002}`
     and `models=["gpt-6.2-sol"]`, and the patch step found the change.
-  - Its commands couldn't read the step's temp folder or `$HOME/runners`.
+  - Its commands couldn't read the job's temp folder or the runner's folder.
   - On a runner marked `self-hosted`, or after a failed probe, it failed `agent-failed` with its
     reason and never started Codex.
   - With no key it failed `no-key`. With a Codex that exits non-zero it failed `agent-failed`.
-  - `workflow.run.test.ts` runs that step with a fake `codex` printing these recorded events.
+  - `workflow.run.test.ts` runs that step with a fake `codex` printing these recorded events,
+    and the Install Codex step with fake `npm`, `sysctl`, `sudo` and a `codex sandbox` that
+    falls back.
 
 ## Decision
 
@@ -193,26 +200,31 @@ The fake answered with two shell calls, then a final message, each response with
     workspace that adds an OpenAI key for other work keeps its Claude runs.
 - **Where Codex runs.** Only on GitHub-hosted runners (`RUNNER_ENVIRONMENT=github-hosted`), as
   OpenAI's action sets its sandbox up only there.
-  - A keyless "Install Codex" step installs `@openai/codex@0.171.0` for every run, since only the
-    agent step knows which key is set.
-  - On a hosted runner only, the step sets the two user-namespace settings, and a refused setting
-    fails the step. On another runner it changes nothing on the host.
-  - It then runs the `/proc` probe through `codex sandbox`: a `sleep` outside the sandbox must
-    not show inside it, and inside it at most 10 processes may show. Only a passed probe writes
+  - A keyless "Install Codex" step runs for every run, since only the agent step knows which key
+    is set. On a runner that isn't GitHub-hosted it does nothing.
+  - On a hosted runner it installs `@openai/codex@0.171.0` and sets the two user-namespace
+    settings.
+  - It then runs the `/proc` probe through `codex sandbox` with the run's own sandbox profile, so
+    the profile parses before any key is there. A `sleep` outside the sandbox must not show
+    inside it, and inside it at most 10 processes may show.
+  - Only a passed probe writes the profile, one flag per line, to
     `$RUNNER_TEMP/devsync-codex-sandbox-checked`.
-  - The agent step starts Codex only on a hosted runner and with that marker. Otherwise the run
-    fails `agent-failed`, and the step's log says why.
+  - A failed install or a refused setting warns, skips the probe and writes nothing. The step
+    never fails, so Claude Code's runs go on.
+  - The agent step starts Codex only on a hosted runner and with that profile, which it adds to
+    Codex's flags. Otherwise the run fails `agent-failed`, and the step's log says why.
 - **How Codex runs.** With only the OpenAI key, the agent step runs Codex instead of Claude Code,
   with the same prompt and task on stdin:
 
   ```
   codex exec --json --ephemeral --strict-config --model "$DEVSYNC_OPENAI_MODEL"
-    -c default_permissions=devsync -c 'permissions.devsync.extends=":workspace"'
-    -c "permissions.devsync.filesystem={'$RUNNER_TEMP'='deny','$HOME/runners'='deny'}"
-    -c permissions.devsync.network.enabled=false -c approval_policy=never -c web_search=disabled
+    -c approval_policy=never -c web_search=disabled
     -c shell_environment_policy.inherit=core -c shell_environment_policy.ignore_default_excludes=false
     -c project_doc_max_bytes=0 -c skills.include_instructions=false -c history.persistence=none
     --ignore-user-config --ignore-rules
+    -c default_permissions=devsync -c 'permissions.devsync.extends=":workspace"'
+    -c "permissions.devsync.filesystem={'$RUNNER_TEMP'='deny','$HOME/runners'='deny','$HOME/actions-runner'='deny'}"
+    -c permissions.devsync.network.enabled=false
   ```
 
   - The key reaches Codex as `CODEX_API_KEY` only, and `OPENAI_API_KEY` is unset for it.
@@ -221,7 +233,8 @@ The fake answered with two shell calls, then a final message, each response with
 - **The sandbox's reads.**
   - The profile keeps `:workspace`'s writes and `.git` protection, and denies the step's
     temporary folder (`RUNNER_TEMP`: the step scripts, the task, Codex's output) and the
-    runner's own folder (`$HOME/runners`).
+    runner's own folder, `$HOME/runners` or `$HOME/actions-runner`, as images differ. A missing
+    path is skipped.
   - Denying `$HOME` itself breaks every command, because the checkout is inside it.
   - `$HOME/.*` worked locally, but it would also hide any toolchain the runner keeps in a dot
     folder of `$HOME` and puts on `PATH`. It waits for the live listing below.
@@ -265,8 +278,10 @@ The fake answered with two shell calls, then a final message, each response with
   - Watch for a Codex release that reports the fallback or lets a run refuse it.
 - **What the runner user can read.** List it on a hosted runner, from a step with no key, with
   `ls -la` and `find -maxdepth 3`:
-  - `/home/runner/runners`: the runner's own files, credentials included, if any. Denied to
-    Codex's commands now.
+  - `/home/runner/runners` and `/home/runner/actions-runner`: which of them holds the runner's
+    own files, credentials included, if any. Both are denied to Codex's commands now.
+  - Whether `/home/runner/work` (and so `RUNNER_TEMP`) is a symlink. A deny names a path, and a
+    command that reaches the folder through its real path may not meet it.
   - `/home/runner/work/_temp` (`RUNNER_TEMP`): the step scripts, `GITHUB_OUTPUT`'s files and
     the task. Denied now.
   - `$HOME`'s dot files and folders: `.gitconfig`, `.docker`, `.npm`, toolchains. They are

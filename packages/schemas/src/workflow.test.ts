@@ -221,7 +221,7 @@ describe("the managed runs' workflow file", () => {
     expect(run.match(/\bclaude "\$\{flags/g)).toHaveLength(1);
     // Codex gets the OpenAI key as CODEX_API_KEY only, chosen when the other two are empty.
     expect(run).toContain(
-      `              env -u OPENAI_API_KEY codex "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/codex.jsonl"\n`,
+      `              env -u OPENAI_API_KEY codex "\${flags[@]}" "\${profile[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/codex.jsonl"\n`,
     );
     expect(run.match(/\bcodex "\$\{flags/g)).toHaveLength(1);
     expect(run.match(/CODEX_API_KEY/g)).toHaveLength(2);
@@ -241,9 +241,9 @@ describe("the managed runs' workflow file", () => {
     const run = text(step("agent", "Run the coding agent"));
     const loop = run.indexOf("for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY; do");
     const guard = run.indexOf(`if [ -z "$failure" ] && [ -n "\${!key}" ]; then`);
-    const files = run.indexOf('grep -rqF --exclude-dir=.git -f <(printenv "$key") .');
+    const files = run.indexOf('grep -rqsF --exclude-dir=.git -f <(printenv "$key") .');
     const names = run.indexOf(
-      'find . -name .git -prune -o -print | grep -qF -f <(printenv "$key")',
+      'find . -name .git -prune -o -print 2>/dev/null | grep -qsF -f <(printenv "$key")',
     );
     const refusal = run.indexOf(
       'echo "::error::The change holds the $key secret, so it is not published."',
@@ -348,39 +348,57 @@ describe("the managed runs' workflow file", () => {
 
   it("installs a pinned Codex, and on GitHub-hosted runners only enables and checks its sandbox", () => {
     const install = text(step("agent", "Install Codex"));
-    const version = /npm install --global @openai\/codex@(\d+)\.(\d+)\.(\d+)\n/.exec(install);
-    expect(version).not.toBeNull();
-    const [major = 0, minor = 0] = (version ?? []).slice(1).map(Number);
-    expect([major, minor]).toEqual([0, 171]);
     expect(install).not.toMatch(/secrets|API_KEY/);
-    // Nothing changes on a runner that isn't GitHub's: the rest sits inside this one branch.
+    // Nothing happens on a runner that isn't GitHub's: the whole script is this one branch.
     const hosted = install.indexOf(
       '          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then\n',
     );
     const end = install.lastIndexOf("\n          fi");
-    expect(hosted).toBeGreaterThan(install.indexOf("npm install"));
+    expect(hosted).toBeGreaterThan(0);
+    expect(install.slice(0, hosted)).not.toMatch(/^ {10}[^ #]/m);
     expect(end).toBe(install.trimEnd().length - "\n          fi".length);
-    // The sandbox's user namespaces, as OpenAI's own action enables them; a refusal fails the step.
+    // A pinned Codex; a failed install keeps Codex from running, never fails the step.
+    const version = /npm install --global @openai\/codex@(\d+)\.(\d+)\.(\d+); then\n/.exec(install);
+    expect(version).not.toBeNull();
+    const [major = 0, minor = 0] = (version ?? []).slice(1).map(Number);
+    expect([major, minor]).toEqual([0, 171]);
+    expect(install.indexOf("npm install")).toBeGreaterThan(hosted);
+    expect(install).toContain(`echo "::warning::Codex didn't install, so Codex won't run here."`);
+    // The sandbox's user namespaces, as OpenAI's own action enables them; a refusal warns and
+    // keeps Codex from running, so Claude Code's runs go on.
     const settings = install.indexOf(
       "for setting in kernel.unprivileged_userns_clone=1 kernel.apparmor_restrict_unprivileged_userns=0; do",
     );
     expect(settings).toBeGreaterThan(hosted);
     expect(install).toMatch(
-      /if \[ "\$current" != "\$\{setting#\*=\}" \] && ! sudo -n sysctl -q -w "\$setting"; then\n {16}echo "::error::Codex's sandbox needs \$setting, which this runner refused\."\n {16}exit 1\n/,
+      /if \[ "\$current" != "\$\{setting#\*=\}" \] && ! sudo -n sysctl -q -w "\$setting"; then\n {16}echo "::warning::Codex's sandbox needs \$setting, which this runner refused, so Codex won't run here\."\n {16}ready=false\n/,
     );
-    expect(install).not.toContain("::warning::Codex's sandbox needs");
-    // The /proc check: run through Codex's own sandbox, a process outside must not show inside,
-    // and only a passed check leaves the marker the agent step requires.
+    expect(install).not.toMatch(/\bexit\b/);
+    // The run's sandbox profile, defined once, here.
+    for (const part of [
+      "-c default_permissions=devsync",
+      `-c 'permissions.devsync.extends=":workspace"'`,
+      `-c "permissions.devsync.filesystem={'$RUNNER_TEMP'='deny','$HOME/runners'='deny','$HOME/actions-runner'='deny'}"`,
+      "-c permissions.devsync.network.enabled=false",
+    ]) {
+      expect(install).toContain(part);
+      expect(WORKFLOW.split(part)).toHaveLength(2);
+    }
+    // The /proc check: run through Codex's own sandbox with that profile, only when everything
+    // before it went right; a process outside must not show inside, and only a passed check leaves
+    // the profile the agent step requires.
+    const ready = install.indexOf('            if [ "$ready" = true ]; then\n');
+    expect(ready).toBeGreaterThan(settings);
     for (const part of [
       "sleep 120 &",
       "outside=$!",
       `fresh='[ -d /proc/1 ] && [ ! -e "/proc/$1" ] && [ "$(ls /proc | grep -c "^[0-9]*$")" -le 10 ]'`,
-      'if codex sandbox -- sh -c "$fresh" probe "$outside"; then',
-      '  touch "$RUNNER_TEMP/devsync-codex-sandbox-checked"',
+      `if codex sandbox "\${profile[@]}" -- sh -c "$fresh" probe "$outside"; then`,
+      `  printf '%s\\n' "\${profile[@]}" > "$RUNNER_TEMP/devsync-codex-sandbox-checked"`,
       'kill "$outside" 2>/dev/null || true',
     ]) {
       expect(install).toContain(part);
-      expect(install.indexOf(part)).toBeGreaterThan(settings);
+      expect(install.indexOf(part)).toBeGreaterThan(ready);
       expect(install.indexOf(part)).toBeLessThan(end);
     }
     expect(install.match(/devsync-codex-sandbox-checked/g)).toHaveLength(1);
@@ -391,10 +409,6 @@ describe("the managed runs' workflow file", () => {
     for (const flag of [
       "exec --json --ephemeral --strict-config",
       '--model "$DEVSYNC_OPENAI_MODEL"',
-      "-c default_permissions=devsync",
-      `-c 'permissions.devsync.extends=":workspace"'`,
-      `-c "permissions.devsync.filesystem={'$RUNNER_TEMP'='deny','$HOME/runners'='deny'}"`,
-      "-c permissions.devsync.network.enabled=false",
       "-c approval_policy=never",
       "-c web_search=disabled",
       "-c shell_environment_policy.inherit=core",
@@ -411,12 +425,14 @@ describe("the managed runs' workflow file", () => {
     expect(run).not.toMatch(
       /danger-full-access|dangerously-bypass|--yolo|--approve-for-me|--trust|--add-dir|--sandbox|enabled=true/,
     );
+    // The sandbox's profile isn't the step's own: it is the one the install step's check passed.
+    expect(run).not.toContain("permissions.devsync");
     // Codex starts only on a GitHub-hosted runner whose sandbox passed the install step's check.
     const hosted = run.indexOf('            if [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then\n');
     const checked = run.indexOf(
-      '            elif [ ! -f "$RUNNER_TEMP/devsync-codex-sandbox-checked" ]; then\n',
+      `            elif ! mapfile -t profile 2>/dev/null < "$RUNNER_TEMP/devsync-codex-sandbox-checked" || [ "\${#profile[@]}" = 0 ]; then\n`,
     );
-    const started = run.indexOf(`env -u OPENAI_API_KEY codex "\${flags[@]}"`);
+    const started = run.indexOf(`env -u OPENAI_API_KEY codex "\${flags[@]}" "\${profile[@]}"`);
     expect(hosted).toBeGreaterThan(run.indexOf('if [ "$provider" = openai ]; then'));
     expect(checked).toBeGreaterThan(hosted);
     expect(started).toBeGreaterThan(checked);

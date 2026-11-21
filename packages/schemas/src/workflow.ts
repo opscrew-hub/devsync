@@ -117,34 +117,51 @@ jobs:
       - name: Install Claude Code
         run: npm install --global @anthropic-ai/claude-code@2.1.311
 
-      # Codex runs only with an OpenAI key, pinned as above, and only on GitHub's own runners.
+      # Codex runs only with an OpenAI key, pinned as above, and only on GitHub's own runners. A
+      # problem here keeps Codex from running, never Claude Code.
       - name: Install Codex
         run: |
-          npm install --global @openai/codex@0.171.0
           # As OpenAI's own action does, only on GitHub's runners, which are thrown away after the
           # job: on another runner Codex doesn't run, and this step changes nothing on the host.
           if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
+            ready=true
+            if ! npm install --global @openai/codex@0.171.0; then
+              echo "::warning::Codex didn't install, so Codex won't run here."
+              ready=false
+            fi
             # Codex's sandbox needs unprivileged user namespaces, which newer Ubuntu restricts.
             for setting in kernel.unprivileged_userns_clone=1 kernel.apparmor_restrict_unprivileged_userns=0; do
               current=$(sysctl -n "\${setting%=*}" 2>/dev/null) || continue
               if [ "$current" != "\${setting#*=}" ] && ! sudo -n sysctl -q -w "$setting"; then
-                echo "::error::Codex's sandbox needs $setting, which this runner refused."
-                exit 1
+                echo "::warning::Codex's sandbox needs $setting, which this runner refused, so Codex won't run here."
+                ready=false
               fi
             done
-            # The sandbox gives each command a /proc of its own, unless mounting one fails: then it
+            # The sandbox Codex's commands get: writes in the checkout and temporary folders only
+            # (.git stays read-only), no network, and no reads of the job's temporary folder or the
+            # runner's own (where GitHub's images keep it: a missing one is skipped).
+            profile=(
+              -c default_permissions=devsync
+              -c 'permissions.devsync.extends=":workspace"'
+              -c "permissions.devsync.filesystem={'$RUNNER_TEMP'='deny','$HOME/runners'='deny','$HOME/actions-runner'='deny'}"
+              -c permissions.devsync.network.enabled=false
+            )
+            # That sandbox gives each command a /proc of its own, unless mounting one fails: then it
             # silently keeps the runner's, where a command could read the agent step's environment.
             # So check it here, with no key around: a process outside the sandbox must not show in
-            # it. The agent step runs Codex only once this check has passed.
-            sleep 120 &
-            outside=$!
-            fresh='[ -d /proc/1 ] && [ ! -e "/proc/$1" ] && [ "$(ls /proc | grep -c "^[0-9]*$")" -le 10 ]'
-            if codex sandbox -- sh -c "$fresh" probe "$outside"; then
-              touch "$RUNNER_TEMP/devsync-codex-sandbox-checked"
-            else
-              echo "::warning::Codex's sandbox has no /proc of its own on this runner, so Codex won't run here."
+            # it. Only a passed check leaves the profile for the agent step, which runs Codex only
+            # with it.
+            if [ "$ready" = true ]; then
+              sleep 120 &
+              outside=$!
+              fresh='[ -d /proc/1 ] && [ ! -e "/proc/$1" ] && [ "$(ls /proc | grep -c "^[0-9]*$")" -le 10 ]'
+              if codex sandbox "\${profile[@]}" -- sh -c "$fresh" probe "$outside"; then
+                printf '%s\\n' "\${profile[@]}" > "$RUNNER_TEMP/devsync-codex-sandbox-checked"
+              else
+                echo "::warning::Codex's sandbox has no /proc of its own on this runner, so Codex won't run here."
+              fi
+              kill "$outside" 2>/dev/null || true
             fi
-            kill "$outside" 2>/dev/null || true
           fi
 
       - name: Run the coding agent
@@ -185,12 +202,6 @@ jobs:
             flags=(
               exec --json --ephemeral --strict-config  # a misspelled setting stops the run
               --model "$DEVSYNC_OPENAI_MODEL"
-              # Its sandbox: writes in the checkout and temporary folders only (.git stays
-              # read-only), no network, and no reads of this step's temporary folder or the runner's.
-              -c default_permissions=devsync
-              -c 'permissions.devsync.extends=":workspace"'
-              -c "permissions.devsync.filesystem={'$RUNNER_TEMP'='deny','$HOME/runners'='deny'}"
-              -c permissions.devsync.network.enabled=false
               -c approval_policy=never
               -c web_search=disabled
               -c shell_environment_policy.inherit=core  # its commands get PATH, HOME and the like, no key
@@ -201,17 +212,18 @@ jobs:
               --ignore-user-config --ignore-rules
             )
             : > "$RUNNER_TEMP/codex.jsonl"
-            # Codex's sandbox is set up and checked only on GitHub's own runners (Install Codex).
+            # Codex's sandbox is set up and checked only on GitHub's own runners (Install Codex),
+            # which leaves the sandbox's profile only when the check passed.
             if [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then
               echo "::error::Codex runs only on GitHub-hosted runners, where its sandbox is set up and checked. Run this workflow on one, or add an Anthropic or OpenRouter key."
               failure=agent-failed
-            elif [ ! -f "$RUNNER_TEMP/devsync-codex-sandbox-checked" ]; then
+            elif ! mapfile -t profile 2>/dev/null < "$RUNNER_TEMP/devsync-codex-sandbox-checked" || [ "\${#profile[@]}" = 0 ]; then
               echo "::error::Codex's sandbox failed its check in the Install Codex step, so Codex didn't run. See that step's log."
               failure=agent-failed
             else
               # The task reaches Codex on stdin, as data. Codex gets the OpenAI key as
               # CODEX_API_KEY only; the shell keeps the key for the check below.
-              env -u OPENAI_API_KEY codex "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/codex.jsonl"
+              env -u OPENAI_API_KEY codex "\${flags[@]}" "\${profile[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/codex.jsonl"
               code=$?
               events='[inputs | fromjson? | objects | .type] | any(. == "turn.completed") and all(. != "turn.failed")'
               completed=$(jq -Rn "$events" "$RUNNER_TEMP/codex.jsonl")
@@ -288,11 +300,12 @@ jobs:
           # No key leaves in the change: not in a file's content, not in a path's name. Each key
           # that is set is checked, every one when several are. Only grep's 1 says it found
           # nothing: any other answer, an error included, keeps the change from being published.
+          # Neither prints a file name.
           for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY; do
             if [ -z "$failure" ] && [ -n "\${!key}" ]; then
-              grep -rqF --exclude-dir=.git -f <(printenv "$key") .
+              grep -rqsF --exclude-dir=.git -f <(printenv "$key") .
               contents=$?
-              find . -name .git -prune -o -print | grep -qF -f <(printenv "$key")
+              find . -name .git -prune -o -print 2>/dev/null | grep -qsF -f <(printenv "$key")
               names=("\${PIPESTATUS[@]}")
               if [ "$contents" = 0 ] || [ "\${names[1]}" = 0 ]; then
                 echo "::error::The change holds the $key secret, so it is not published."
