@@ -594,10 +594,8 @@ revision and records no event.
 the host's read-only `tx` only: its tasks with their revisions, comments, questions (with their
 answers), paths, labels, branch and the tasks they wait for (`dependsOn`, in their order), its
 runs, its pull requests and its timeline (the outbox's events, each with the `usage` an agent
-reported, or null). The agents are the host's to export; the timeline names them by id. The host
-gives the project's id only, so the export reads every row by it and by the one workspace the
-project's rows name; rows naming two workspaces are a fault, and the export fails with none of
-them.
+reported, or null). The agents are the host's to export; the timeline names them by id. It reads
+every row by the project alone: the host gives only its id, and the host's project ids are unique.
 
 ## Pages
 

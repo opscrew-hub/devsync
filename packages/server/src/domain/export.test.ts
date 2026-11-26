@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agent, pullRequest } from "../db";
+import { agent } from "../db";
 import type { Member, ProjectContext, ProjectRef } from "../host";
 import { devsyncAgent, hostAgent } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "../testing";
@@ -194,24 +194,6 @@ describe("exportProject", () => {
     expect(hashes).toHaveLength(2);
     for (const { tokenHash } of hashes) expect(json).not.toContain(tokenHash);
     expect(json).not.toContain("tokenHash");
-  });
-
-  it("refuses a project whose rows name more than one workspace, exporting none of them", async () => {
-    const { shop } = await setup();
-    await testDb.db.insert(pullRequest).values({
-      workspaceId: randomUUID(),
-      projectId: shop.projectId,
-      number: 98,
-      title: "Not this workspace's",
-      state: "open",
-      url: "https://github.com/acme/shop/pull/98",
-      headRef: "x",
-      headSha: "d".repeat(40),
-      sourceUpdatedAt: new Date(FAKE_NOW),
-    });
-    await expect(exported(shop.projectId)).rejects.toThrow(
-      `Project ${shop.projectId}'s DevSync rows name 2 workspaces, so its export stops: a row of it was written under another workspace.`,
-    );
   });
 
   it("holds empty lists for a project DevSync has no rows of", async () => {
