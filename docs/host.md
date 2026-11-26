@@ -111,7 +111,7 @@ permission (see MCP for coding agents).
 |---|---|---|
 | `projectRoutes(host)` | `/api/w/<workspace>/projects/<project>/m/devsync` | the session, the workspace, the guard |
 | `workspaceRoutes(host)` | `/api/w/<workspace>/m/devsync` | the session, the workspace, DevSync on for it |
-| `publicRoutes(host)` | `/m/devsync` | the body limit and `Cache-Control: no-store`; DevSync authenticates agents itself |
+| `publicRoutes(host)` | `/m/devsync` | the host's body limit (1 MiB on `/m/*`) and `Cache-Control: no-store`; DevSync rate-limits and authenticates agents itself |
 
 Each is a Hono app with its own `onError`, answering refusals as
 `{ "error": { "code", "message", "fields"? } }` with the dashboard's codes and statuses:
@@ -142,7 +142,7 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 | `POST /agents/:agentId/messages` | `task.write` | `AgentMessage` | 201 `{ id, kind, createdAt }`, idempotent by its key; an agent that hasn't connected to DevSync yet is refused 404 |
 | `GET /tasks/:taskId/runs` | read | | `{ runs: Run[] }`, the task's 50 latest, newest first |
 | `POST /tasks/:taskId/runs` | `run.request` | | 201 `Run`, waiting for approval; a task that waits for an open task is refused 409 (see Managed runs) |
-| `GET /runs/setup` | read | | `RunSetup` |
+| `GET /runs/setup` | read | | `RunSetup`, each project's kept 60 seconds (see Managed runs) |
 | `POST /runs/:runId/approve` | `run.decide` | | `Run` |
 | `POST /runs/:runId/reject` | `run.decide` | | `Run` |
 | `POST /runs/:runId/cancel` | the requester, or `run.decide` | | `Run` |
@@ -452,6 +452,27 @@ DevSync's own token whose project is gone, disconnected or has DevSync off is re
 is off for this project"), as is a request with an origin other than the host's. Every answer
 carries `Cache-Control: no-store`.
 
+Before a token is verified, the endpoint limits its requests with token buckets in the server's
+memory (each of the host's server processes keeps its own), on `host.clock`:
+
+- a token seen valid before takes 120 requests a minute (by its SHA-256, never the token itself),
+  two a second coming back: past them it is refused 429 (`rate-limited`, "This agent sent 120
+  requests to DevSync's MCP endpoint in the last minute, the most it may. Try again in 1 second.")
+  with `Retry-After`, and the host isn't asked to verify it. 120 is twice what an agent calling a
+  tool every second needs;
+- any other request (no token, or one not seen valid yet) waits for its client's 20 a minute, one
+  every 3 seconds, which each refusal (401 or 403) takes from: past them it is refused 429 ("Too
+  many requests without a valid token came from this address in the last minute. Check the agent's
+  token, then try again in 3 seconds."), before verifying anything. A token seen valid before
+  isn't held back by its client's refusals, so an agent goes on while another behind the same
+  address sends bad tokens;
+- the client is the last address of `X-Forwarded-For`, the one the host's proxy adds, else
+  `X-Real-IP`, else one key shared by every such request;
+- each limiter keeps at most 10,000 keys, dropping those refilled to full first, then the oldest.
+
+The host's own limits at its edge come first; these keep a flood from reaching the host's token
+verification through DevSync's endpoint.
+
 An agent revoked on the dashboard is refused at once. DevSync's row of it isn't marked revoked,
 though (only a revoke DevSync made before the move is), so until a later release reads the host's
 revokes, a revoke on the dashboard after the move leaves the agent:
@@ -585,7 +606,8 @@ offers is disabled, as the host refuses them).
 
 They use the TanStack Query client the host gives the page (one of the module's own), refetch every
 10 seconds while visible (except the runs' setup, `GET runs/setup`, which costs several GitHub
-calls: read when the tab opens and on "Check again"), and use the
+calls: read when the tab opens and on "Check again", and answered from the server's 60-second cache
+of the project's), and use the
 host's global classes (`card`, `card-h`, `card-t`, `btn`, `btn-primary`, `btn-secondary`,
 `btn-ghost`, `btn-danger`, `btn-sm`, `bordered`, `i-sm`, `field`, `status` with `s-good`, `s-warning`, `s-serious`,
 `s-muted`, `chip`, `feed`, `kv`, `tabs`, `tab`, `is-table`, `sub`, `mono`, `cream`) and its CSS
@@ -613,7 +635,7 @@ throw GitHub's errors:
 
 | Call | When | What DevSync does with the answer |
 |---|---|---|
-| `setup(projectId, "devsync.yml")` | `GET /runs/setup`, and before a run is asked for | `workflow`, and whether `secrets` holds `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, give `RunSetup`; asking for a run while the workflow is missing answers 409 with `missing`'s words. A key is never missing: without one, the run pays with the workspace's AI credits |
+| `setup(projectId, "devsync.yml")` | `GET /runs/setup` (its answer kept 60 seconds per project, by `host.clock`, a refusal not kept, so a member reloading or looping the route asks GitHub once a minute at most; "Check again" within that minute answers the same), and afresh before a run is asked for | `workflow`, and whether `secrets` holds `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, give `RunSetup`; asking for a run while the workflow is missing answers 409 with `missing`'s words. A key is never missing: without one, the run pays with the workspace's AI credits |
 | `dispatch(projectId, "devsync.yml", { run_id, task, opscrew_origin?, opscrew_request? })` | `devsync.runs`, at most once per approved run | `run_id` is the run's id; `task` is `{ "title", "description", "acceptanceCriteria" }` of the requested revision as JSON, at most 60,000 characters (a longer task is refused when the run is asked for); `opscrew_origin` and `opscrew_request` are `ai.allowRun`'s answer, when it gave one (below). The run is then `RUNNING` with `githubRunId`; a failure ends it `FAILED` with that failure as its reason |
 | `artifact(projectId, githubRunId, "devsync-result")` | a `workflow_run` fact, and the six-hour sweep | `result.json` (schema version 1, `RunResult` in `@devsync/schemas`) is checked (the run's own id, a pull request of the project's own repository, at most 1,000 changed paths of at most 400 characters with no NUL or lone surrogate, every figure non-negative, a known `provider` (`opscrew` for the AI credits), which a succeeded run must have, and `turns` a non-negative whole number or null) and kept, its changed paths and models through `host.redact`, its `turns` with its usage (`Run.usage.turns`); a result that fails a check ends the run `bad-result`, none `no-result`. A failure fails the fact's job, so the host retries it |
 | `deleteArtifact(projectId, githubRunId, name)` | once the run has ended | both `devsync-result` and `devsync-patch`; a failure is logged, and GitHub removes them when they expire |

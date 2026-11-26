@@ -480,6 +480,35 @@ export async function runSetup(host: DevSyncHost, ctx: ProjectContext): Promise<
   return { workflow: answer.workflow, secret, missing };
 }
 
+/** How long `GET /runs/setup` answers a project's setup again before asking GitHub anew. */
+export const SETUP_CACHE_MS = 60_000;
+
+/** The most projects a setup cache keeps: past them, the oldest go. */
+const SETUP_CACHE_KEYS = 10_000;
+
+/**
+ * `runSetup` for `GET /runs/setup`, each project's answer kept for 60 seconds by `host.clock`, so
+ * a member who reloads the page or loops the route asks GitHub at most once a minute. A refusal
+ * isn't kept: the next request asks again. Asking for a run checks the setup afresh.
+ */
+export function cachedRunSetup(host: DevSyncHost): (ctx: ProjectContext) => Promise<RunSetup> {
+  const kept = new Map<string, { at: number; setup: RunSetup }>();
+  return async (ctx) => {
+    const key = `${ctx.project.workspaceId}:${ctx.project.projectId}`;
+    const now = host.clock.now().getTime();
+    const found = kept.get(key);
+    if (found && now - found.at < SETUP_CACHE_MS) return found.setup;
+    const setup = await runSetup(host, ctx);
+    kept.delete(key);
+    for (const [other, entry] of kept) {
+      if (kept.size < SETUP_CACHE_KEYS && now - entry.at < SETUP_CACHE_MS) break;
+      kept.delete(other);
+    }
+    kept.set(key, { at: now, setup });
+    return setup;
+  };
+}
+
 /**
  * What asking for a run checks, creating nothing: a writable project, the member's `run.request`,
  * the task (Ready, waiting for no open task, short enough for the run's input, no run that hasn't

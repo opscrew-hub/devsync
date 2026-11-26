@@ -516,3 +516,71 @@ describe("the MCP endpoint", () => {
     expect((await data(claude.token, "create_task", input)).title).toBe("Agent task");
   });
 });
+
+describe("the MCP endpoint's rate limit", () => {
+  /** How many times the host was asked to verify a token: the work a flood would cost it. */
+  function countVerifies(host: ReturnType<typeof fakeHost>) {
+    const verify = host.agents.verify;
+    const counted = { calls: 0 };
+    host.agents.verify = async (token) => {
+      counted.calls++;
+      return verify(token);
+    };
+    return counted;
+  }
+
+  it("takes 120 requests a minute per token, then 429 with Retry-After, before verifying", async () => {
+    const { host, codex, claude, call } = await setup();
+    const verified = countVerifies(host);
+    const list = (token: string) => call(token, "tools/list", {});
+    for (let i = 0; i < 120; i++) expect((await list(codex.token)).status).toBe(200);
+    const limited = await list(codex.token);
+    const error = await refusedWith(limited, 429, "rate-limited");
+    expect(error.message).toBe(
+      "This agent sent 120 requests to DevSync's MCP endpoint in the last minute, the most it may. Try again in 1 second.",
+    );
+    expect(limited.headers.get("retry-after")).toBe("1");
+    expect(verified.calls).toBe(120);
+    // Another agent's token has its own.
+    expect((await list(claude.token)).status).toBe(200);
+    // Two requests a second come back.
+    setClock(host, Date.parse(FAKE_NOW) + 1000);
+    expect((await list(codex.token)).status).toBe(200);
+    expect((await list(codex.token)).status).toBe(200);
+    await refusedWith(await list(codex.token), 429, "rate-limited");
+  });
+
+  it("takes 20 requests a minute from a client without a valid token, and still its agents' own", async () => {
+    const { host, codex, call, post } = await setup();
+    const verified = countVerifies(host);
+    const from = (address: string) => ({ "X-Forwarded-For": `198.51.100.9, ${address}` });
+    const bare = (headers: Record<string, string>) =>
+      post(headers, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+    // An agent this client used before goes on whatever the client's bad requests.
+    expect((await call(codex.token, "tools/list", {}, from("203.0.113.7"))).status).toBe(200);
+    for (let i = 0; i < 10; i++) {
+      await refusedWith(await bare(from("203.0.113.7")), 401, "unauthenticated");
+      await refusedWith(
+        await call(fakeToken(), "tools/list", {}, from("203.0.113.7")),
+        401,
+        "unauthenticated",
+      );
+    }
+    const limited = await call(fakeToken(), "tools/list", {}, from("203.0.113.7"));
+    const error = await refusedWith(limited, 429, "rate-limited");
+    expect(error.message).toBe(
+      "Too many requests without a valid token came from this address in the last minute. Check the agent's token, then try again in 3 seconds.",
+    );
+    expect(limited.headers.get("retry-after")).toBe("3");
+    await refusedWith(await bare(from("203.0.113.7")), 429, "rate-limited");
+    // The agent's first request, and each unknown token twice (the host is asked again once
+    // DevSync's own rows don't have it); none for the refused ones.
+    expect(verified.calls).toBe(21);
+    expect((await call(codex.token, "tools/list", {}, from("203.0.113.7"))).status).toBe(200);
+    // Each client has its own: the address the host's proxy added, the list's last.
+    await refusedWith(await bare(from("203.0.113.8")), 401, "unauthenticated");
+    // A minute on, the client may try again.
+    setClock(host, Date.parse(FAKE_NOW) + 60_000);
+    await refusedWith(await bare(from("203.0.113.7")), 401, "unauthenticated");
+  });
+});

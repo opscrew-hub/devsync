@@ -28,7 +28,7 @@ import type {
   WorkspaceContext,
   WorkspaceEnv,
 } from "../host";
-import { devsyncAgent, hostAgent, sampleFinding } from "../test/helpers";
+import { devsyncAgent, hostAgent, sampleFinding, setClock } from "../test/helpers";
 import { createTestDb, FAKE_NOW, type FakeHost, fakeHost, type TestDb } from "../testing";
 import { projectRoutes, workspaceRoutes } from "./index";
 
@@ -73,14 +73,17 @@ async function send(fetch: Fetch, method: string, url: string, body?: unknown) {
   };
 }
 
-/** The project's routes mounted as the host mounts them, its guard setting `ctx` first. */
-function projectClient(host: FakeHost, ctx: ProjectContext): Send {
+/**
+ * The project's routes mounted as the host mounts them, its guard setting `ctx` first: the host's
+ * one mount of them, `routes`, when given.
+ */
+function projectClient(host: FakeHost, ctx: ProjectContext, routes = projectRoutes(host)): Send {
   const app = new Hono<ProjectEnv>();
   app.use(`${PROJECT_MOUNT}/*`, async (c, next) => {
     c.set("module", ctx);
     await next();
   });
-  app.route(PROJECT_MOUNT, projectRoutes(host));
+  app.route(PROJECT_MOUNT, routes);
   const base = `/api/w/${ctx.project.workspaceId}/projects/${ctx.project.projectId}/m/devsync`;
   return (method, path, body) =>
     send((url, init) => app.request(url, init), method, `${base}${path}`, body);
@@ -667,6 +670,45 @@ describe("project run routes", () => {
     expect(RunList.parse(listed.body).runs.map((r) => [r.id, r.status])).toEqual([
       [run.id, "QUEUED"],
     ]);
+  });
+
+  it("answer the setup from a minute's cache per project, so GitHub is asked once a minute", async () => {
+    const s = setup();
+    const asked: string[] = [];
+    const setupOf = s.host.github.setup;
+    s.host.github.setup = async (projectId, workflow) => {
+      asked.push(projectId);
+      return setupOf(projectId, workflow);
+    };
+    const start = Date.parse(FAKE_NOW);
+    const routes = projectRoutes(s.host);
+    const here = projectClient(s.host, s.ctx("developer"), routes);
+    const there = projectClient(s.host, s.ctx("developer", s.other), routes);
+    const complete = { workflow: true, secret: true, missing: [] };
+
+    expect((await here("GET", "/runs/setup")).body).toEqual(complete);
+    expect((await here("GET", "/runs/setup")).body).toEqual(complete);
+    expect(asked).toEqual([s.project.projectId]);
+    expect((await there("GET", "/runs/setup")).body).toEqual(complete);
+    expect(asked).toEqual([s.project.projectId, s.other.projectId]);
+
+    // The workflow removed meanwhile: the same answer for the rest of the minute, then the new.
+    s.host.github.repository = { workflow: false, secrets: [] };
+    setClock(s.host, start + 59_999);
+    expect((await here("GET", "/runs/setup")).body).toEqual(complete);
+    setClock(s.host, start + 60_000);
+    const fresh = RunSetup.parse((await here("GET", "/runs/setup")).body);
+    expect(fresh).toMatchObject({ workflow: false, secret: false });
+    expect(asked).toHaveLength(3);
+
+    // A refusal isn't kept: the next request asks again.
+    setClock(s.host, start + 120_000);
+    s.host.github.fail.setup = "unavailable";
+    refusal(await here("GET", "/runs/setup"), 409, "conflict");
+    refusal(await here("GET", "/runs/setup"), 409, "conflict");
+    delete s.host.github.fail.setup;
+    expect(RunSetup.parse((await here("GET", "/runs/setup")).body).workflow).toBe(false);
+    expect(asked).toHaveLength(6);
   });
 
   it("answer 409 with the setup's words while the repository lacks the workflow", async () => {

@@ -248,7 +248,9 @@ briefing as an agent, a member and a managed run with a long context.
   an agent's own claim starting or ending, a pull request linked, and a managed run's changes
   ([host.md](host.md), Audit).
 - **R-4**: DevSync's MCP endpoint MUST authenticate agents by bearer token (hash stored, 24-hour
-  expiry, rotation, revocation) and expose DevSync's current tools with their current behaviour.
+  expiry, rotation, revocation) and expose DevSync's current tools with their current behaviour,
+  limiting requests before a token is verified (120 a minute per token, 20 a minute per client
+  without a valid one).
 - **R-5**: DevSync's outbox MUST be drained by a worker queue started after each commit and on a
   one-minute schedule, delivering each event once per recipient, retrying a failed delivery with a backoff capped at
   10 minutes.

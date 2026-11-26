@@ -35,7 +35,14 @@ import { requireRole } from "../domain/common";
 import { findingTask } from "../domain/findings";
 import { listPullRequests } from "../domain/pull-requests";
 import { answerQuestion, askQuestion } from "../domain/questions";
-import { approveRun, cancelRun, listRuns, rejectRun, requestRun, runSetup } from "../domain/runs";
+import {
+  approveRun,
+  cachedRunSetup,
+  cancelRun,
+  listRuns,
+  rejectRun,
+  requestRun,
+} from "../domain/runs";
 import { publishSignal } from "../domain/signals";
 import {
   commentOnTask,
@@ -62,6 +69,8 @@ export function projectRoutes(host: DevSyncHost): Hono<ProjectEnv> {
   app.use(noStore);
   const write = allow("task.write");
   const decide = allow("run.decide");
+  // Several GitHub calls each: a project's answer is kept for a minute.
+  const setupOf = cachedRunSetup(host);
 
   app.get("/tasks", async (c) => {
     const query = readQuery(c, TaskListQuery);
@@ -106,7 +115,7 @@ export function projectRoutes(host: DevSyncHost): Hono<ProjectEnv> {
   app.post("/tasks/:taskId/runs", allow("run.request"), async (c) =>
     answer(c, Run, await requestRun(host, c.get("module"), c.req.param("taskId")), 201),
   );
-  app.get("/runs/setup", async (c) => answer(c, RunSetup, await runSetup(host, c.get("module"))));
+  app.get("/runs/setup", async (c) => answer(c, RunSetup, await setupOf(c.get("module"))));
   app.post("/runs/:runId/approve", decide, async (c) =>
     answer(c, Run, await approveRun(host, c.get("module"), c.req.param("runId"))),
   );
