@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  AgentUsage,
+  BranchName,
   CommentInput,
+  isBranchName,
+  isRepositoryPath,
   PullRequestLink,
   PullRequestList,
   Task,
   TaskDetail,
+  TaskFields,
   TaskInput,
   TaskListQuery,
   TaskUpdate,
@@ -27,6 +32,10 @@ function task(): Task {
     assigneeUserId: null,
     claim: { agentId: randomUUID(), agentName: "Builder", expiresAt: now },
     pullRequestNumber: null,
+    owns: ["src/checkout/"],
+    dependsOn: [randomUUID()],
+    labels: ["payments"],
+    branch: "feature/checkout",
     createdAt: now,
     updatedAt: now,
   };
@@ -85,6 +94,141 @@ describe("TaskUpdate", () => {
     expect(TaskUpdate.safeParse({ version: 3, status: "STARTED" }).success).toBe(false);
     expect(TaskUpdate.safeParse({ version: 3, title: text(161) }).success).toBe(false);
     expect(TaskUpdate.safeParse({ version: 3, assigneeId: null }).success).toBe(false);
+  });
+});
+
+describe("a task's fields beyond its requirements", () => {
+  const valid = { title: "Ship it", description: "", acceptanceCriteria: "" };
+
+  it("are optional on a new task and on an edit, and none of them is a requirement", () => {
+    expect(TaskInput.parse(valid)).toEqual(valid);
+    expect(TaskUpdate.parse({ version: 1 })).toEqual({ version: 1 });
+    const fields = {
+      owns: ["src/checkout/", "README.md"],
+      dependsOn: [randomUUID()],
+      labels: ["payments", "ui"],
+      branch: "feature/checkout",
+    };
+    expect(TaskInput.parse({ ...valid, ...fields })).toEqual({ ...valid, ...fields });
+    expect(TaskUpdate.parse({ version: 2, ...fields })).toEqual({ version: 2, ...fields });
+    expect(TaskUpdate.parse({ version: 2, branch: null }).branch).toBeNull();
+    expect(Object.keys(TaskFields.shape).sort()).toEqual(["branch", "dependsOn", "labels", "owns"]);
+  });
+
+  it("take at most 50 paths, each relative to the repository's root, at most 400 characters", () => {
+    const owns = (paths: string[]) => TaskFields.safeParse({ owns: paths }).success;
+    expect(owns(["src/", "src/app.ts", ".github/workflows/ci.yml", "a..b/c"])).toBe(true);
+    expect(owns(Array.from({ length: 50 }, (_, i) => `f${i}`))).toBe(true);
+    expect(owns(Array.from({ length: 51 }, (_, i) => `f${i}`))).toBe(false);
+    expect(owns([text(400)])).toBe(true);
+    expect(owns([text(401)])).toBe(false);
+    for (const bad of [
+      "/etc/passwd",
+      "../up",
+      "src/../x",
+      "a\u0000b",
+      "",
+      " ",
+      "a//b",
+      "./a",
+      "/",
+    ]) {
+      expect(owns([bad]), JSON.stringify(bad)).toBe(false);
+    }
+    // Each path once: the same path twice is a mistake.
+    expect(owns(["src/", "src/"])).toBe(false);
+    expect(TaskFields.parse({ owns: ["  src/app.ts "] }).owns).toEqual(["src/app.ts"]);
+    expect(isRepositoryPath("docs/")).toBe(true);
+    expect(isRepositoryPath("docs/.")).toBe(false);
+  });
+
+  it("wait for at most 20 tasks, each once", () => {
+    const ids = (n: number) => Array.from({ length: n }, () => randomUUID());
+    expect(TaskFields.safeParse({ dependsOn: ids(20) }).success).toBe(true);
+    expect(TaskFields.safeParse({ dependsOn: ids(21) }).success).toBe(false);
+    const one = randomUUID();
+    expect(TaskFields.safeParse({ dependsOn: [one, one] }).success).toBe(false);
+    expect(TaskFields.safeParse({ dependsOn: ["t1"] }).success).toBe(false);
+  });
+
+  it("take at most 10 labels of 1 to 40 characters, trimmed and each once whatever its case", () => {
+    const labels = (list: string[]) => TaskFields.safeParse({ labels: list }).success;
+    expect(labels(Array.from({ length: 10 }, (_, i) => `l${i}`))).toBe(true);
+    expect(labels(Array.from({ length: 11 }, (_, i) => `l${i}`))).toBe(false);
+    expect(labels([text(40)])).toBe(true);
+    expect(labels([text(41)])).toBe(false);
+    expect(labels(["  "])).toBe(false);
+    expect(labels(["UI", "ui"])).toBe(false);
+    expect(labels(["ui ", " ui"])).toBe(false);
+    expect(TaskFields.parse({ labels: ["  Payments "] }).labels).toEqual(["Payments"]);
+  });
+
+  it("take a branch named as git allows, at most 200 characters, or null", () => {
+    for (const good of ["main", "feature/checkout", "fix-12", "release/2.x", "a.b", "user@host"]) {
+      expect(isBranchName(good), good).toBe(true);
+      expect(BranchName.safeParse(good).success, good).toBe(true);
+    }
+    for (const bad of [
+      "has space",
+      "a..b",
+      "-leading",
+      "tilde~",
+      "caret^",
+      "colon:",
+      "question?",
+      "star*",
+      "bracket[",
+      "back\\slash",
+      "ends/",
+      "/starts",
+      "double//slash",
+      "ends.lock",
+      "part.lock/x",
+      ".hidden",
+      "x/.hidden",
+      "ends.",
+      "at@{brace",
+      "@",
+      "HEAD",
+      "tab\tchar",
+      "del\u007f",
+    ]) {
+      expect(isBranchName(bad), JSON.stringify(bad)).toBe(false);
+      expect(BranchName.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+    expect(BranchName.safeParse(text(200)).success).toBe(true);
+    expect(BranchName.safeParse(text(201)).success).toBe(false);
+    expect(BranchName.safeParse("").success).toBe(false);
+    expect(BranchName.parse(" main ")).toBe("main");
+  });
+});
+
+describe("AgentUsage", () => {
+  it("takes whole token counts, a cost and a model, each optional and none negative", () => {
+    const usage = {
+      inputTokens: 1200,
+      outputTokens: 300,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 5000,
+      costUsd: 0.42,
+      model: "claude-opus",
+    };
+    expect(AgentUsage.parse(usage)).toEqual(usage);
+    expect(AgentUsage.safeParse({}).success).toBe(true);
+    expect(AgentUsage.safeParse({ costUsd: 0 }).success).toBe(true);
+    for (const bad of [
+      { inputTokens: -1 },
+      { outputTokens: 1.5 },
+      { cacheReadInputTokens: "10" },
+      { costUsd: -0.01 },
+      { costUsd: Number.POSITIVE_INFINITY },
+      { model: text(101) },
+      { model: " " },
+      { turns: 3 },
+    ]) {
+      expect(AgentUsage.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+    expect(AgentUsage.safeParse({ model: text(100) }).success).toBe(true);
   });
 });
 
@@ -168,8 +312,28 @@ describe("the answers", () => {
         },
       ],
       pullRequest: null,
+      dependencies: [{ id: randomUUID(), title: "Add a cart", status: "REVIEW" }],
+      overlaps: [
+        {
+          task: { id: randomUUID(), title: "Restyle checkout", status: "READY" },
+          paths: ["src/checkout/total.ts"],
+        },
+      ],
+      usage: {
+        agents: {
+          inputTokens: 1200,
+          outputTokens: 300,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 5000,
+          costUsd: 0.42,
+          models: ["claude-opus"],
+          count: 2,
+        },
+        runs: null,
+      },
     };
     expect(TaskDetail.safeParse(detail).success).toBe(true);
+    expect(TaskDetail.safeParse({ ...detail, usage: { agents: null } }).success).toBe(false);
     expect(
       TaskDetail.safeParse({
         ...detail,

@@ -2,7 +2,7 @@
 import { z } from "zod";
 import { MessageText, SignalKind } from "./agents";
 import { Counter, Id } from "./common";
-import { TaskInput, TaskListQuery, TaskUpdate } from "./tasks";
+import { AgentUsage, TaskInput, TaskListQuery, TaskUpdate } from "./tasks";
 
 /** `get_project_state` and `get_pending_signals`. */
 export const NoInput = z.strictObject({});
@@ -41,7 +41,7 @@ export const AgentTaskUpdate = TaskUpdate.omit({ assigneeUserId: true }).extend(
 });
 export type AgentTaskUpdate = z.infer<typeof AgentTaskUpdate>;
 
-/** `report_progress`, `report_blocker` and `request_review`. */
+/** `report_blocker`, and the report `TaskReportInput` adds usage to. */
 export const TaskActivityInput = z.strictObject({
   taskId: Id,
   claimId: Id,
@@ -50,6 +50,10 @@ export const TaskActivityInput = z.strictObject({
   message: MessageText,
 });
 export type TaskActivityInput = z.infer<typeof TaskActivityInput>;
+
+/** `report_progress` and `request_review`: a report, and what the agent used since its last one. */
+export const TaskReportInput = TaskActivityInput.extend({ usage: AgentUsage.optional() });
+export type TaskReportInput = z.infer<typeof TaskReportInput>;
 
 /** `submit_review`: a peer's decision on a review request. */
 export const ReviewDecisionInput = z.strictObject({
@@ -75,9 +79,9 @@ export const MCP_TOOL_INPUTS = {
   release_task: TaskClaimInput,
   create_task: AgentTaskInput,
   update_task: AgentTaskUpdate,
-  report_progress: TaskActivityInput,
+  report_progress: TaskReportInput,
   report_blocker: TaskActivityInput,
-  request_review: TaskActivityInput,
+  request_review: TaskReportInput,
   submit_review: ReviewDecisionInput,
   request_run: TaskRef,
 } as const;

@@ -10,6 +10,7 @@ import {
   TaskActivityInput,
   TaskClaimInput,
   TaskRef,
+  TaskReportInput,
 } from "./mcp";
 
 const text = (length: number) => "a".repeat(length);
@@ -114,6 +115,43 @@ describe("the MCP tools' inputs", () => {
     expect(TaskActivityInput.safeParse(activity).success).toBe(true);
     expect(TaskActivityInput.safeParse({ ...activity, message: text(4001) }).success).toBe(false);
     expect(TaskActivityInput.safeParse({ ...activity, revision: 0 }).success).toBe(false);
+  });
+
+  it("take the agent's usage with a progress report and a review request, not with a blocker", () => {
+    const activity = {
+      taskId: randomUUID(),
+      claimId: randomUUID(),
+      revision: 1,
+      requestId: randomUUID(),
+      message: "Halfway",
+      usage: { inputTokens: 10, outputTokens: 2, costUsd: 0.01, model: "gpt-5" },
+    };
+    expect(MCP_TOOL_INPUTS.report_progress).toBe(TaskReportInput);
+    expect(MCP_TOOL_INPUTS.request_review).toBe(TaskReportInput);
+    expect(MCP_TOOL_INPUTS.report_blocker).toBe(TaskActivityInput);
+    expect(TaskReportInput.safeParse(activity).success).toBe(true);
+    expect(TaskReportInput.safeParse({ ...activity, usage: undefined }).success).toBe(true);
+    expect(TaskReportInput.safeParse({ ...activity, usage: { inputTokens: -1 } }).success).toBe(
+      false,
+    );
+    expect(TaskReportInput.safeParse({ ...activity, extra: 1 }).success).toBe(false);
+    expect(TaskActivityInput.safeParse(activity).success).toBe(false);
+  });
+
+  it("take a task's paths, the tasks it waits for, its labels and branch, to create or edit", () => {
+    const fields = {
+      owns: ["src/"],
+      dependsOn: [randomUUID()],
+      labels: ["api"],
+      branch: "feature/api",
+    };
+    const input = { requestId: randomUUID(), title: "t", description: "", acceptanceCriteria: "" };
+    expect(AgentTaskInput.safeParse({ ...input, ...fields }).success).toBe(true);
+    expect(AgentTaskInput.safeParse({ ...input, owns: ["/abs"] }).success).toBe(false);
+    const update = { taskId: randomUUID(), version: 1 };
+    expect(AgentTaskUpdate.safeParse({ ...update, ...fields }).success).toBe(true);
+    expect(AgentTaskUpdate.safeParse({ ...update, branch: null }).success).toBe(true);
+    expect(AgentTaskUpdate.safeParse({ ...update, branch: "a b" }).success).toBe(false);
   });
 
   it("take a review decision", () => {

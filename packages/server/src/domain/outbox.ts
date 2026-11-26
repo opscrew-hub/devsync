@@ -10,7 +10,7 @@
  * they are made. A change with no timeline event (a claim, a release, a pull request linked or
  * merged) emits its own with `outbox.emit`, through the same mapping.
  */
-import type { RunFailure, TaskStatus } from "@devsync/schemas";
+import type { AgentUsage, RunFailure, TaskStatus } from "@devsync/schemas";
 import { type OutboxEventRow, outboxEvent, type RunRow } from "../db";
 import type { DevSyncDb, DevSyncEvent, DevSyncHost, EventData } from "../host";
 
@@ -49,6 +49,8 @@ export interface OutboxRecord {
   requestId?: string | null;
   /** A review decision's review request. */
   reviewRequestId?: string | null;
+  /** What an agent reported it used with this report, kept apart from the payload peers receive. */
+  usage?: AgentUsage | null;
   /** `host.clock.now()`: the event's time, and when it is first due. */
   at: Date;
   /** What its host events carry beyond the record's ids. */
@@ -162,6 +164,7 @@ async function recordOutboxEvent(
       reviewRequestId: event.reviewRequestId ?? null,
       kind: event.kind,
       payload: event.payload,
+      usage: event.usage ?? null,
       createdAt: event.at,
       availableAt: event.at,
     })

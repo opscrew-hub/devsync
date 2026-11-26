@@ -109,6 +109,10 @@ describe("FindingAnswer", () => {
       assigneeUserId: null,
       claim: null,
       pullRequestNumber: null,
+      owns: [],
+      dependsOn: [],
+      labels: [],
+      branch: null,
       createdAt: now,
       updatedAt: now,
     };

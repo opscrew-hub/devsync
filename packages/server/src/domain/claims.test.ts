@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { task } from "../db";
+import { task, taskDependency } from "../db";
 import type { AgentActor, DevSyncError, ProjectRef } from "../host";
 import { hostAgent, refusal, setClock } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "../testing";
@@ -170,6 +170,132 @@ describe("task claims", () => {
     expect((await readTask(taskId)).status).toBe("READY");
     const error = await refusal(claimTask(host, agents[0], { taskId, claimId: "nope" }), "invalid");
     expect(error.fields).toEqual(["claimId"]);
+  });
+
+  it("wait for the tasks a task depends on: refused while one is open, taken once all are done", async () => {
+    const { host, agents, taskId } = await setup();
+    const scope = {
+      workspaceId: agents[0].project.workspaceId,
+      projectId: agents[0].project.projectId,
+    };
+    const dependency = async (title: string) => {
+      const [row] = await testDb.db
+        .insert(task)
+        .values({ ...scope, title, description: "", acceptanceCriteria: "", status: "REVIEW" })
+        .returning();
+      if (!row) throw new Error("no task");
+      return row.id;
+    };
+    const cart = await dependency("Add a cart");
+    const prices = await dependency("Show prices");
+    await testDb.db.insert(taskDependency).values([
+      { ...scope, taskId, dependsOnTaskId: cart, position: 0 },
+      { ...scope, taskId, dependsOnTaskId: prices, position: 1 },
+    ]);
+    await testDb.db.update(task).set({ status: "READY" }).where(eq(task.id, taskId));
+
+    const claim = { taskId, claimId: crypto.randomUUID() };
+    const waiting = await refusal(claimTask(host, agents[0], claim), "conflict");
+    expect(waiting.message).toBe(
+      'This task waits for task "Add a cart". Claim it once that is done.',
+    );
+    await testDb.db.update(task).set({ status: "DONE" }).where(eq(task.id, cart));
+    expect((await refusal(claimTask(host, agents[0], claim), "conflict")).message).toBe(
+      'This task waits for task "Show prices". Claim it once that is done.',
+    );
+    expect((await readTask(taskId)).status).toBe("READY");
+    // Cancelled counts as done.
+    await testDb.db.update(task).set({ status: "CANCELLED" }).where(eq(task.id, prices));
+    expect(await claimTask(host, agents[0], claim)).toMatchObject({ status: "CLAIMED" });
+  });
+
+  it("hold at most 3 tasks per agent: a fourth claim, or a takeover, is refused until one ends", async () => {
+    const { host, agents } = await setup();
+    const scope = {
+      workspaceId: agents[0].project.workspaceId,
+      projectId: agents[0].project.projectId,
+    };
+    const ready = async () => {
+      const [row] = await testDb.db
+        .insert(task)
+        .values({
+          ...scope,
+          title: "Ready",
+          description: "",
+          acceptanceCriteria: "",
+          status: "READY",
+        })
+        .returning();
+      if (!row) throw new Error("no task");
+      return row.id;
+    };
+    const start = Date.parse(FAKE_NOW);
+    const [codex, claude] = agents;
+    const held = [];
+    for (let i = 0; i < 3; i++) {
+      const claim = { taskId: await ready(), claimId: crypto.randomUUID() };
+      await claimTask(host, codex, claim);
+      held.push(claim);
+    }
+    // Claiming one of them again under its own claim is the same claim, not a fourth.
+    expect(await claimTask(host, codex, held[0] as (typeof held)[0])).toMatchObject({
+      status: "CLAIMED",
+    });
+    const fourth = { taskId: await ready(), claimId: crypto.randomUUID() };
+    const error = await refusal(claimTask(host, codex, fourth), "conflict");
+    expect(error.message).toBe(
+      "You hold 3 claimed tasks. Release, finish or report a blocker on one before claiming another.",
+    );
+    expect((await readTask(fourth.taskId)).status).toBe("READY");
+    // Another agent's claims are its own.
+    await claimTask(host, claude, { taskId: await ready(), claimId: crypto.randomUUID() });
+
+    // Taking over another agent's expired claim counts the same way.
+    const theirs = { taskId: await ready(), claimId: crypto.randomUUID() };
+    await claimTask(host, claude, theirs);
+    setClock(host, start + 10 * MINUTE);
+    for (const claim of held) await renewTaskClaim(host, codex, claim);
+    setClock(host, start + LEASE + MINUTE);
+    const takeover = { taskId: theirs.taskId, claimId: crypto.randomUUID() };
+    await refusal(claimTask(host, codex, takeover), "conflict");
+
+    // Once one ends, another may be claimed; an expired claim holds nothing.
+    await releaseTask(host, codex, held[0] as (typeof held)[0]);
+    expect(await claimTask(host, codex, takeover)).toMatchObject({ claimId: takeover.claimId });
+    setClock(host, start + 10 * MINUTE + LEASE + MINUTE);
+    expect(await claimTask(host, codex, fourth)).toMatchObject({ claimId: fourth.claimId });
+  });
+
+  it("renew no claim of an agent holding more than 3, as a claim would be refused", async () => {
+    const { host, agents } = await setup();
+    const [codex] = agents;
+    const scope = { workspaceId: codex.project.workspaceId, projectId: codex.project.projectId };
+    // Four claims from before the limit, made directly.
+    const claims = [];
+    for (let i = 0; i < 4; i++) {
+      const claimId = crypto.randomUUID();
+      const [row] = await testDb.db
+        .insert(task)
+        .values({
+          ...scope,
+          title: `Held ${i}`,
+          description: "",
+          acceptanceCriteria: "",
+          status: "CLAIMED",
+          claimAgentId: codex.agentId,
+          claimId,
+          claimExpiresAt: new Date(Date.parse(FAKE_NOW) + LEASE),
+        })
+        .returning();
+      if (!row) throw new Error("no task");
+      claims.push({ taskId: row.id, claimId });
+    }
+    const [first, ...rest] = claims as [(typeof claims)[0], ...typeof claims];
+    expect((await refusal(renewTaskClaim(host, codex, first), "conflict")).message).toBe(
+      "You hold 4 claimed tasks, more than 3. Release, finish or report a blocker on one before renewing this claim.",
+    );
+    await releaseTask(host, codex, rest[0] as (typeof claims)[0]);
+    expect(await renewTaskClaim(host, codex, first)).toMatchObject({ claimId: first.claimId });
   });
 
   it("are refused on a read-only project", async () => {

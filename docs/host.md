@@ -153,18 +153,43 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 
 ### Shapes
 
-- `TaskInput`: `title` (1–160), `description` (≤ 8000), `acceptanceCriteria` (≤ 8000), and
-  `finding` (`{ fingerprint }`, optional: the security finding the task is made from).
+- `TaskInput`: `title` (1–160), `description` (≤ 8000), `acceptanceCriteria` (≤ 8000), the
+  task's fields below (each optional: left out, it is empty), and `finding` (`{ fingerprint }`,
+  optional: the security finding the task is made from).
+- The task's fields (`TaskFields`), none of them part of a requirements revision:
+  - `owns`: the paths it may change, at most 50, each once: a POSIX path relative to the
+    repository's root of 1–400 characters (no leading `/`, no NUL, no empty, `.` or `..`
+    segment); one ending in `/` is the folder and everything under it;
+  - `dependsOn`: the ids of the project's tasks it waits for, at most 20, each once, in their
+    order. Another project's task, an unknown one or the task itself is refused (422), and so is a
+    circle (409, naming the task that already waits for this one), checked under a lock on the
+    project's dependencies so two edits at once can't close one;
+  - `labels`: at most 10, each 1–40 characters, trimmed, each once whatever its case;
+  - `branch`: a branch name git takes (`git check-ref-format --branch`: no space, control
+    character or `~^:?*[\`, no `..`, `//` or `@{`, not starting with `-` or `/`, not ending with
+    `/` or `.`, no part starting with `.` or ending with `.lock`, neither `@` nor `HEAD`), 1–200
+    characters, or null.
 - `Finding`: the host's finding as `host.finding` gives it (see Security findings).
   `FindingAnswer`: `finding`, and `task` (the `Task` already linked to it, or null).
 - `TaskUpdate`: `version`, and any of `title`, `description`, `acceptanceCriteria`, `status`,
-  `assigneeUserId` (a member's id, or null).
+  `assigneeUserId` (a member's id, or null) and the task's fields (one given replaces it: an empty
+  list or a null branch clears it). Changing only the task's fields keeps no revision and records no
+  timeline event; the version is bumped as for any edit.
 - `Task`: `id`, `projectId`, `title`, `status`, `revision`, `version`, `assigneeUserId`, `claim`
-  (`{ agentId, agentName, expiresAt }` or null), `pullRequestNumber`, `createdAt`, `updatedAt`.
+  (`{ agentId, agentName, expiresAt }` or null), `pullRequestNumber`, `owns`, `dependsOn`,
+  `labels`, `branch`, `createdAt`, `updatedAt`.
 - `TaskDetail`: a `Task` with `description`, `acceptanceCriteria`, `creator`, `revisions` (newest
   first: `number`, the three fields, `author`, `createdAt`), `comments` (newest first: `id`,
   `author`, `body`, `createdAt`), `timeline` (the task's events oldest first: `id`, `kind`, `actor`,
-  `message`, `revision`, `createdAt`) and `pullRequest` (or null).
+  `message`, `revision`, `createdAt`), `pullRequest` (or null), `dependencies` (the tasks it waits
+  for in their order, each `{ id, title, status }`), `overlaps` (while it is open, the project's
+  other open tasks, neither Done nor Cancelled, whose paths overlap its own, oldest first: `task`
+  (`{ id, title, status }`) and `paths`, the paths they share, sorted: a path both name, or the one
+  inside the other's folder) and `usage` (`{ agents, runs }`: the sum of its agents' reported usage
+  and, kept apart, of its managed runs', each a `UsageTotal` or null when there is none).
+- `UsageTotal`: `inputTokens`, `outputTokens`, `cacheCreationInputTokens`, `cacheReadInputTokens`
+  (a figure a report left out counts 0), `costUsd` (to the millionth of a dollar; the agents' is
+  their own estimate), `models` (each once, sorted) and `count` (the reports or runs it adds up).
 - An author or actor: `{ kind: "member", userId, name }` or `{ kind: "agent", agentId, name }`; a
   member who has left the workspace is named "Former member".
 - `CommentInput`: `body` (1–4000). `PullRequestLink`: `number` (a positive integer, or null).
@@ -201,7 +226,8 @@ Backlog, Ready, Claimed, In progress, Blocked, Review, Done, Cancelled. The move
 cancelled) until the claim expires or its agent is revoked; then anyone may move it, and the claim
 is cleared. Every change to a task's title, description or acceptance criteria keeps a new
 revision; every edit checks the task's `version` and is refused with "This task changed. Reload it
-and try again." when another came first.
+and try again." when another came first. An agent claims a task only once every task it waits for
+is Done or Cancelled, and holds at most 3 live claims at once (see `claim_task`).
 
 ## MCP for coding agents
 
@@ -217,18 +243,18 @@ the same list until a later release (see DevSync's own endpoint below).
 |---|---|---|---|---|
 | `get_project_state` | read | everyone | | the project, its agents and its 100 most recently updated tasks |
 | `list_tasks` | read | everyone | `status`?, `assignee`? (`me`, `none` or a user id) | `{ tasks }`, as `GET /tasks`; `me` is a member's own |
-| `get_task` | read | everyone | `taskId` | `{ task, latestRun }`: the `TaskDetail`, with its pull request, and its latest `Run` (or null) |
+| `get_task` | read | everyone | `taskId` | `{ task, latestRun }`: the `TaskDetail`, with its pull request, the tasks it waits for, the open tasks sharing its paths and its usage, and its latest `Run` (or null) |
 | `get_pending_signals` | read | agents | | the agent's oldest unacknowledged signals |
 | `acknowledge_signal` | write | agents | `id` | acknowledges one |
 | `publish_signal` | write | agents | `recipientId`, `kind`, `payload.message`, `idempotencyKey`, `replyToId`? | to a peer agent: one follow-up per signal, four replies per chain, 20 new signals a minute |
-| `claim_task` | write | agents | `taskId`, `claimId` | claims a Ready task (or an expired claim) for 15 minutes |
-| `renew_task_claim` | write | agents | `taskId`, `claimId` | renews it; answers the current requirements revision |
+| `claim_task` | write | agents | `taskId`, `claimId` | claims a Ready task (or an expired claim) for 15 minutes, once every task in its `dependsOn` is Done or Cancelled ("This task waits for task "<title>". Claim it once that is done.") and while the agent holds fewer than 3 other live claims ("You hold 3 claimed tasks. Release, finish or report a blocker on one before claiming another."); taking over an expired claim counts as a claim, and claiming again under the same live claim is the same claim. An agent's claims are made one at a time |
+| `renew_task_claim` | write | agents | `taskId`, `claimId` | renews it; answers the current requirements revision. An agent holding more than 3 live claims (from before the limit) renews none until it holds 3 |
 | `release_task` | write | agents | `taskId`, `claimId` | releases it and returns the task to Ready |
-| `create_task` | write | agents, and members whose role may (`task.write`) | `requestId`, `title`, `description`, `acceptanceCriteria` | creates a Backlog task, idempotent by `requestId` for its creator (an agent or a member) |
-| `update_task` | write | agents, and members whose role may (`task.write`) | `taskId`, `version`, the fields, `status` (`BACKLOG` or `READY`) | edits a task; an agent edits only the tasks it created |
-| `report_progress` | write | agents | `taskId`, `claimId`, `revision`, `requestId`, `message` | a progress report on the timeline |
-| `report_blocker` | write | agents | the same | ends the claim, moves the task to Blocked |
-| `request_review` | write | agents | the same | ends the claim, moves the task to Review |
+| `create_task` | write | agents, and members whose role may (`task.write`) | `requestId`, `title`, `description`, `acceptanceCriteria`, and optionally `owns`, `dependsOn`, `labels`, `branch` | creates a Backlog task, idempotent by `requestId` for its creator (an agent or a member; a retry is compared by its requirements) |
+| `update_task` | write | agents, and members whose role may (`task.write`) | `taskId`, `version`, the requirements, the task's fields, `status` (`BACKLOG` or `READY`) | edits a task; an agent edits only the tasks it created |
+| `report_progress` | write | agents | `taskId`, `claimId`, `revision`, `requestId`, `message`, `usage`? | a progress report on the timeline; `usage` (`AgentUsage`: `inputTokens`, `outputTokens`, `cacheCreationInputTokens`, `cacheReadInputTokens`, each a non-negative whole number, `costUsd` a non-negative number, `model` 1–100 characters, all optional) is what the agent used since its previous report on the task, its own estimate, kept with the report apart from what peers receive. A retry under the same `requestId` must carry the same usage |
+| `report_blocker` | write | agents | `taskId`, `claimId`, `revision`, `requestId`, `message` | ends the claim, moves the task to Blocked |
+| `request_review` | write | agents | as `report_progress`, `usage`? too | ends the claim, moves the task to Review |
 | `submit_review` | write | agents | `taskId`, `reviewRequestId`, `revision`, `requestId`, `decision` (`APPROVED`, `CHANGES_REQUESTED`), `message` | a peer's decision; changes requested return the task to Ready |
 | `request_run` | start | members whose role may (`run.request`) | `taskId` | checks the task may get a run, as asking for one does (the setup too), and answers what it would ask for (`taskId`, `title`, `revision`) with `confirm: { label: "Ask for a managed run" }`; it creates nothing |
 
@@ -251,9 +277,14 @@ the same list until a later release (see DevSync's own endpoint below).
   start of an assignment; claim a task before working on it; renew the claim within 15 minutes;
   report a blocker instead of waiting; request a review when the work is done; and, when memory
   tools are listed, recall what is known about the task before working on it and remember what was
-  learned before requesting a review. Each description is at most 1,000 characters.
+  learned before requesting a review. Then the task's rules: hold at most 3 claimed tasks at once;
+  a task is claimed once every task in its `dependsOn` is Done or Cancelled (both in `claim_task`);
+  give `usage` since the previous report, when known (`report_progress`, `request_review`); and what
+  `owns`, `dependsOn`, `labels` and `branch` are, which make no revision (`create_task`,
+  `update_task`). Each description is at most 1,000 characters.
 - **Size.** A test (`actions.test.ts`) fails when the actions' list (names, descriptions and input
-  JSON schemas, as JSON) grows past its budget, 10,000 characters (P3 reached 9,384). An id's
+  JSON schemas, as JSON) grows past its budget, 12,000 characters (P3 reached 9,384, P4 11,960 with
+  the task's fields, the claim rules and usage; P3's budget was 10,000). An id's
   schema is `{ type: "string", format: "uuid" }` only, without the pattern zod would repeat beside
   it.
 
@@ -362,8 +393,10 @@ request: a release, a blocker, a member's move or cancel, or another claim takin
 one. `merged` comes for each task linked to the pull request.
 
 Every text DevSync stores from an agent passes `host.redact` first: a report's or a review's
-message, a signal's message, and the requirements of a task an agent creates or edits. Members'
-text is kept as they wrote it.
+message, a signal's message, the requirements of a task an agent creates or edits, its paths,
+labels and branch (checked again after the redactor: a branch it turned into `[redacted]` is no
+branch name, and is refused by its field), and the model a report's usage names. Members' text is
+kept as they wrote it.
 
 ## Migrations and removal
 
@@ -376,9 +409,10 @@ text is kept as they wrote it.
 ## Export
 
 `exportProject(tx, projectId)` answers DevSync's rows of the project for its export, read through
-the host's read-only `tx` only: its tasks with their revisions and comments, its runs, its pull
-requests and its timeline (the outbox's events). The agents are the host's to export; the timeline
-names them by id.
+the host's read-only `tx` only: its tasks with their revisions, comments, paths, labels, branch and
+the tasks they wait for (`dependsOn`, in their order), its runs, its pull requests and its timeline
+(the outbox's events, each with the `usage` an agent reported, or null). The agents are the host's
+to export; the timeline names them by id.
 
 ## Pages
 

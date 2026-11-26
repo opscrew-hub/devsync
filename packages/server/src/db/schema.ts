@@ -100,6 +100,13 @@ export const task = devsyncSchema.table(
     findingFingerprint: text("finding_fingerprint"),
     findingRule: text("finding_rule"),
     findingFile: text("finding_file"),
+    /**
+     * The paths it may change, relative to the repository's root; one ending in `/` is a folder.
+     * Neither these, its labels nor its branch are part of a requirements revision.
+     */
+    owns: text("owns").array().notNull().default(sql`'{}'::text[]`),
+    labels: text("labels").array().notNull().default(sql`'{}'::text[]`),
+    branch: text("branch"),
     createdAt: createdAt(),
     updatedAt: tstz("updated_at").notNull().defaultNow(),
   },
@@ -109,6 +116,25 @@ export const task = devsyncSchema.table(
     unique().on(t.projectId, t.creatorAgentId, t.createRequestId),
     unique().on(t.projectId, t.creatorUserId, t.createRequestId),
   ],
+);
+
+/**
+ * The tasks a task waits for (its `dependsOn`), in the order given (`position`, from 0), each
+ * once: both ends are tasks of the same project, and a row goes with either task.
+ */
+export const taskDependency = devsyncSchema.table(
+  "task_dependency",
+  {
+    ...scope(),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => task.id, { onDelete: "cascade" }),
+    dependsOnTaskId: uuid("depends_on_task_id")
+      .notNull()
+      .references(() => task.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.taskId, t.dependsOnTaskId] }), index().on(t.dependsOnTaskId)],
 );
 
 /** Every version of a task's requirements, numbered from 1. */
@@ -219,6 +245,11 @@ export const outboxEvent = devsyncSchema.table(
       .references((): AnyPgColumn => outboxEvent.id, { onDelete: "cascade" }),
     kind: text("kind").notNull(),
     payload: jsonb("payload").notNull(),
+    /**
+     * An agent's progress report's or review request's `usage` (`AgentUsage`): its own estimate,
+     * kept apart from the payload its peers receive.
+     */
+    usage: jsonb("usage"),
     createdAt: createdAt(),
     availableAt: tstz("available_at").notNull().defaultNow(),
     processedAt: tstz("processed_at"),
@@ -309,6 +340,7 @@ export const run = devsyncSchema.table(
 );
 
 export type TaskRow = typeof task.$inferSelect;
+export type TaskDependencyRow = typeof taskDependency.$inferSelect;
 export type AgentRow = typeof agent.$inferSelect;
 export type SignalRow = typeof signal.$inferSelect;
 export type OutboxEventRow = typeof outboxEvent.$inferSelect;

@@ -435,6 +435,29 @@ describe("project routes", () => {
     );
     expect(stale.message).toBe("This task changed. Reload it and try again.");
     expect(TaskDetail.parse((await owner("GET", `/tasks/${task.id}`)).body).title).toBe("First");
+
+    // A task's fields beyond its requirements, by their names.
+    for (const [field, value, name] of [
+      ["owns", ["/etc/hosts"], "owns.0"],
+      ["labels", ["ui", "UI"], "labels"],
+      ["branch", "a b", "branch"],
+      ["dependsOn", ["t1"], "dependsOn.0"],
+    ] as const) {
+      expect(
+        refusal(
+          await owner("PATCH", `/tasks/${task.id}`, { version: 2, [field]: value }),
+          422,
+          "invalid",
+        ).fields,
+      ).toEqual([name]);
+    }
+    const fields = { owns: ["src/"], labels: ["ui"], branch: "feature/ui" };
+    const edited = await owner("PATCH", `/tasks/${task.id}`, { version: 2, ...fields });
+    expect(edited.status).toBe(200);
+    expect(Task.parse(edited.body)).toMatchObject({ ...fields, dependsOn: [], revision: 2 });
+    const waiting = await owner("POST", "/tasks", { ...newTask, dependsOn: [task.id] });
+    expect(waiting.status).toBe(201);
+    expect(Task.parse(waiting.body).dependsOn).toEqual([task.id]);
   });
 
   it("answer an unexpected failure as internal and log it without the body or a token", async () => {

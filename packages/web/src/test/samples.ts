@@ -50,6 +50,10 @@ export function task(n: number, fields: Partial<Task> = {}): Task {
     assigneeUserId: null,
     claim: null,
     pullRequestNumber: null,
+    owns: [],
+    dependsOn: [],
+    labels: [],
+    branch: null,
     createdAt: at,
     updatedAt: at,
     ...fields,
@@ -124,6 +128,9 @@ export const detail: TaskDetail = {
     },
   ],
   pullRequest: null,
+  dependencies: [],
+  overlaps: [],
+  usage: { agents: null, runs: null },
 };
 
 export const agent: Agent = {

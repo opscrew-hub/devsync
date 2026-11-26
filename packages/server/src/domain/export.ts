@@ -1,11 +1,20 @@
 /**
  * A project's export (`serverModule.exportProject`, docs/platform.md): DevSync's rows of the
- * project, read through the host's read-only transaction only: its tasks with their revisions and
- * comments, its runs, its pull requests and its timeline (the outbox's events). The agents are the
- * host's to export; the timeline names them by id.
+ * project, read through the host's read-only transaction only: its tasks with their revisions,
+ * comments and the tasks they wait for (`dependsOn`, beside their paths, labels and branch), its
+ * runs, its pull requests and its timeline (the outbox's events, with the usage agents reported).
+ * The agents are the host's to export; the timeline names them by id.
  */
 import { asc, eq } from "drizzle-orm";
-import { outboxEvent, pullRequest, run, task, taskComment, taskRevision } from "../db";
+import {
+  outboxEvent,
+  pullRequest,
+  run,
+  task,
+  taskComment,
+  taskDependency,
+  taskRevision,
+} from "../db";
 import type { DevSyncDb } from "../host";
 
 /** Rows by their task's id, in their order. */
@@ -37,6 +46,11 @@ export async function exportProject(tx: DevSyncDb, projectId: string) {
     .from(taskComment)
     .where(eq(taskComment.projectId, projectId))
     .orderBy(asc(taskComment.createdAt), asc(taskComment.id));
+  const dependencies = await tx
+    .select({ taskId: taskDependency.taskId, dependsOnTaskId: taskDependency.dependsOnTaskId })
+    .from(taskDependency)
+    .where(eq(taskDependency.projectId, projectId))
+    .orderBy(asc(taskDependency.taskId), asc(taskDependency.position));
   const runs = await tx
     .select()
     .from(run)
@@ -54,9 +68,11 @@ export async function exportProject(tx: DevSyncDb, projectId: string) {
     .orderBy(asc(outboxEvent.createdAt), asc(outboxEvent.id));
   const revisionsOf = byTask(revisions);
   const commentsOf = byTask(comments);
+  const dependenciesOf = byTask(dependencies);
   return {
     tasks: tasks.map((row) => ({
       ...row,
+      dependsOn: (dependenciesOf.get(row.id) ?? []).map((d) => d.dependsOnTaskId),
       revisions: revisionsOf.get(row.id) ?? [],
       comments: commentsOf.get(row.id) ?? [],
     })),
