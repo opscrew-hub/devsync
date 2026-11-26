@@ -329,7 +329,7 @@ export async function agentProjectState(
     project: { id: project.projectId, fullName: project.fullName, readOnly: project.readOnly },
     agents,
     tasks: tasks.map((row) => ({
-      ...toTask(row.task, row.claimAgentName),
+      ...toTask(row),
       description: row.task.description,
       acceptanceCriteria: row.task.acceptanceCriteria,
     })),

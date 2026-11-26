@@ -7,9 +7,11 @@ import {
   Task,
   type TaskDetail,
   type TaskStatus,
+  type TaskSummary,
   TaskUpdate,
   type TimelineEvent,
   TRANSITIONS,
+  type UsageTotal,
 } from "@devsync/schemas";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { DevSyncRequestError } from "./client";
@@ -25,12 +27,12 @@ import {
   requirements,
 } from "./parts";
 import { useDevSync } from "./provider";
-import { useChange, useMembers, usePullRequests, useTask } from "./queries";
+import { useChange, useMembers, usePullRequests, useTask, useTasks } from "./queries";
 import { type Repository, Runs } from "./Runs";
 
 /**
- * The open task: its requirements, status, assignee, pull request, managed runs, revisions, comments
- * and timeline.
+ * The open task: its requirements, its paths, the tasks it waits for, its labels and branch, its
+ * status, assignee, pull request, managed runs, usage, revisions, comments and timeline.
  */
 export function TaskPanel({
   taskId,
@@ -75,6 +77,50 @@ export function TaskPanel({
 /** `PATCH /tasks/:taskId`: an edit, a move or an assignment, against the version it sends. */
 function useTaskUpdate(taskId: string) {
   return useChange(TaskUpdate, (api, body) => api.send("PATCH", `/tasks/${taskId}`, body, Task));
+}
+
+/**
+ * A form's save against the version read when it opened: if someone else saved first, the API
+ * refuses, the form keeps what was typed, and `reload` reads the task again to save over it.
+ */
+function useFormSave(task: TaskDetail) {
+  const [version, setVersion] = useState(task.version);
+  const latest = useTask(task.id);
+  const save = useTaskUpdate(task.id);
+  const conflict = save.error instanceof DevSyncRequestError && save.error.code === "conflict";
+  const reload = async () => {
+    const fresh = await latest.refetch();
+    if (fresh.data) setVersion(fresh.data.version);
+    save.reset();
+  };
+  return { version, save, conflict, reload };
+}
+
+/** A form's Reload (after a conflict), Cancel and save buttons. */
+function FormButtons({
+  label,
+  form,
+  onDone,
+}: {
+  label: string;
+  form: ReturnType<typeof useFormSave>;
+  onDone: () => void;
+}) {
+  return (
+    <div className={styles.actions}>
+      {form.conflict && (
+        <button className="btn btn-sm btn-ghost" type="button" onClick={form.reload}>
+          Reload the task
+        </button>
+      )}
+      <button className="btn btn-sm btn-secondary bordered" type="button" onClick={onDone}>
+        Cancel
+      </button>
+      <button className="btn btn-sm btn-primary" type="submit" disabled={form.save.isPending}>
+        {label}
+      </button>
+    </div>
+  );
 }
 
 function TaskBody({ task, repository }: { task: TaskDetail; repository?: Repository }) {
@@ -130,6 +176,7 @@ function TaskBody({ task, repository }: { task: TaskDetail; repository?: Reposit
         </div>
       )}
 
+      <TaskScope task={task} />
       <Moves
         task={task}
         disabled={!write || update.isPending}
@@ -143,6 +190,7 @@ function TaskBody({ task, repository }: { task: TaskDetail; repository?: Reposit
       <Problem error={update.error} />
       <PullRequestPicker task={task} />
       <Runs task={task} repository={repository} />
+      <Usage usage={task.usage} />
       <Revisions task={task} />
       <Comments task={task} />
       <Timeline events={task.timeline} />
@@ -155,43 +203,275 @@ function TaskBody({ task, repository }: { task: TaskDetail; repository?: Reposit
  * first, the API refuses and the person's text stays in the form until they reload the task.
  */
 function EditRequirements({ task, onDone }: { task: TaskDetail; onDone: () => void }) {
-  const [version, setVersion] = useState(task.version);
-  const latest = useTask(task.id);
-  const save = useTaskUpdate(task.id);
+  const form = useFormSave(task);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    save.mutate({ ...requirements(form), version }, { onSuccess: onDone });
+    const fields = requirements(new FormData(event.currentTarget));
+    form.save.mutate({ ...fields, version: form.version }, { onSuccess: onDone });
   }
 
-  const conflict = save.error instanceof DevSyncRequestError && save.error.code === "conflict";
   return (
     <form className={styles.form} onSubmit={submit} aria-label="Edit the requirements">
       <RequirementFields initial={task} />
-      <Problem error={save.error} />
-      <div className={styles.actions}>
-        {conflict && (
-          <button
-            className="btn btn-sm btn-ghost"
-            type="button"
-            onClick={async () => {
-              const fresh = await latest.refetch();
-              if (fresh.data) setVersion(fresh.data.version);
-              save.reset();
-            }}
-          >
-            Reload the task
-          </button>
-        )}
-        <button className="btn btn-sm btn-secondary bordered" type="button" onClick={onDone}>
-          Cancel
-        </button>
-        <button className="btn btn-sm btn-primary" type="submit" disabled={save.isPending}>
-          Save the requirements
-        </button>
-      </div>
+      <Problem error={form.save.error} />
+      <FormButtons label="Save the requirements" form={form} onDone={onDone} />
     </form>
+  );
+}
+
+/** A task that is no longer open: it holds no claim back and shares no paths. */
+const CLOSED: readonly TaskStatus[] = ["DONE", "CANCELLED"];
+
+/** `"A"`, `"A" and "B"`, `"A", "B" and "C"`. */
+function titles(tasks: readonly TaskSummary[]): string {
+  const names = tasks.map((t) => `"${t.title}"`);
+  return names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : `${names[0]}`;
+}
+
+/**
+ * The task's paths, the tasks it waits for, its labels and branch, and their edit: none of them is
+ * part of the requirements, so editing them makes no revision. It says what the task waits for
+ * while one of those is open, and flags the other open tasks whose paths overlap its own.
+ */
+function TaskScope({ task }: { task: TaskDetail }) {
+  const { ui, may } = useDevSync();
+  const [editing, setEditing] = useState(false);
+  const heading = useId();
+  const open = task.dependencies.filter((d) => !CLOSED.includes(d.status));
+  const overlaps = task.overlaps.length;
+
+  return (
+    <section className={styles.stack} aria-labelledby={heading}>
+      <h4 className="cream" id={heading}>
+        Paths and dependencies
+      </h4>
+      {open.length > 0 && (
+        <p className={`status s-warning ${styles.problem}`} role="status">
+          <ui.Icon name="clock-counter-clockwise" className="i-sm" />
+          {`Waits for ${titles(open)}: agents can claim it once ${open.length === 1 ? "that is" : "they are"} done.`}
+        </p>
+      )}
+      {overlaps > 0 && (
+        <>
+          <p className={`status s-warning ${styles.problem}`}>
+            <ui.Icon name="warning" className="i-sm" />
+            {`Shares paths with ${overlaps} other open ${overlaps === 1 ? "task" : "tasks"}:`}
+          </p>
+          <ul className={styles.steps} aria-label="Overlapping tasks">
+            {task.overlaps.map(({ task: other, paths }) => (
+              <li key={other.id}>
+                {`${other.title} (${STATUS_LABEL[other.status]}): `}
+                <span className="mono">{paths.join(", ")}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {editing ? (
+        <EditScope task={task} onDone={() => setEditing(false)} />
+      ) : (
+        <>
+          <dl className="kv">
+            <dt>Paths</dt>
+            <dd>
+              {task.owns.length === 0 ? (
+                "No paths given."
+              ) : (
+                <ul className={styles.files} aria-label="Paths">
+                  {task.owns.map((path) => (
+                    <li key={path} className="mono">
+                      {path}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </dd>
+            <dt>Waits for</dt>
+            <dd>
+              {task.dependencies.length === 0 ? (
+                "No other task."
+              ) : (
+                <ul className={styles.files} aria-label="Waits for">
+                  {task.dependencies.map((d) => (
+                    <li key={d.id}>{`${d.title} (${STATUS_LABEL[d.status]})`}</li>
+                  ))}
+                </ul>
+              )}
+            </dd>
+            <dt>Labels</dt>
+            <dd>
+              {task.labels.length === 0 ? (
+                "None."
+              ) : (
+                <span className={styles.buttons}>
+                  {task.labels.map((label) => (
+                    <span key={label} className="chip">
+                      {label}
+                    </span>
+                  ))}
+                </span>
+              )}
+            </dd>
+            <dt>Branch</dt>
+            <dd>{task.branch ? <span className="mono">{task.branch}</span> : "None."}</dd>
+          </dl>
+          <div className={styles.buttons}>
+            <button
+              className="btn btn-sm btn-secondary bordered"
+              type="button"
+              disabled={!may("task.write")}
+              onClick={() => setEditing(true)}
+            >
+              Edit the fields
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** A textarea's lines, trimmed, without empty ones, each once (by `key`, the first kept). */
+function lines(text: FormDataEntryValue | null, key = (line: string) => line): string[] {
+  const seen = new Set<string>();
+  return String(text ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (line === "" || seen.has(key(line))) return false;
+      seen.add(key(line));
+      return true;
+    });
+}
+
+/**
+ * Edits the paths (one per line), the tasks it waits for (the project's other open tasks, and those
+ * it already waits for), the labels (one per line) and the branch, saved together against the
+ * version read when the form opened.
+ */
+function EditScope({ task, onDone }: { task: TaskDetail; onDone: () => void }) {
+  const form = useFormSave(task);
+  const listed = useTasks().data?.tasks ?? [];
+  const [waitsFor, setWaitsFor] = useState<string[]>(task.dependsOn);
+  const choices: TaskSummary[] = [
+    ...listed.filter(
+      (t) => t.id !== task.id && (!CLOSED.includes(t.status) || task.dependsOn.includes(t.id)),
+    ),
+    ...task.dependencies.filter((d) => !listed.some((t) => t.id === d.id)),
+  ];
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const branch = String(data.get("branch") ?? "").trim();
+    form.save.mutate(
+      {
+        version: form.version,
+        owns: lines(data.get("owns")),
+        dependsOn: waitsFor,
+        labels: lines(data.get("labels"), (label) => label.toLowerCase()),
+        branch: branch === "" ? null : branch,
+      },
+      { onSuccess: onDone },
+    );
+  }
+
+  return (
+    <form className={styles.form} onSubmit={submit} aria-label="Edit the fields">
+      <Field label="Paths it may change, one per line">
+        <textarea
+          className="field mono"
+          name="owns"
+          rows={4}
+          defaultValue={task.owns.join("\n")}
+          placeholder="src/checkout/"
+        />
+      </Field>
+      <Field label="Waits for">
+        <select
+          className="field"
+          multiple
+          size={Math.min(6, Math.max(2, choices.length))}
+          value={waitsFor}
+          onChange={(event) =>
+            setWaitsFor(Array.from(event.target.selectedOptions, (option) => option.value))
+          }
+        >
+          {choices.map((t) => (
+            <option key={t.id} value={t.id}>
+              {`${t.title} (${STATUS_LABEL[t.status]})`}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Labels, one per line">
+        <textarea className="field" name="labels" rows={2} defaultValue={task.labels.join("\n")} />
+      </Field>
+      <Field label="Branch">
+        <input className="field mono" name="branch" defaultValue={task.branch ?? ""} />
+      </Field>
+      <Problem error={form.save.error} />
+      <FormButtons label="Save the fields" form={form} onDone={onDone} />
+    </form>
+  );
+}
+
+const COUNT = new Intl.NumberFormat("en");
+const USD = new Intl.NumberFormat("en", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+});
+
+/** `12,000 input · 3,400 output · 50,000 cache read · 8,000 cache written · ≈ $0.42`. */
+function usageLine(total: UsageTotal): string {
+  return [
+    `${COUNT.format(total.inputTokens)} input`,
+    `${COUNT.format(total.outputTokens)} output`,
+    `${COUNT.format(total.cacheReadInputTokens)} cache read`,
+    `${COUNT.format(total.cacheCreationInputTokens)} cache written`,
+    `≈ ${USD.format(total.costUsd)}`,
+  ].join(" · ");
+}
+
+function models(total: UsageTotal): string {
+  return total.models.length > 0 ? ` (${total.models.join(", ")})` : "";
+}
+
+/**
+ * What the task's agents reported they used (their own estimates) beside what its managed runs
+ * used, kept apart; nothing while neither reported any.
+ */
+function Usage({ usage }: { usage: TaskDetail["usage"] }) {
+  const heading = useId();
+  const { agents, runs } = usage;
+  if (!agents && !runs) return null;
+  return (
+    <section className={styles.stack} aria-labelledby={heading}>
+      <h4 className="cream" id={heading}>
+        Usage
+      </h4>
+      <dl className="kv">
+        {agents && (
+          <>
+            <dt>Agents' reports</dt>
+            <dd>
+              {`${usageLine(agents)}, the agents' own estimate, from ${agents.count} ${agents.count === 1 ? "report" : "reports"}${models(agents)}`}
+            </dd>
+          </>
+        )}
+        {runs && (
+          <>
+            <dt>Managed runs</dt>
+            <dd>
+              {`${usageLine(runs)}, from ${runs.count} ${runs.count === 1 ? "run" : "runs"}${models(runs)}`}
+            </dd>
+          </>
+        )}
+      </dl>
+    </section>
   );
 }
 

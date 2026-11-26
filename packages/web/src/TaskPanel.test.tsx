@@ -3,7 +3,7 @@ import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectTab } from "./ProjectTab";
-import { ME, type Reply, renderWith } from "./test/render";
+import { id, ME, type Reply, renderWith } from "./test/render";
 import { agent, detail, members, pullRequests, setupComplete, tasks } from "./test/samples";
 
 afterEach(cleanup);
@@ -196,6 +196,187 @@ describe("the task panel", () => {
       title: "Add the sign-up and sign-in forms",
     });
     await waitFor(() => expect(within(panel).queryByRole("form")).toBeNull());
+  });
+
+  it("shows the paths, the tasks it waits for, the labels and the branch, and what waits", async () => {
+    const waiting: TaskDetail = {
+      ...detail,
+      owns: ["src/signup/", "README.md"],
+      dependsOn: [id(11), id(12)],
+      labels: ["auth", "ui"],
+      branch: "feature/signup",
+      dependencies: [
+        { id: id(11), title: "Send the welcome email", status: "REVIEW" },
+        { id: id(12), title: "Write the privacy page", status: "DONE" },
+      ],
+    };
+    const { panel } = await open(waiting);
+    const fields = within(panel).getByRole("region", { name: "Paths and dependencies" });
+    expect(within(fields).getByText("src/signup/")).toBeTruthy();
+    expect(within(fields).getByText("README.md")).toBeTruthy();
+    expect(within(fields).getByText("auth")).toBeTruthy();
+    expect(within(fields).getByText("feature/signup")).toBeTruthy();
+    const deps = within(fields).getByRole("list", { name: "Waits for" });
+    expect(
+      within(deps)
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["Send the welcome email (Review)", "Write the privacy page (Done)"]);
+    expect(within(fields).getByRole("status").textContent).toBe(
+      'Waits for "Send the welcome email": agents can claim it once that is done.',
+    );
+  });
+
+  it("flags the other open tasks whose paths overlap, with the paths they share", async () => {
+    const overlapping: TaskDetail = {
+      ...detail,
+      owns: ["src/"],
+      overlaps: [
+        {
+          task: { id: id(13), title: "Fix the checkout total", status: "CLAIMED" },
+          paths: ["src/checkout/total.ts", "src/checkout/tax.ts"],
+        },
+      ],
+    };
+    const { panel } = await open(overlapping);
+    const fields = within(panel).getByRole("region", { name: "Paths and dependencies" });
+    expect(within(fields).getByText("Shares paths with 1 other open task:")).toBeTruthy();
+    const list = within(fields).getByRole("list", { name: "Overlapping tasks" });
+    expect(within(list).getByRole("listitem").textContent).toBe(
+      "Fix the checkout total (Claimed): src/checkout/total.ts, src/checkout/tax.ts",
+    );
+    cleanup();
+    const plain = await open(detail);
+    expect(within(plain.panel).queryByRole("list", { name: "Overlapping tasks" })).toBeNull();
+    expect(within(plain.panel).queryByRole("status")).toBeNull();
+    expect(within(plain.panel).getByText("No paths given.")).toBeTruthy();
+  });
+
+  it("edits the fields: paths one per line, the tasks it waits for, labels and branch", async () => {
+    const { panel, sent } = await open(detail, {
+      [`PATCH /tasks/${detail.id}`]: { body: tasks[0] },
+    });
+    await userEvent.click(within(panel).getByRole("button", { name: "Edit the fields" }));
+    const form = within(panel).getByRole("form", { name: "Edit the fields" });
+    await userEvent.type(
+      within(form).getByLabelText("Paths it may change, one per line"),
+      "src/signup/{enter}  README.md {enter}{enter}src/signup/",
+    );
+    const waitsFor = within(form).getByLabelText("Waits for") as HTMLSelectElement;
+    // The project's other open tasks: not itself, not one that is Done or Cancelled.
+    await within(waitsFor).findByRole("option", { name: "Send the welcome email (Ready)" });
+    expect(
+      within(waitsFor)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual([
+      "Send the welcome email (Ready)",
+      "Write the privacy page (Backlog)",
+      "Fix the checkout total (Claimed)",
+    ]);
+    await userEvent.selectOptions(waitsFor, ["Send the welcome email (Ready)"]);
+    await userEvent.type(
+      within(form).getByLabelText("Labels, one per line"),
+      "auth{enter}Auth{enter}ui",
+    );
+    await userEvent.type(within(form).getByLabelText("Branch"), "feature/signup");
+    await userEvent.click(within(form).getByRole("button", { name: "Save the fields" }));
+    await waitFor(() =>
+      expect(patches(sent)).toEqual([
+        {
+          version: 3,
+          owns: ["src/signup/", "README.md"],
+          dependsOn: [id(11)],
+          labels: ["auth", "ui"],
+          branch: "feature/signup",
+        },
+      ]),
+    );
+    await waitFor(() => expect(within(panel).queryByRole("form")).toBeNull());
+  });
+
+  it("clears the branch and the tasks it waits for, and says why a bad field is refused", async () => {
+    const set: TaskDetail = {
+      ...detail,
+      dependsOn: [id(11)],
+      branch: "feature/signup",
+      dependencies: [{ id: id(11), title: "Send the welcome email", status: "READY" }],
+    };
+    const { panel, sent } = await open(set);
+    await userEvent.click(within(panel).getByRole("button", { name: "Edit the fields" }));
+    const form = within(panel).getByRole("form", { name: "Edit the fields" });
+    await userEvent.deselectOptions(within(form).getByLabelText("Waits for"), [
+      "Send the welcome email (Ready)",
+    ]);
+    await userEvent.clear(within(form).getByLabelText("Branch"));
+    await userEvent.click(within(form).getByRole("button", { name: "Save the fields" }));
+    await waitFor(() =>
+      expect(patches(sent)).toEqual([
+        { version: 3, owns: [], dependsOn: [], labels: [], branch: null },
+      ]),
+    );
+    cleanup();
+
+    const again = await open(detail);
+    await userEvent.click(within(again.panel).getByRole("button", { name: "Edit the fields" }));
+    const bad = within(again.panel).getByRole("form", { name: "Edit the fields" });
+    await userEvent.type(within(bad).getByLabelText("Branch"), "has space");
+    await userEvent.click(within(bad).getByRole("button", { name: "Save the fields" }));
+    expect((await within(bad).findByRole("alert")).textContent).toBe(
+      "Fill in the required fields and keep each within its limit, then try again.",
+    );
+    expect(patches(again.sent)).toEqual([]);
+  });
+
+  it("shows the agents' reported usage beside the managed runs', kept apart", async () => {
+    const used: TaskDetail = {
+      ...detail,
+      usage: {
+        agents: {
+          inputTokens: 12000,
+          outputTokens: 3400,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 50000,
+          costUsd: 0.42,
+          models: ["claude-opus"],
+          count: 3,
+        },
+        runs: {
+          inputTokens: 1000,
+          outputTokens: 200,
+          cacheCreationInputTokens: 10,
+          cacheReadInputTokens: 30,
+          costUsd: 1.5,
+          models: [],
+          count: 1,
+        },
+      },
+    };
+    const { panel } = await open(used);
+    const usage = within(panel).getByRole("region", { name: "Usage" });
+    expect(within(usage).getByText("Agents' reports")).toBeTruthy();
+    expect(
+      within(usage).getByText(
+        "12,000 input · 3,400 output · 50,000 cache read · 0 cache written · ≈ $0.42, the agents' own estimate, from 3 reports (claude-opus)",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(usage).getByText(
+        "1,000 input · 200 output · 30 cache read · 10 cache written · ≈ $1.50, from 1 run",
+      ),
+    ).toBeTruthy();
+    cleanup();
+    const none = await open(detail);
+    expect(within(none.panel).queryByRole("region", { name: "Usage" })).toBeNull();
+  });
+
+  it("locks editing the fields on a read-only project", async () => {
+    renderWith(<ProjectTab selectedTaskId={detail.id} onSelectTask={() => {}} />, {
+      routes: routes(),
+      readOnly: true,
+    });
+    const edit = await screen.findByRole("button", { name: "Edit the fields" });
+    expect((edit as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("locks nothing a Developer may do on a task", async () => {

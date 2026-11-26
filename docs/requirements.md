@@ -156,6 +156,41 @@ task, open it again from the same finding and from a moved one, and check a reso
 
 ---
 
+### Story 6 - Agents share a project's work without getting in each other's way (Priority: P2)
+
+Members and agents give a task the paths it may change, the tasks it waits for, labels and a
+branch. DevSync flags two open tasks whose paths overlap, keeps a task from being claimed while a
+task it waits for is open, lets an agent hold at most 3 claimed tasks at once, and adds up the
+tokens and cost agents report beside what the task's managed runs used.
+
+**Why this priority**: several agents on one repository need to know which tasks touch the same
+files and which must wait for another, and a task's cost should count every agent's work, not only
+its managed runs.
+
+**Independent Test**: with the fake host, give two tasks overlapping paths and a third a task to
+wait for, claim as one agent until it is refused, report usage with a progress report and a review
+request, and compare the task panels with what was done.
+
+**Acceptance Scenarios**:
+
+1. **Given** a task, **When** a member sets its paths, the tasks it waits for, its labels or its
+   branch on the task's panel (or an agent on a task it created), **Then** they are kept as given,
+   no new requirements revision is kept, and an invalid one is refused by its field's name.
+2. **Given** two open tasks whose paths overlap (the same path, or one inside the other's folder,
+   a path ending in `/`), **Then** each task's panel lists the other with the paths they share;
+   once one of them is Done or Cancelled, neither is flagged.
+3. **Given** a task that waits for one neither Done nor Cancelled, **When** an agent claims it,
+   **Then** it is refused with "This task waits for task "<title>". Claim it once that is done."; a
+   task of another project, an unknown one, the task itself or a circle is refused when it is set.
+4. **Given** an agent holding 3 live claims, **When** it claims another task or takes over an
+   expired claim, **Then** it is refused with "You hold 3 claimed tasks. Release, finish or report a
+   blocker on one before claiming another."
+5. **Given** an agent's progress reports and review request with their usage, **Then** the task
+   shows the sum of its agents' reported tokens and cost, as their own estimate, beside the sum of
+   its managed runs'.
+
+---
+
 ## Rules
 
 - **R-0**: DevSync MUST take who is asking (member, role), the workspace, the project and its
@@ -163,9 +198,9 @@ task, open it again from the same finding and from a moved one, and check a reso
 - **R-1**: DevSync MUST map the dashboard's roles: every role reads and writes tasks,
   comments, assignments, links and messages to agents; Owners and Admins register, rotate and revoke
   agents; Owners, Admins and Approvers decide managed runs.
-- **R-2**: DevSync MUST keep its tasks, revisions, comments, agents, signals, outbox, observed
-  pull requests and runs in the `devsync` schema, with optimistic concurrency on task edits and every
-  requirements change kept as a revision.
+- **R-2**: DevSync MUST keep its tasks, revisions, the tasks each waits for, comments, agents,
+  signals, outbox, observed pull requests and runs in the `devsync` schema, with optimistic
+  concurrency on task edits and every requirements change kept as a revision.
 - **R-3**: DevSync MUST write its audit entries through the host's audit log (kind `project`,
   actions prefixed `devsync.`), with names and ids only.
 - **R-4**: DevSync's MCP endpoint MUST authenticate agents by bearer token (hash stored, 24-hour
@@ -190,6 +225,16 @@ task, open it again from the same finding and from a moved one, and check a reso
 - **R-10**: A task made from a security finding MUST come from the finding as the dashboard gives it
   (`host.finding`: redacted, without the match itself), read again by the server when the task is
   created, and MUST NOT be duplicated for the same finding ([findings.md](findings.md)).
+- **R-11**: A task's paths, the tasks it waits for, its labels and branch MUST NOT be part of its
+  requirements revision. The tasks it waits for MUST be the project's, never the task itself and
+  never in a circle, checked when they are written under a lock on the project's dependencies; an
+  agent's paths, labels and branch MUST pass the host's redactor and still be valid after it.
+- **R-12**: An agent MUST NOT claim a task while a task it waits for is open (neither Done nor
+  Cancelled), nor hold more than 3 live claims at once, a takeover of an expired claim counting as
+  a claim; an agent's claims MUST be made one at a time.
+- **R-13**: The usage an agent reports with a progress report or a review request MUST be kept with
+  that report, apart from the payload its peers receive, and shown apart from the task's managed
+  runs' usage, as the agents' own estimate.
 
 ## Data (the `devsync` schema)
 
@@ -199,12 +244,13 @@ table has `workspace_id` and `project_id` (except where noted), and every query 
 
 | Table | Columns (beyond `id` uuid pk, `workspace_id`, `project_id`, `created_at`) | Keys and indexes |
 |---|---|---|
-| `task` | `title`, `description`, `acceptance_criteria`, `status` (BACKLOG, READY, CLAIMED, IN_PROGRESS, BLOCKED, REVIEW, DONE, CANCELLED), `revision` int, `version` int, `creator_user_id` uuid?, `creator_agent_id` uuid?, `create_request_id` uuid?, `assignee_user_id` uuid?, `claim_agent_id` uuid?, `claim_id` uuid?, `claim_expires_at`?, `pull_request_number` int?, `finding_fingerprint`?, `finding_rule`?, `finding_file`? (the security finding it was made from, as the host gave it), `updated_at` | (`project_id`, `status`); (`project_id`, `assignee_user_id`); unique (`project_id`, `creator_agent_id`, `create_request_id`) |
+| `task` | `title`, `description`, `acceptance_criteria`, `status` (BACKLOG, READY, CLAIMED, IN_PROGRESS, BLOCKED, REVIEW, DONE, CANCELLED), `revision` int, `version` int, `creator_user_id` uuid?, `creator_agent_id` uuid?, `create_request_id` uuid?, `assignee_user_id` uuid?, `claim_agent_id` uuid?, `claim_id` uuid?, `claim_expires_at`?, `pull_request_number` int?, `finding_fingerprint`?, `finding_rule`?, `finding_file`? (the security finding it was made from, as the host gave it), `owns` text[] and `labels` text[] (empty by default), `branch`?, `updated_at` | (`project_id`, `status`); (`project_id`, `assignee_user_id`); unique (`project_id`, `creator_agent_id`, `create_request_id`) |
+| `task_dependency` | (no `id` or `created_at`) `task_id` → task cascade, `depends_on_task_id` → task cascade (a task it waits for, of the same project), `position` int (its order, from 0) | pk (`task_id`, `depends_on_task_id`); (`depends_on_task_id`) |
 | `task_revision` | `task_id` → task cascade, `number`, `title`, `description`, `acceptance_criteria`, `author_user_id`?, `author_agent_id`? | pk (`task_id`, `number`) |
 | `task_comment` | `task_id` → task cascade, `author_user_id`, `body` | (`task_id`, `created_at`) |
 | `agent` | `name`, `kind` (CLAUDE, CODEX), `token_hash` unique, `expires_at`, `revoked_at`?, `last_seen_at`?, `registered_by_user_id`? | (`project_id`) |
 | `signal` | `recipient_agent_id` → agent cascade, `sender_user_id`?, `sender_agent_id`?, `github_delivery_id`?, `reply_to_id`? unique, `hop_count`, `kind`, `payload` jsonb, `idempotency_key` uuid, `acknowledged_at`? | (`project_id`, `recipient_agent_id`, `acknowledged_at`, `created_at`); unique (`recipient_agent_id`, `github_delivery_id`); unique (`project_id`, `sender_user_id`, `idempotency_key`); unique (`project_id`, `sender_agent_id`, `idempotency_key`) |
-| `outbox_event` | `actor_user_id`?, `actor_agent_id`?, `task_id`?, `request_id`?, `review_request_id`? → outbox_event unique, `kind`, `payload` jsonb, `available_at`, `processed_at`?, `attempts`. It is also the task's timeline: agents' progress, blocker, review request and review decision reports are outbox events of the task | (`processed_at`, `available_at`); (`project_id`, `task_id`, `created_at`); unique (`project_id`, `actor_agent_id`, `request_id`) |
+| `outbox_event` | `actor_user_id`?, `actor_agent_id`?, `task_id`?, `request_id`?, `review_request_id`? → outbox_event unique, `kind`, `payload` jsonb, `usage` jsonb? (the usage an agent reported with a progress report or a review request, never delivered to peers), `available_at`, `processed_at`?, `attempts`. It is also the task's timeline: agents' progress, blocker, review request and review decision reports are outbox events of the task | (`processed_at`, `available_at`); (`project_id`, `task_id`, `created_at`); unique (`project_id`, `actor_agent_id`, `request_id`) |
 | `pull_request` | `number`, `title`, `state` (open, closed, merged), `url`, `head_ref`, `head_sha`, `source_updated_at` | unique (`project_id`, `number`) |
 | `github_delivery` | `delivery_id` text, `received_at`: a delivery already applied to the project | pk (`delivery_id`, `project_id`) |
 | `run` | `task_id` → task cascade, `revision`, `requested_by_user_id`, `decided_by_user_id`?, `status` (REQUESTED, QUEUED, RUNNING, SUCCEEDED, FAILED, REJECTED, CANCELLED), `decided_at`?, `started_at`?, `finished_at`?, `failure`?, `token_usage` jsonb? (the result's `usage` and `models`), `changed_files` jsonb?, `draft_pull_request_url`?, `github_run_id` bigint? | (`project_id`, `created_at`); (`task_id`, `created_at`); unique (`task_id`) where `status` in (REQUESTED, QUEUED, RUNNING); unique (`project_id`, `github_run_id`) |

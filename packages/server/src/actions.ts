@@ -53,6 +53,13 @@ export const ACTION_RULES = {
   review: "When the work is done, request a review.",
   recall: "When memory tools are listed, recall what is known about the task before working on it.",
   remember: "When memory tools are listed, remember what you learned before requesting a review.",
+  limit:
+    "Hold at most 3 claimed tasks at once: release, finish or report a blocker on one before claiming another.",
+  waits: "A task can be claimed once every task in its dependsOn is Done or Cancelled.",
+  usage:
+    "Optionally give usage: your tokens and cost since your previous report on the task, your own estimate.",
+  fields:
+    "owns: the paths it may change, from the repository's root (ending in / for a folder); dependsOn: the project's tasks it waits for, never in a circle; labels; branch. None makes a requirements revision.",
 } as const;
 
 /** DevSync's own MCP endpoint's `instructions`: what DevSync is, and every rule. */
@@ -166,7 +173,7 @@ export const actions: readonly DevSyncAction<any>[] = [
   action(
     "get_task",
     "read",
-    "Read one task: its requirements with their revisions, its comments and timeline, its linked pull request, and its latest managed run.",
+    "Read one task: its requirements with their revisions, its comments and timeline, its linked pull request, its latest managed run, the tasks it waits for, open tasks sharing its paths, and the usage reported.",
     async (ctx, { taskId }) => {
       const read = await reader(ctx);
       const task = await getTask(ctx.host, read, taskId);
@@ -190,7 +197,7 @@ export const actions: readonly DevSyncAction<any>[] = [
   action(
     "claim_task",
     "write",
-    `Claim a Ready task, or recover one whose claim expired, for 15 minutes. ${R.claim} ${R.renew} ${R.recall} Generate a new UUID for each claim attempt and reuse it only when retrying the same request.`,
+    `Claim a Ready task, or recover one whose claim expired, for 15 minutes. ${R.claim} ${R.renew} ${R.recall} ${R.limit} ${R.waits} Generate a new UUID for each claim attempt and reuse it only when retrying the same request.`,
     async (ctx, input) => claimTask(ctx.host, await agentOnly(ctx, "claims a task"), input),
   ),
   action(
@@ -215,19 +222,19 @@ export const actions: readonly DevSyncAction<any>[] = [
   action(
     "create_task",
     "write",
-    "Create a Backlog task in the project. Supply a new request UUID and reuse it when retrying the same task.",
+    `Create a Backlog task in the project. Supply a new request UUID and reuse it when retrying the same task. ${R.fields}`,
     async (ctx, input) => createTask(ctx.host, await writer(ctx), input),
   ),
   action(
     "update_task",
     "write",
-    "Edit a task's requirements, or move it to Backlog or Ready; an agent edits only the tasks it created. Supply the current task version. Move a Backlog task to Ready to make it claimable.",
+    `Edit a task's requirements or fields, or move it to Backlog or Ready; an agent edits only the tasks it created. Supply the current task version. Move a Backlog task to Ready to make it claimable. A field given replaces it. ${R.fields}`,
     async (ctx, { taskId, ...fields }) => updateTask(ctx.host, await writer(ctx), taskId, fields),
   ),
   action(
     "report_progress",
     "write",
-    `Record progress under your active claim and the current requirements revision. ${R.blocker}`,
+    `Record progress under your active claim and the current requirements revision. ${R.blocker} ${R.usage}`,
     async (ctx, input) => reportProgress(ctx.host, await agentOnly(ctx, "reports progress"), input),
   ),
   action(
@@ -239,7 +246,7 @@ export const actions: readonly DevSyncAction<any>[] = [
   action(
     "request_review",
     "write",
-    `Record a review request, move the task to Review, and end your claim. ${R.review} ${R.remember} A peer agent reviews it, and a member marks it done.`,
+    `Record a review request, move the task to Review, and end your claim. ${R.review} ${R.remember} ${R.usage} A peer agent reviews it, and a member marks it done.`,
     async (ctx, input) => requestReview(ctx.host, await agentOnly(ctx, "requests a review"), input),
   ),
   action(

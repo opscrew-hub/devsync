@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agent } from "../db";
 import type { Member, ProjectContext, ProjectRef } from "../host";
-import { devsyncAgent } from "../test/helpers";
+import { devsyncAgent, hostAgent } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "../testing";
+import { reportProgress } from "./activity";
+import { claimTask } from "./claims";
 import { exportProject } from "./export";
 import { applyGithubFact } from "./pull-requests";
 import { requestRun } from "./runs";
@@ -48,11 +50,36 @@ async function setup() {
     const ctx: ProjectContext = { project: on, member: owner };
     // DevSync's own, not yet moved: its row still has its token's hash.
     const registered = await devsyncAgent(host, on, { name: `${title} agent`, kind: "CODEX" });
-    const created = await createTask(host, ctx, { title, description: "", acceptanceCriteria: "" });
+    const first = await createTask(host, ctx, {
+      title: `${title}: first step`,
+      description: "",
+      acceptanceCriteria: "",
+    });
+    const created = await createTask(host, ctx, {
+      title,
+      description: "",
+      acceptanceCriteria: "",
+      owns: ["src/"],
+      dependsOn: [first.id],
+      labels: ["ui"],
+      branch: "feature/x",
+    });
     const ready = await updateTask(host, ctx, created.id, {
       version: created.version,
       description: "Revised",
       status: "READY",
+    });
+    // An agent reports its usage on the first step.
+    const builder = await hostAgent(host, on, { name: `${title} builder`, kind: "CLAUDE" });
+    await updateTask(host, ctx, first.id, { version: first.version, status: "READY" });
+    const claim = { taskId: first.id, claimId: crypto.randomUUID() };
+    await claimTask(host, builder.actor, claim);
+    await reportProgress(host, builder.actor, {
+      ...claim,
+      revision: 1,
+      requestId: crypto.randomUUID(),
+      message: "Halfway.",
+      usage: { inputTokens: 10, costUsd: 0.01 },
     });
     await commentOnTask(host, ctx, created.id, { body: `About ${title}` });
     await applyGithubFact(host, {
@@ -74,7 +101,7 @@ async function setup() {
     });
     await linkPullRequest(host, ctx, created.id, { number: 4 });
     const asked = await requestRun(host, ctx, ready.id);
-    return { taskId: created.id, agentId: registered.id, runId: asked.id };
+    return { taskId: created.id, firstId: first.id, agentId: registered.id, runId: asked.id };
   };
   return {
     shop,
@@ -97,20 +124,25 @@ describe("exportProject", () => {
     const { shop, shopRows } = await setup();
     const data = await exported(shop.projectId);
 
-    expect(data.tasks).toHaveLength(1);
-    expect(data.tasks[0]).toMatchObject({
+    expect(data.tasks).toHaveLength(2);
+    expect(data.tasks[0]).toMatchObject({ id: shopRows.firstId, dependsOn: [] });
+    expect(data.tasks[1]).toMatchObject({
       id: shopRows.taskId,
       projectId: shop.projectId,
       title: "Ship checkout",
       description: "Revised",
       status: "READY",
       pullRequestNumber: 4,
+      owns: ["src/"],
+      dependsOn: [shopRows.firstId],
+      labels: ["ui"],
+      branch: "feature/x",
     });
-    expect(data.tasks[0]?.revisions.map((r) => [r.number, r.description])).toEqual([
+    expect(data.tasks[1]?.revisions.map((r) => [r.number, r.description])).toEqual([
       [1, ""],
       [2, "Revised"],
     ]);
-    expect(data.tasks[0]?.comments.map((c) => c.body)).toEqual(["About Ship checkout"]);
+    expect(data.tasks[1]?.comments.map((c) => c.body)).toEqual(["About Ship checkout"]);
     expect(data.runs.map((r) => [r.id, r.taskId, r.status])).toEqual([
       [shopRows.runId, shopRows.taskId, "REQUESTED"],
     ]);
@@ -119,9 +151,16 @@ describe("exportProject", () => {
     ]);
     expect(data.timeline.map((e) => e.kind)).toEqual([
       "task.created",
+      "task.created",
       "requirements.changed",
+      "task.updated",
+      "implementation.progress",
       "run.requested",
     ]);
+    expect(data.timeline.find((e) => e.kind === "implementation.progress")?.usage).toEqual({
+      inputTokens: 10,
+      costUsd: 0.01,
+    });
     // The agents are the host's to export: the timeline names them by id.
     expect(Object.keys(data)).toEqual(["tasks", "runs", "pullRequests", "timeline"]);
   });
@@ -136,7 +175,8 @@ describe("exportProject", () => {
     const hashes = await testDb.db
       .select({ tokenHash: agent.tokenHash })
       .from(agent)
-      .where(eq(agent.workspaceId, shop.workspaceId));
+      .where(and(eq(agent.workspaceId, shop.workspaceId), isNotNull(agent.tokenHash)));
+    // DevSync's own two; the host's agents' rows have none.
     expect(hashes).toHaveLength(2);
     for (const { tokenHash } of hashes) expect(json).not.toContain(tokenHash);
     expect(json).not.toContain("tokenHash");

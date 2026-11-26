@@ -2,11 +2,18 @@
  * Agents' reports on their claims and peers' review decisions (docs/host.md, MCP for coding
  * agents). Each is an outbox event of the task: on its timeline, and delivered to the project's
  * other agents. A report or decision is idempotent by its `requestId` (the same id for another
- * report is refused), and its message passes the host's redactor before it is stored. A blocker
+ * report is refused), and its message passes the host's redactor before it is stored. A progress
+ * report or a review request may carry the agent's usage since its last report (`usage`), kept
+ * with the event apart from its payload, so peers don't receive it. A blocker
  * ends the claim and moves the task to Blocked, a review request to Review; a peer's "changes
  * requested" returns it to Ready, and an approval leaves completion to a member.
  */
-import { ReviewDecisionInput, TaskActivityInput } from "@devsync/schemas";
+import {
+  type AgentUsage,
+  ReviewDecisionInput,
+  TaskActivityInput,
+  TaskReportInput,
+} from "@devsync/schemas";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { type OutboxEventRow, outboxEvent, task } from "../db";
 import { type AgentActor, type DevSyncDb, DevSyncError, type DevSyncHost } from "../host";
@@ -58,6 +65,15 @@ function payloadOf(row: OutboxEventRow): Record<string, unknown> {
   return (row.payload ?? {}) as Record<string, unknown>;
 }
 
+/** Whether a report's stored usage is `usage`: the same figures and model, or none on both. */
+function sameUsage(stored: unknown, usage: AgentUsage | null): boolean {
+  if (stored === null || usage === null) return stored === usage;
+  const kept = stored as Record<string, unknown>;
+  const given = usage as Record<string, unknown>;
+  const keys = new Set([...Object.keys(kept), ...Object.keys(given)]);
+  return [...keys].every((key) => kept[key] === given[key]);
+}
+
 /**
  * Runs `record` in a transaction holding the agent's row, and wakes the outbox once it commits if
  * it recorded a new event (a retry records nothing).
@@ -79,12 +95,18 @@ async function report(
   host: DevSyncHost,
   actor: AgentActor,
   kind: ActivityKind,
-  input: TaskActivityInput,
+  input: TaskReportInput,
 ): Promise<ActivityReceipt> {
   requireWritable(actor.project);
-  const { taskId, claimId, revision, requestId, ...given } = parse(TaskActivityInput, input);
+  // A blocker carries no usage.
+  const parsed: TaskReportInput =
+    kind === "task.blocked" ? parse(TaskActivityInput, input) : parse(TaskReportInput, input);
+  const { taskId, claimId, revision, requestId, usage: reported, ...given } = parsed;
   // Redacted before it is stored, and before a retry's is compared with the stored one.
   const message = host.redact(given.message);
+  const usage = reported
+    ? { ...reported, ...(reported.model ? { model: host.redact(reported.model) } : {}) }
+    : null;
   const now = host.clock.now();
   return inAgentTransaction(host, actor, async (tx) => {
     const existing = await recorded(tx, actor, requestId);
@@ -94,7 +116,8 @@ async function report(
         existing.taskId !== taskId ||
         existing.kind !== kind ||
         payload.revision !== revision ||
-        payload.message !== message
+        payload.message !== message ||
+        !sameUsage(existing.usage, usage)
       ) {
         throw new DevSyncError("conflict", REQUEST_REUSED, ["requestId"]);
       }
@@ -143,6 +166,7 @@ async function report(
       kind,
       payload: { taskId, revision, message, ...(taskVersion === undefined ? {} : { taskVersion }) },
       requestId,
+      usage,
       at: now,
       facts: ended
         ? {
@@ -155,11 +179,14 @@ async function report(
   });
 }
 
-/** `report_progress`: a progress report on the agent's live claim, for the current revision. */
+/**
+ * `report_progress`: a progress report on the agent's live claim, for the current revision, with
+ * what it used since its last report if it says.
+ */
 export function reportProgress(
   host: DevSyncHost,
   actor: AgentActor,
-  input: TaskActivityInput,
+  input: TaskReportInput,
 ): Promise<ActivityReceipt> {
   return report(host, actor, "implementation.progress", input);
 }
@@ -173,11 +200,14 @@ export function reportBlocker(
   return report(host, actor, "task.blocked", input);
 }
 
-/** `request_review`: ends the claim and moves the task to Review; peers receive the request's id. */
+/**
+ * `request_review`: ends the claim and moves the task to Review; peers receive the request's id.
+ * It may carry the agent's usage since its last report, as a progress report does.
+ */
 export function requestReview(
   host: DevSyncHost,
   actor: AgentActor,
-  input: TaskActivityInput,
+  input: TaskReportInput,
 ): Promise<ActivityReceipt> {
   return report(host, actor, "review.requested", input);
 }

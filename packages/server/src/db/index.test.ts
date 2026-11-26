@@ -13,6 +13,7 @@ import {
   signal,
   task,
   taskComment,
+  taskDependency,
   taskRevision,
 } from ".";
 
@@ -46,7 +47,7 @@ describe("the devsync schema's migration", () => {
 
   it("applies twice, each migration journaled once in devsync.__drizzle_migrations", async () => {
     await testDb.migrate();
-    expect(await testDb.db.select().from(journal)).toHaveLength(6);
+    expect(await testDb.db.select().from(journal)).toHaveLength(7);
     const tables = await testDb.db
       .select({ name: catalog.tableName })
       .from(catalog)
@@ -62,6 +63,7 @@ describe("the devsync schema's migration", () => {
       "signal",
       "task",
       "task_comment",
+      "task_dependency",
       "task_revision",
     ]);
   });
@@ -98,6 +100,36 @@ describe("the devsync schema's migration", () => {
       .returning();
     if (!t) throw new Error("no task");
     expect(t).toMatchObject({ status: "BACKLOG", revision: 1, version: 1, claimId: null });
+    // A task's paths and labels are empty, and it has no branch, until they are set.
+    expect(t).toMatchObject({ owns: [], labels: [], branch: null });
+    const [u] = await db
+      .insert(task)
+      .values({
+        ...scope,
+        title: "Add a status page",
+        description: "",
+        acceptanceCriteria: "",
+        owns: ["src/status/", "README.md"],
+        labels: ["ops"],
+        branch: "feature/status",
+      })
+      .returning();
+    expect(u).toMatchObject({ owns: ["src/status/", "README.md"], labels: ["ops"] });
+    if (!u) throw new Error("no second task");
+    // One task waits for the other once; each row goes with either task.
+    await db
+      .insert(taskDependency)
+      .values({ ...scope, taskId: u.id, dependsOnTaskId: t.id, position: 0 });
+    await expect(
+      db
+        .insert(taskDependency)
+        .values({ ...scope, taskId: u.id, dependsOnTaskId: t.id, position: 1 }),
+    ).rejects.toThrow();
+    await expect(
+      db
+        .insert(taskDependency)
+        .values({ ...scope, taskId: u.id, dependsOnTaskId: crypto.randomUUID(), position: 1 }),
+    ).rejects.toThrow();
 
     await db.insert(taskRevision).values({
       ...scope,
@@ -129,7 +161,7 @@ describe("the devsync schema's migration", () => {
       .insert(outboxEvent)
       .values({ ...scope, actorUserId: userId, taskId: t.id, kind: "task.created", payload: {} })
       .returning();
-    expect(o).toMatchObject({ attempts: 0, processedAt: null });
+    expect(o).toMatchObject({ attempts: 0, processedAt: null, usage: null });
     expect(o?.availableAt).toBeInstanceOf(Date);
 
     await db.insert(pullRequest).values({
@@ -162,7 +194,7 @@ describe("the devsync schema's migration", () => {
 
     // A task's rows go with it.
     await db.delete(task).where(sql`${task.id} = ${t.id}`);
-    for (const table of [taskRevision, taskComment, outboxEvent, run]) {
+    for (const table of [taskRevision, taskComment, outboxEvent, run, taskDependency]) {
       expect(await db.select().from(table)).toEqual([]);
     }
     // An agent's signals go with it.

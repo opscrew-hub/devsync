@@ -367,3 +367,74 @@ describe("an agent's messages", () => {
     ]);
   });
 });
+
+describe("an agent's usage", () => {
+  it("is kept with its progress report or review request, apart from what its peers receive", async () => {
+    const { host, codex, taskId, tick } = await setup();
+    const claim = { taskId, claimId: crypto.randomUUID() };
+    tick();
+    await claimTask(host, codex, claim);
+    const usage = { inputTokens: 1200, outputTokens: 300, costUsd: 0.42, model: "claude-opus" };
+    const progress = {
+      ...claim,
+      revision: 2,
+      requestId: crypto.randomUUID(),
+      message: "Halfway.",
+      usage,
+    };
+    tick();
+    const report = await reportProgress(host, codex, progress);
+    // A retry with the same usage is the same report; with other usage, another one.
+    expect(await reportProgress(host, codex, { ...progress, usage: { ...usage } })).toEqual(report);
+    await refusal(
+      reportProgress(host, codex, { ...progress, usage: { ...usage, costUsd: 1 } }),
+      "conflict",
+    );
+    await refusal(reportProgress(host, codex, { ...progress, usage: undefined }), "conflict");
+    tick();
+    await reportProgress(host, codex, {
+      ...progress,
+      requestId: crypto.randomUUID(),
+      usage: undefined,
+    });
+    tick();
+    const secret = fakeToken();
+    await requestReview(host, codex, {
+      ...progress,
+      requestId: crypto.randomUUID(),
+      message: "Done.",
+      usage: { cacheReadInputTokens: 50, model: secret },
+    });
+
+    const rows = await testDb.db
+      .select()
+      .from(outboxEvent)
+      .where(eq(outboxEvent.taskId, taskId))
+      .orderBy(asc(outboxEvent.createdAt));
+    expect(rows.map((e) => [e.kind, e.usage])).toEqual([
+      ["implementation.progress", usage],
+      ["implementation.progress", null],
+      ["review.requested", { cacheReadInputTokens: 50, model: "[redacted]" }],
+    ]);
+    expect(rows.every((e) => !("usage" in (e.payload as object)))).toBe(true);
+  });
+
+  it("is refused when invalid, and with a blocker", async () => {
+    const { host, codex, taskId, tick } = await setup();
+    const claim = { taskId, claimId: crypto.randomUUID() };
+    tick();
+    await claimTask(host, codex, claim);
+    const progress = { ...claim, revision: 2, requestId: crypto.randomUUID(), message: "Halfway." };
+    const error = await refusal(
+      reportProgress(host, codex, { ...progress, usage: { inputTokens: -1 } }),
+      "invalid",
+    );
+    expect(error.fields).toEqual(["usage.inputTokens"]);
+    const blocker = await refusal(
+      reportBlocker(host, codex, { ...progress, usage: { inputTokens: 1 } } as never),
+      "invalid",
+    );
+    expect(blocker.fields).toEqual(["usage"]);
+    expect((await readTask(taskId)).status).toBe("CLAIMED");
+  });
+});

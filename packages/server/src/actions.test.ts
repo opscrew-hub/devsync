@@ -27,10 +27,11 @@ afterAll(async () => {
 
 /**
  * The most characters the actions' list (names as the host lists them, descriptions and input
- * JSON schemas, as JSON) may take: the size P3 reached, rounded up to the next 1,000. Raise it only
- * with a reason: every agent reads the whole list.
+ * JSON schemas, as JSON) may take: the size P4 reached (11,960: P3's 9,384 with the task fields,
+ * the claim rules and usage), rounded up to the next 1,000. Raise it only with a reason: every
+ * agent reads the whole list.
  */
-const ACTIONS_BUDGET = 10_000;
+const ACTIONS_BUDGET = 12_000;
 
 const KINDS = {
   get_project_state: "read",
@@ -183,6 +184,10 @@ describe("DevSync's actions", () => {
       review: ["request_review"],
       recall: ["claim_task"],
       remember: ["request_review"],
+      limit: ["claim_task"],
+      waits: ["claim_task"],
+      usage: ["report_progress", "request_review"],
+      fields: ["create_task", "update_task"],
     };
     for (const [rule, names] of Object.entries(concerns)) {
       const text = ACTION_RULES[rule as keyof typeof ACTION_RULES];
@@ -192,6 +197,8 @@ describe("DevSync's actions", () => {
     expect(ACTION_RULES.renew).toContain("15 minutes");
     expect(ACTION_RULES.recall).toContain("memory tools");
     expect(ACTION_RULES.remember).toContain("memory tools");
+    expect(ACTION_RULES.limit).toContain("3 claimed tasks");
+    expect(ACTION_RULES.usage).toContain("since your previous report");
   });
 
   it("stay within their size budget", () => {
@@ -368,6 +375,66 @@ describe("an agent calling an action", () => {
       kind: "implementation.progress",
     });
     expect(await s.result("get_pending_signals", s.asCodex)).toEqual([]);
+  });
+
+  it("creates a task with its fields, and reports its usage with progress and a review request", async () => {
+    const s = await setup();
+    const first = await s.readyTask("Add a cart");
+    const created = await s.result("create_task", s.asCodex, {
+      requestId: crypto.randomUUID(),
+      title: "Ship checkout",
+      description: "",
+      acceptanceCriteria: "Pays",
+      owns: ["src/checkout/"],
+      dependsOn: [first.id],
+      labels: ["payments"],
+      branch: "feature/checkout",
+    });
+    expect(created).toMatchObject({ owns: ["src/checkout/"], dependsOn: [first.id] });
+    const ready = await s.result("update_task", s.asCodex, {
+      taskId: created.id,
+      version: created.version,
+      status: "READY",
+      labels: ["payments", "ui"],
+    });
+    expect(ready).toMatchObject({ status: "READY", revision: 1, labels: ["payments", "ui"] });
+
+    // It waits for the cart: refused as the result, then claimed once the cart is done.
+    const claim = { taskId: created.id, claimId: crypto.randomUUID() };
+    expect(await s.refused("claim_task", s.asCodex, claim)).toEqual({
+      code: "conflict",
+      message: 'This task waits for task "Add a cart". Claim it once that is done.',
+    });
+    await updateTask(s.host, s.memberCtx(), first.id, {
+      version: first.version,
+      status: "CANCELLED",
+    });
+    await s.result("claim_task", s.asCodex, claim);
+    const report = { ...claim, revision: 1, message: "Halfway." };
+    await s.result("report_progress", s.asCodex, {
+      ...report,
+      requestId: crypto.randomUUID(),
+      usage: { inputTokens: 100, costUsd: 0.5, model: "gpt-5" },
+    });
+    await s.result("request_review", s.asCodex, {
+      ...report,
+      requestId: crypto.randomUUID(),
+      usage: { outputTokens: 40, costUsd: 0.25 },
+    });
+    const { task } = await s.result("get_task", s.asMember(), { taskId: created.id });
+    expect(task.usage).toEqual({
+      agents: {
+        inputTokens: 100,
+        outputTokens: 40,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        costUsd: 0.75,
+        models: ["gpt-5"],
+        count: 2,
+      },
+      runs: null,
+    });
+    expect(task.dependencies).toEqual([{ id: first.id, title: "Add a cart", status: "CANCELLED" }]);
   });
 
   it("is refused `me`, a members-only start, and when the host no longer lists it", async () => {

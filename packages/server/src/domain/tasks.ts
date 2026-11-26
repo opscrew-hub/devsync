@@ -3,12 +3,15 @@
  * (a `ProjectContext`) and its agents (an `AgentActor`). The rules: the lifecycle, the version
  * check, a revision per requirements change, a claimed task's status changed only by its claim, the
  * creator's `requestId` idempotency, an agent's requirements through the host's redactor, and an
- * outbox event per change recorded (with its host events) in its transaction. Every query filters
- * by the project.
+ * outbox event per change recorded (with its host events) in its transaction. A task's fields
+ * beyond its requirements (its paths, the tasks it waits for, its labels and branch) change with no
+ * revision; the tasks it waits for are the project's, never itself, and never in a circle. Every
+ * query filters by the project.
  */
 import {
   AgentTaskInput,
   AgentTaskUpdate,
+  AgentUsage,
   type Author,
   type Comment,
   CommentInput,
@@ -17,29 +20,48 @@ import {
   type PullRequest,
   PullRequestLink,
   type Revision,
+  RunUsage,
   STATUS_LABEL,
   type Task,
   type TaskDetail,
+  TaskFields,
   TaskInput,
   type TaskList,
   TaskListQuery,
   type TaskStatus,
+  type TaskSummary,
   TaskUpdate,
   type TimelineEvent,
   TRANSITIONS,
+  type UsageTotal,
   type WorkspaceTaskList,
   WorkspaceTaskListQuery,
 } from "@devsync/schemas";
-import { and, desc, eq, inArray, isNull, notInArray, or, type SQL } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  ne,
+  notInArray,
+  or,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import type { z } from "zod";
 import {
   agent,
   outboxEvent,
   type PullRequestRow,
   pullRequest,
+  run,
   type TaskRow,
   task,
   taskComment,
+  taskDependency,
   taskRevision,
 } from "../db";
 import {
@@ -105,10 +127,52 @@ function redactRequirements<T extends Requirements>(host: DevSyncHost, fields: T
   };
 }
 
+/** The fields of `TaskFields` that `input` gives, and no other key. */
+function fieldsOf(input: TaskFields): TaskFields {
+  const fields: TaskFields = {};
+  if (input.owns !== undefined) fields.owns = input.owns;
+  if (input.dependsOn !== undefined) fields.dependsOn = input.dependsOn;
+  if (input.labels !== undefined) fields.labels = input.labels;
+  if (input.branch !== undefined) fields.branch = input.branch;
+  return fields;
+}
+
+/**
+ * An agent's paths, labels and branch through the host's redactor, then checked again: what the
+ * redactor left must still be a path, a label or a branch name, or it is refused by the field.
+ */
+function redactFields(host: DevSyncHost, fields: TaskFields): TaskFields {
+  const redact = (text: string) => host.redact(text);
+  return parse(TaskFields, {
+    ...fields,
+    ...(fields.owns === undefined ? {} : { owns: fields.owns.map(redact) }),
+    ...(fields.labels === undefined ? {} : { labels: fields.labels.map(redact) }),
+    ...(fields.branch ? { branch: redact(fields.branch) } : {}),
+  });
+}
+
+/** An agent's edit: its requirements and fields through the host's redactor. */
+function agentUpdate(host: DevSyncHost, update: AgentUpdateFields): TaskUpdate {
+  return { ...redactRequirements(host, update), ...redactFields(host, fieldsOf(update)) };
+}
+
+/** The statuses of a task that is no longer open. */
+const CLOSED: readonly TaskStatus[] = ["DONE", "CANCELLED"];
+
 // --- Answers ------------------------------------------------------------------------------------
 
-/** A task row as `Task`; `claimAgentName` is the claiming agent's name, if the row has a claim. */
-export function toTask(row: TaskRow, claimAgentName: string | null): Task {
+/**
+ * A task as `selectTasks` reads it: its row, the claiming agent's name (if the row has a claim)
+ * and the tasks it waits for, in their order.
+ */
+export interface SelectedTask {
+  task: TaskRow;
+  claimAgentName: string | null;
+  dependsOn: string[];
+}
+
+/** A selected task as `Task`. */
+export function toTask({ task: row, claimAgentName, dependsOn }: SelectedTask): Task {
   return {
     id: row.id,
     projectId: row.projectId,
@@ -126,6 +190,10 @@ export function toTask(row: TaskRow, claimAgentName: string | null): Task {
           }
         : null,
     pullRequestNumber: row.pullRequestNumber,
+    owns: row.owns,
+    dependsOn,
+    labels: row.labels,
+    branch: row.branch,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -189,13 +257,19 @@ function moveRefusal(from: TaskStatus, to: TaskStatus): DevSyncError {
 
 // --- Reads --------------------------------------------------------------------------------------
 
+/** The ids of the tasks a task waits for, in their order: a subquery of the task's row. */
+const dependsOnColumn = sql<string[]>`coalesce(
+  (select array_agg(${taskDependency.dependsOnTaskId}::text order by ${taskDependency.position})
+    from ${taskDependency} where ${taskDependency.taskId} = ${task.id}),
+  '{}'::text[])`;
+
 /**
- * The tasks matching `where` with their claiming agents' names, most recently updated first: every
- * list of tasks DevSync answers, an agent's project state's too.
+ * The tasks matching `where` with their claiming agents' names and the tasks they wait for, most
+ * recently updated first: every list of tasks DevSync answers, an agent's project state's too.
  */
 export function selectTasks(db: DevSyncDb, where: SQL | undefined) {
   return db
-    .select({ task, claimAgentName: agent.name })
+    .select({ task, claimAgentName: agent.name, dependsOn: dependsOnColumn })
     .from(task)
     .leftJoin(agent, and(eq(agent.id, task.claimAgentId), eq(agent.projectId, task.projectId)))
     .where(where)
@@ -205,7 +279,7 @@ export function selectTasks(db: DevSyncDb, where: SQL | undefined) {
 async function loadTask(db: DevSyncDb, project: ProjectRef, taskId: string): Promise<Task> {
   const [row] = await selectTasks(db, taskIn(project, taskId));
   if (!row) throw noSuchTask();
-  return toTask(row.task, row.claimAgentName);
+  return toTask(row);
 }
 
 /**
@@ -234,7 +308,7 @@ export async function linkedTask(
       ),
     ),
   ).limit(1);
-  return row ? toTask(row.task, row.claimAgentName) : null;
+  return row ? toTask(row) : null;
 }
 
 function assigneeFilter(
@@ -275,7 +349,7 @@ export async function listTasks(
       assigneeFilter(actor, assignee),
     ),
   );
-  return { tasks: rows.map((row) => toTask(row.task, row.claimAgentName)) };
+  return { tasks: rows.map(toTask) };
 }
 
 /**
@@ -310,16 +384,162 @@ export async function listWorkspaceTasks(
   );
   return {
     tasks: rows.map((row) => ({
-      ...toTask(row.task, row.claimAgentName),
+      ...toTask(row),
       projectName: names.get(row.task.projectId) ?? "",
     })),
   };
 }
 
+// --- The tasks it waits for, overlapping paths and usage -----------------------------------------
+
+/** The tasks `taskId` waits for, in their order, each with its status. */
+function dependenciesOf(
+  db: DevSyncDb,
+  project: ProjectRef,
+  taskId: string,
+): Promise<TaskSummary[]> {
+  return db
+    .select({ id: task.id, title: task.title, status: task.status })
+    .from(taskDependency)
+    .innerJoin(
+      task,
+      and(
+        eq(task.id, taskDependency.dependsOnTaskId),
+        eq(task.projectId, taskDependency.projectId),
+      ),
+    )
+    .where(and(eq(taskDependency.taskId, taskId), eq(taskDependency.projectId, project.projectId)))
+    .orderBy(asc(taskDependency.position));
+}
+
+/**
+ * The path two tasks share when one owns `a` and the other `b`, or null: the path itself when they
+ * are the same, or the one inside the other's folder (a path ending in `/`).
+ */
+function sharedPath(a: string, b: string): string | null {
+  if (a === b) return a;
+  if (a.endsWith("/") && b.startsWith(a)) return b;
+  if (b.endsWith("/") && a.startsWith(b)) return a;
+  return null;
+}
+
+/** The paths two tasks owning `mine` and `theirs` share, each once, sorted. */
+export function sharedPaths(mine: readonly string[], theirs: readonly string[]): string[] {
+  const shared = new Set<string>();
+  for (const a of mine) {
+    for (const b of theirs) {
+      const path = sharedPath(a, b);
+      if (path !== null) shared.add(path);
+    }
+  }
+  return [...shared].sort();
+}
+
+/**
+ * While `row` is open, the project's other open tasks whose paths overlap its own, oldest first,
+ * each with the paths they share.
+ */
+async function overlapsOf(
+  db: DevSyncDb,
+  project: ProjectRef,
+  row: TaskRow,
+): Promise<TaskDetail["overlaps"]> {
+  if (row.owns.length === 0 || CLOSED.includes(row.status)) return [];
+  const others = await db
+    .select({ id: task.id, title: task.title, status: task.status, owns: task.owns })
+    .from(task)
+    .where(
+      and(
+        eq(task.projectId, project.projectId),
+        eq(task.workspaceId, project.workspaceId),
+        ne(task.id, row.id),
+        notInArray(task.status, [...CLOSED]),
+        sql`cardinality(${task.owns}) > 0`,
+      ),
+    )
+    .orderBy(asc(task.createdAt), asc(task.id));
+  return others.flatMap(({ owns, ...other }) => {
+    const paths = sharedPaths(row.owns, owns);
+    return paths.length === 0 ? [] : [{ task: other, paths }];
+  });
+}
+
+/** One report's or run's usage, as `totalOf` adds it up. */
+interface UsagePart {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+  costUsd?: number;
+  models: string[];
+}
+
+/** The sum of `parts`, a figure left out counting 0, or null when there are none. */
+function totalOf(parts: UsagePart[]): UsageTotal | null {
+  if (parts.length === 0) return null;
+  const sum = (key: Exclude<keyof UsagePart, "models">) =>
+    parts.reduce((total, part) => total + (part[key] ?? 0), 0);
+  return {
+    inputTokens: sum("inputTokens"),
+    outputTokens: sum("outputTokens"),
+    cacheCreationInputTokens: sum("cacheCreationInputTokens"),
+    cacheReadInputTokens: sum("cacheReadInputTokens"),
+    // To the millionth of a dollar, so adding up costs leaves no binary noise.
+    costUsd: Math.round(sum("costUsd") * 1e6) / 1e6,
+    models: [...new Set(parts.flatMap((part) => part.models))].sort(),
+    count: parts.length,
+  };
+}
+
+/**
+ * The usage the task's agents reported with their progress reports and review requests (their own
+ * estimates), and apart from it its managed runs'. A stored value that doesn't parse counts none.
+ */
+async function usageOf(
+  db: DevSyncDb,
+  project: ProjectRef,
+  taskId: string,
+): Promise<TaskDetail["usage"]> {
+  const [reports, runs] = await Promise.all([
+    db
+      .select({ usage: outboxEvent.usage })
+      .from(outboxEvent)
+      .where(
+        and(
+          eq(outboxEvent.projectId, project.projectId),
+          eq(outboxEvent.taskId, taskId),
+          isNotNull(outboxEvent.usage),
+        ),
+      ),
+    db
+      .select({ usage: run.tokenUsage })
+      .from(run)
+      .where(
+        and(
+          eq(run.projectId, project.projectId),
+          eq(run.taskId, taskId),
+          isNotNull(run.tokenUsage),
+        ),
+      ),
+  ]);
+  const agents = reports.flatMap(({ usage }): UsagePart[] => {
+    const parsed = AgentUsage.safeParse(usage);
+    if (!parsed.success) return [];
+    const { model, ...figures } = parsed.data;
+    return [{ ...figures, models: model ? [model] : [] }];
+  });
+  const managed = runs.flatMap(({ usage }): UsagePart[] => {
+    const parsed = RunUsage.safeParse(usage);
+    return parsed.success ? [parsed.data] : [];
+  });
+  return { agents: totalOf(agents), runs: totalOf(managed) };
+}
+
 /**
  * `GET /tasks/:taskId` and `get_task`: the task with its requirements, creator, revisions and
- * comments (newest first), its timeline (its latest outbox events, oldest first) and its linked
- * pull request. It depends on the project only, so every reader reads the same.
+ * comments (newest first), its timeline (its latest outbox events, oldest first), its linked
+ * pull request, the tasks it waits for, the open tasks whose paths overlap its own, and its usage.
+ * It depends on the project only, so every reader reads the same.
  */
 export async function getTask(
   host: DevSyncHost,
@@ -330,36 +550,40 @@ export async function getTask(
   const [found] = await selectTasks(host.db, taskIn(project, taskIdOf(taskId)));
   if (!found) throw noSuchTask();
   const row = found.task;
-  const [revisions, comments, events, pull, members] = await Promise.all([
-    host.db
-      .select()
-      .from(taskRevision)
-      .where(and(eq(taskRevision.taskId, row.id), eq(taskRevision.projectId, project.projectId)))
-      .orderBy(desc(taskRevision.number)),
-    host.db
-      .select()
-      .from(taskComment)
-      .where(and(eq(taskComment.taskId, row.id), eq(taskComment.projectId, project.projectId)))
-      .orderBy(desc(taskComment.createdAt), desc(taskComment.id)),
-    host.db
-      .select()
-      .from(outboxEvent)
-      .where(and(eq(outboxEvent.taskId, row.id), eq(outboxEvent.projectId, project.projectId)))
-      .orderBy(desc(outboxEvent.createdAt), desc(outboxEvent.id))
-      .limit(TIMELINE_LIMIT),
-    row.pullRequestNumber === null
-      ? Promise.resolve([])
-      : host.db
-          .select()
-          .from(pullRequest)
-          .where(
-            and(
-              eq(pullRequest.projectId, project.projectId),
-              eq(pullRequest.number, row.pullRequestNumber),
+  const [revisions, comments, events, pull, members, dependencies, overlaps, usage] =
+    await Promise.all([
+      host.db
+        .select()
+        .from(taskRevision)
+        .where(and(eq(taskRevision.taskId, row.id), eq(taskRevision.projectId, project.projectId)))
+        .orderBy(desc(taskRevision.number)),
+      host.db
+        .select()
+        .from(taskComment)
+        .where(and(eq(taskComment.taskId, row.id), eq(taskComment.projectId, project.projectId)))
+        .orderBy(desc(taskComment.createdAt), desc(taskComment.id)),
+      host.db
+        .select()
+        .from(outboxEvent)
+        .where(and(eq(outboxEvent.taskId, row.id), eq(outboxEvent.projectId, project.projectId)))
+        .orderBy(desc(outboxEvent.createdAt), desc(outboxEvent.id))
+        .limit(TIMELINE_LIMIT),
+      row.pullRequestNumber === null
+        ? Promise.resolve([])
+        : host.db
+            .select()
+            .from(pullRequest)
+            .where(
+              and(
+                eq(pullRequest.projectId, project.projectId),
+                eq(pullRequest.number, row.pullRequestNumber),
+              ),
             ),
-          ),
-    host.members(project.workspaceId),
-  ]);
+      host.members(project.workspaceId),
+      dependenciesOf(host.db, project, row.id),
+      overlapsOf(host.db, project, row),
+      usageOf(host.db, project, row.id),
+    ]);
 
   const agentIds = new Set<string>();
   for (const id of [
@@ -382,7 +606,7 @@ export async function getTask(
   };
 
   return {
-    ...toTask(row, found.claimAgentName),
+    ...toTask(found),
     description: row.description,
     acceptanceCriteria: row.acceptanceCriteria,
     creator: requiredAuthor(names, row.creatorUserId, row.creatorAgentId),
@@ -419,10 +643,143 @@ export async function getTask(
       };
     }),
     pullRequest: pull[0] ? toPullRequest(pull[0]) : null,
+    dependencies,
+    overlaps,
+    usage,
   };
 }
 
 // --- Writes -------------------------------------------------------------------------------------
+
+const NOT_PROJECT_TASK =
+  "A task it waits for isn't one of this project's tasks. Pick them from this project's tasks.";
+
+/** The titles of the project's tasks `ids`, by id: one that isn't the project's is refused. */
+async function projectTaskTitles(
+  tx: DevSyncDb,
+  project: ProjectRef,
+  ids: readonly string[],
+): Promise<Map<string, string>> {
+  if (ids.length === 0) return new Map();
+  const rows = await tx
+    .select({ id: task.id, title: task.title })
+    .from(task)
+    .where(
+      and(
+        eq(task.projectId, project.projectId),
+        eq(task.workspaceId, project.workspaceId),
+        inArray(task.id, [...ids]),
+      ),
+    );
+  if (rows.length !== ids.length) {
+    throw new DevSyncError("invalid", NOT_PROJECT_TASK, ["dependsOn"]);
+  }
+  return new Map(rows.map((row) => [row.id, row.title]));
+}
+
+/**
+ * Holds the project's dependencies for the rest of `tx` (a transaction-level advisory lock), so
+ * two edits made at once can't close a circle that neither sees alone.
+ */
+async function lockDependencies(tx: DevSyncDb, project: ProjectRef): Promise<void> {
+  const key = `devsync.task_dependency:${project.projectId}`;
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+}
+
+/**
+ * Refuses task `taskId` waiting for `dependsOn` (the project's tasks, by `titles`) when one of
+ * them waits for it, directly or through other tasks: the project's dependencies are read under
+ * `lockDependencies`, without the task's own, which this edit replaces.
+ */
+async function refuseCircle(
+  tx: DevSyncDb,
+  project: ProjectRef,
+  taskId: string,
+  dependsOn: readonly string[],
+  titles: Map<string, string>,
+): Promise<void> {
+  const edges = await tx
+    .select({ from: taskDependency.taskId, to: taskDependency.dependsOnTaskId })
+    .from(taskDependency)
+    .where(eq(taskDependency.projectId, project.projectId));
+  const next = new Map<string, string[]>();
+  for (const { from, to } of edges) {
+    if (from === taskId) continue;
+    const list = next.get(from);
+    if (list) list.push(to);
+    else next.set(from, [to]);
+  }
+  for (const start of dependsOn) {
+    const seen = new Set<string>();
+    const stack = [start];
+    for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
+      if (at === taskId) {
+        throw new DevSyncError(
+          "conflict",
+          `Task "${titles.get(start) ?? ""}" already waits for this task, so this task can't wait for it. Remove it from the tasks this one waits for.`,
+          ["dependsOn"],
+        );
+      }
+      if (seen.has(at)) continue;
+      seen.add(at);
+      stack.push(...(next.get(at) ?? []));
+    }
+  }
+}
+
+/** Replaces the tasks `taskId` waits for with `dependsOn`, in their order, in `tx`. */
+async function writeDependencies(
+  tx: DevSyncDb,
+  project: ProjectRef,
+  taskId: string,
+  dependsOn: readonly string[],
+): Promise<void> {
+  await tx
+    .delete(taskDependency)
+    .where(and(eq(taskDependency.taskId, taskId), eq(taskDependency.projectId, project.projectId)));
+  if (dependsOn.length === 0) return;
+  await tx.insert(taskDependency).values(
+    dependsOn.map((dependsOnTaskId, position) => ({
+      workspaceId: project.workspaceId,
+      projectId: project.projectId,
+      taskId,
+      dependsOnTaskId,
+      position,
+    })),
+  );
+}
+
+/**
+ * The tasks an edit makes task `taskId` (locked) wait for, checked (the project's, never itself,
+ * never in a circle), or null when the edit leaves them as they are.
+ */
+async function editedDependencies(
+  tx: DevSyncDb,
+  project: ProjectRef,
+  taskId: string,
+  dependsOn: readonly string[] | undefined,
+): Promise<readonly string[] | null> {
+  if (dependsOn === undefined) return null;
+  const before = await tx
+    .select({ id: taskDependency.dependsOnTaskId })
+    .from(taskDependency)
+    .where(and(eq(taskDependency.taskId, taskId), eq(taskDependency.projectId, project.projectId)))
+    .orderBy(asc(taskDependency.position));
+  if (dependsOn.length === before.length && dependsOn.every((id, i) => id === before[i]?.id)) {
+    return null;
+  }
+  if (dependsOn.includes(taskId)) {
+    throw new DevSyncError(
+      "invalid",
+      "A task can't wait for itself. Remove it from the tasks it waits for.",
+      ["dependsOn"],
+    );
+  }
+  const titles = await projectTaskTitles(tx, project, dependsOn);
+  await lockDependencies(tx, project);
+  await refuseCircle(tx, project, taskId, dependsOn, titles);
+  return dependsOn;
+}
 
 /**
  * `POST /tasks` (a member, `TaskInput`) and `create_task` (an agent, `AgentTaskInput`, or a
@@ -431,7 +788,8 @@ export async function getTask(
  * `requestId` with other requirements is refused. A member's task from a security finding keeps the
  * finding's fingerprint, rule and file as the host gives them, read again here (never the
  * browser's copy): a finding the host no longer gives is refused, and so is one with an open linked
- * task (`linkedTask`).
+ * task (`linkedTask`). The tasks it waits for are the project's; a new task can't close a circle,
+ * since none waits for it yet.
  */
 export async function createTask(
   host: DevSyncHost,
@@ -445,8 +803,11 @@ export async function createTask(
   const parsed: TaskInput & { requestId?: string } = agentActor
     ? parse(AgentTaskInput, input)
     : parse(MemberTaskInput, input);
-  const { requestId = null, finding: from, ...given } = parsed;
+  const { requestId = null, finding: from, owns, dependsOn, labels, branch, ...given } = parsed;
   const fields = agentActor ? redactRequirements(host, given) : given;
+  const ownFields = fieldsOf({ owns, dependsOn, labels, branch });
+  const extra = agentActor ? redactFields(host, ownFields) : ownFields;
+  const waitsFor = extra.dependsOn ?? [];
   const finding = from ? await hostFinding(host, project, from.fingerprint) : null;
   const at = host.clock.now();
   const creator = actorIds(actor);
@@ -483,7 +844,7 @@ export async function createTask(
             ["requestId"],
           );
         }
-        return { task: toTask(existing.task, existing.claimAgentName), created: false };
+        return { task: toTask(existing), created: false };
       }
     }
     // One open task per finding (R-10); two creates at the same instant may both pass, accepted.
@@ -494,12 +855,16 @@ export async function createTask(
         `This finding already has a task, "${linked.title}". Open it instead.`,
       );
     }
+    await projectTaskTitles(tx, project, waitsFor);
     const [row] = await tx
       .insert(task)
       .values({
         workspaceId: project.workspaceId,
         projectId: project.projectId,
         ...fields,
+        owns: extra.owns ?? [],
+        labels: extra.labels ?? [],
+        branch: extra.branch ?? null,
         creatorUserId: "userId" in creator ? creator.userId : null,
         creatorAgentId: agentId,
         createRequestId: requestId,
@@ -511,6 +876,7 @@ export async function createTask(
       })
       .returning();
     if (!row) throw new Error("The task wasn't saved.");
+    await writeDependencies(tx, project, row.id, waitsFor);
     await tx.insert(taskRevision).values({
       workspaceId: project.workspaceId,
       projectId: project.projectId,
@@ -536,7 +902,10 @@ export async function createTask(
       at,
       facts: { status: { from: null, to: row.status } },
     });
-    return { task: toTask(row, null), created: true };
+    return {
+      task: toTask({ task: row, claimAgentName: null, dependsOn: [...waitsFor] }),
+      created: true,
+    };
   });
   if (result.created) await outbox.wake(host, project.projectId);
   return result.task;
@@ -575,8 +944,9 @@ async function claimHolds(tx: DevSyncDb, row: TaskRow, now: Date): Promise<boole
 /**
  * `PATCH /tasks/:taskId` (a member, `TaskUpdate`) and `update_task` (an agent, its fields without
  * `taskId`): checks the version read, the lifecycle and a claim's hold on the status; keeps a new
- * revision when the requirements change. An agent edits only the tasks it created, moves them to
- * Backlog or Ready only, and never assigns them. An assignee is a member of the workspace.
+ * revision when the requirements change, and none for its paths, the tasks it waits for, its labels
+ * or its branch. An agent edits only the tasks it created, moves them to Backlog or Ready only, and
+ * never assigns them. An assignee is a member of the workspace.
  */
 export async function updateTask(
   host: DevSyncHost,
@@ -588,7 +958,7 @@ export async function updateTask(
   const { project } = actor;
   const agentActor = isAgent(actor) ? actor : null;
   const update: TaskUpdate = agentActor
-    ? redactRequirements(host, parse(AgentUpdateFields, input))
+    ? agentUpdate(host, parse(AgentUpdateFields, input))
     : parse(TaskUpdate, input);
   const { version, status, assigneeUserId } = update;
   const id = taskIdOf(taskId);
@@ -609,7 +979,9 @@ export async function updateTask(
   const at = host.clock.now();
 
   const result = await host.db.transaction(async (tx) => {
-    const [current] = await tx.select().from(task).where(taskIn(project, id)).for("update");
+    // `no key update`, not `update`: a dependency on this task written meanwhile under
+    // `lockDependencies` locks it `key share`, and mustn't wait for this edit.
+    const [current] = await tx.select().from(task).where(taskIn(project, id)).for("no key update");
     if (!current) throw noSuchTask();
     if (agentActor && current.creatorAgentId !== agentActor.agentId) {
       throw new DevSyncError(
@@ -635,6 +1007,7 @@ export async function updateTask(
     if (status && status !== current.status && !TRANSITIONS[current.status].includes(status)) {
       throw moveRefusal(current.status, status);
     }
+    const dependencies = await editedDependencies(tx, project, id, update.dependsOn);
     const fields = {
       title: update.title ?? current.title,
       description: update.description ?? current.description,
@@ -651,6 +1024,9 @@ export async function updateTask(
         ...fields,
         ...(status ? { status } : {}),
         ...(assigneeUserId !== undefined ? { assigneeUserId } : {}),
+        ...(update.owns !== undefined ? { owns: update.owns } : {}),
+        ...(update.labels !== undefined ? { labels: update.labels } : {}),
+        ...(update.branch !== undefined ? { branch: update.branch } : {}),
         ...(status && status !== "CLAIMED"
           ? { claimAgentId: null, claimId: null, claimExpiresAt: null }
           : {}),
@@ -661,6 +1037,7 @@ export async function updateTask(
       .where(and(taskIn(project, id), eq(task.version, version)))
       .returning();
     if (!saved) throw new DevSyncError("conflict", TASK_CHANGED);
+    if (dependencies) await writeDependencies(tx, project, id, dependencies);
 
     const author = actorIds(actor);
     if (revised) {
