@@ -2,9 +2,8 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agent, githubDelivery, pullRequest, signal } from "../db";
 import type { ProjectRef } from "../host";
-import { setClock } from "../test/helpers";
+import { devsyncAgent, hostAgent, revokeHostAgent, setClock } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "../testing";
-import { registerAgent, revokeAgent } from "./agents";
 import { applyGithubFact, type GithubFact, listPullRequests } from "./pull-requests";
 
 const START = Date.parse(FAKE_NOW);
@@ -31,27 +30,21 @@ function newProject(fullName = "acme/app"): ProjectRef {
 const owner = { userId: crypto.randomUUID(), name: "Owner", role: "owner" as const };
 
 /**
- * A project with two live agents, a revoked one and an expired one, another project with an agent,
- * and a third project with no agent.
+ * A project with two live agents (the host's), a revoked one and an expired one (DevSync's own, not
+ * yet moved), another project with an agent, and a third project with no agent.
  */
 async function setup() {
   const project = newProject();
   const other = newProject("acme/other");
   const empty = newProject("acme/empty");
   const host = fakeHost(testDb.db, { projects: [project, other, empty] });
-  const register = async (name: string, on = project) => {
-    const created = await registerAgent(
-      host,
-      { project: on, member: owner },
-      { name, kind: "CODEX" },
-    );
-    return created.agent.id;
-  };
+  const register = async (name: string, on = project) =>
+    (await hostAgent(host, on, { name, kind: "CODEX" })).id;
   const codex = await register("Codex");
   const claude = await register("Claude");
   const revoked = await register("Revoked");
-  await revokeAgent(host, { project, member: owner }, revoked);
-  const expired = await register("Expired");
+  await revokeHostAgent(host, revoked);
+  const { id: expired } = await devsyncAgent(host, project, { name: "Expired", kind: "CODEX" });
   await testDb.db
     .update(agent)
     .set({ expiresAt: new Date(START - 1000) })

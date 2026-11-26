@@ -3,9 +3,9 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { signal, task } from "../db";
 import type { AgentActor, ProjectContext, ProjectRef } from "../host";
-import { refusal, setClock } from "../test/helpers";
+import { hostAgent, refusal, revokeHostAgent, rotateHostAgent, setClock } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, fakeToken, type TestDb } from "../testing";
-import { authenticateAgent, registerAgent, revokeAgent, rotateAgent } from "./agents";
+import { authenticateAgent } from "./agents";
 import { deliverDue } from "./delivery";
 import { outbox } from "./outbox";
 import {
@@ -46,10 +46,8 @@ async function setup() {
     project: on,
     member: members[roles.indexOf(role)] as ProjectContext["member"],
   });
-  const register = async (name: string, kind: "CLAUDE" | "CODEX", on = project) => {
-    const { agent, token } = await registerAgent(host, as("owner", on), { name, kind });
-    return { id: agent.id, token, actor: await authenticateAgent(host, token) };
-  };
+  const register = (name: string, kind: "CLAUDE" | "CODEX", on = project) =>
+    hostAgent(host, on, { name, kind });
   const codex = await register("Codex", "CODEX");
   const claude = await register("Claude", "CLAUDE");
   const outsider = await register("Outsider", "CODEX", other);
@@ -95,9 +93,9 @@ describe("a member's message to an agent", () => {
     expect(await pendingSignals(host, claude.actor)).toEqual([]);
     await refusal(acknowledgeSignal(host, claude.actor, sent.id), "not-found");
 
-    const rotated = await rotateAgent(host, as("owner"), codex.id);
+    const rotated = rotateHostAgent(host, codex.id);
     await refusal(authenticateAgent(host, codex.token), "unauthenticated");
-    const actor = await authenticateAgent(host, rotated.token);
+    const actor = await authenticateAgent(host, rotated);
     const inbox = await pendingSignals(host, actor);
     expect(inbox).toEqual([
       {
@@ -130,7 +128,7 @@ describe("a member's message to an agent", () => {
 
   it("is refused to a revoked or unknown agent, and when its fields are invalid", async () => {
     const { host, as, claude } = await setup();
-    await revokeAgent(host, as("owner"), claude.id);
+    await revokeHostAgent(host, claude.id);
     const input = {
       kind: "system.warning" as const,
       message: "Stop.",
@@ -227,7 +225,7 @@ describe("publishAgentSignal", () => {
   });
 
   it("refuses a signal to itself, to a revoked agent, and with invalid fields", async () => {
-    const { host, as, codex, claude } = await setup();
+    const { host, codex, claude } = await setup();
     const input = {
       recipientId: codex.id,
       kind: "clarification.requested" as const,
@@ -235,7 +233,7 @@ describe("publishAgentSignal", () => {
       idempotencyKey: crypto.randomUUID(),
     };
     await refusal(publishAgentSignal(host, codex.actor, input), "invalid");
-    await revokeAgent(host, as("owner"), codex.id);
+    await revokeHostAgent(host, codex.id);
     await refusal(publishAgentSignal(host, claude.actor, input), "not-found");
     const error = await refusal(
       publishAgentSignal(host, claude.actor, { ...input, payload: { message: "" } }),
@@ -368,8 +366,8 @@ describe("agentProjectState", () => {
   it("answers the project, its live agents and its 100 most recently updated tasks", async () => {
     const { host, project, other, as, codex, claude } = await setup();
     const start = Date.parse(FAKE_NOW);
-    const revoked = await registerAgent(host, as("owner"), { name: "Gone", kind: "CODEX" });
-    await revokeAgent(host, as("owner"), revoked.agent.id);
+    const revoked = await hostAgent(host, project, { name: "Gone", kind: "CODEX" });
+    await revokeHostAgent(host, revoked.id);
     const scope = { workspaceId: project.workspaceId, projectId: project.projectId };
     const rows = Array.from({ length: 101 }, (_, i) => ({
       ...scope,

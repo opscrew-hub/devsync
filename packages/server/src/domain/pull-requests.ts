@@ -10,7 +10,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { PullRequestList } from "@devsync/schemas";
-import { and, asc, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { agent, githubDelivery, pullRequest, signal, task } from "../db";
 import type { DevSyncDb, DevSyncHost, ProjectContext, ProjectRef } from "../host";
@@ -185,6 +185,7 @@ export async function applyGithubFact(host: DevSyncHost, job: GithubJob): Promis
 
     const sent = signalOf(fact);
     if (!sent) return;
+    // A host's agent has no token here (its expiry is the host's); DevSync's own expire.
     const recipients = await tx
       .select({ id: agent.id })
       .from(agent)
@@ -192,7 +193,7 @@ export async function applyGithubFact(host: DevSyncHost, job: GithubJob): Promis
         and(
           eq(agent.projectId, project.projectId),
           isNull(agent.revokedAt),
-          gt(agent.expiresAt, now),
+          or(isNull(agent.expiresAt), gt(agent.expiresAt, now)),
         ),
       );
     if (recipients.length === 0) return;

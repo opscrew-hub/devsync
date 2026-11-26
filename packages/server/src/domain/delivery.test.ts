@@ -2,10 +2,10 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { outboxEvent, signal, task } from "../db";
 import type { ProjectRef } from "../host";
-import { setClock } from "../test/helpers";
+import { hostAgent, revokeHostAgent, setClock } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "../testing";
 import { requestReview } from "./activity";
-import { authenticateAgent, registerAgent, revokeAgent } from "./agents";
+import { authenticateAgent } from "./agents";
 import { claimTask } from "./claims";
 import { deliverDue } from "./delivery";
 import { type OutboxActor, outbox } from "./outbox";
@@ -39,21 +39,11 @@ async function setup() {
     members: { [project.workspaceId]: [owner] },
     projects: [project, other],
   });
-  const register = async (name: string, on = project) => {
-    const { agent, token } = await registerAgent(
-      host,
-      { project: on, member: owner },
-      {
-        name,
-        kind: "CODEX",
-      },
-    );
-    return { id: agent.id, token };
-  };
+  const register = (name: string, on = project) => hostAgent(host, on, { name, kind: "CODEX" });
   const codex = await register("Codex");
   const claude = await register("Claude");
   const revoked = await register("Revoked");
-  await revokeAgent(host, { project, member: owner }, revoked.id);
+  await revokeHostAgent(host, revoked.id);
   const outsider = await register("Outsider", other);
   const actor = async (agent: { token: string }) => authenticateAgent(host, agent.token);
   const record = (actorOf: OutboxActor, kind: string, message: string, at: number) =>

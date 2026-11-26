@@ -5,6 +5,7 @@
  * first; payloads hold ids and the GitHub fact only.
  */
 import { z } from "zod";
+import { moveAgents } from "./domain/agents";
 import { deliverDue } from "./domain/delivery";
 import { applyGithubFact, GithubJob } from "./domain/pull-requests";
 import { dispatchRun, sweepRuns } from "./domain/runs";
@@ -41,6 +42,9 @@ const RunsJob = z
   .refine((job) => (job?.projectId === undefined) === (job?.runId === undefined), {
     path: ["runId"],
   });
+
+/** `devsync.agents-move`'s payload: the schedule's empty one. */
+const AgentsMoveJob = z.object({}).nullish();
 
 /** Parses a job's payload, refusing it with the invalid fields' names (never their values). */
 function parsePayload<T extends z.ZodType>(queue: QueueName, schema: T, payload: unknown) {
@@ -86,6 +90,19 @@ export const jobs = {
       }
     },
     cron: "*/10 * * * *",
+    retryLimit: 3,
+    retryBackoff: true,
+  },
+  /**
+   * Moves DevSync's own agents, those that still have a token, to the host's, project by project; a
+   * project with DevSync off waits for the next hour.
+   */
+  "devsync.agents-move": {
+    async handler(payload, host) {
+      parsePayload("devsync.agents-move", AgentsMoveJob, payload);
+      await moveAgents(host);
+    },
+    cron: "0 * * * *",
     retryLimit: 3,
     retryBackoff: true,
   },

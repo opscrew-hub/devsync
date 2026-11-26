@@ -11,20 +11,10 @@ describe("can()", () => {
       ]),
     );
     expect(table).toEqual({
-      owner: { "task.write": true, "agent.manage": true, "run.request": true, "run.decide": true },
-      admin: { "task.write": true, "agent.manage": true, "run.request": true, "run.decide": true },
-      approver: {
-        "task.write": true,
-        "agent.manage": false,
-        "run.request": true,
-        "run.decide": true,
-      },
-      developer: {
-        "task.write": true,
-        "agent.manage": false,
-        "run.request": true,
-        "run.decide": false,
-      },
+      owner: { "task.write": true, "run.request": true, "run.decide": true },
+      admin: { "task.write": true, "run.request": true, "run.decide": true },
+      approver: { "task.write": true, "run.request": true, "run.decide": true },
+      developer: { "task.write": true, "run.request": true, "run.decide": false },
     });
   });
 });

@@ -5,6 +5,7 @@
  * oldest unacknowledged signals and acknowledges each once processed.
  */
 import {
+  type AgentKind,
   AgentMessage,
   type AgentMessageReceipt,
   can,
@@ -46,7 +47,7 @@ export interface InboxSignal {
 /** `get_project_state`: the project, its live agents and its 100 most recently updated tasks. */
 export interface AgentProjectState {
   project: { id: string; fullName: string; readOnly: boolean };
-  agents: { id: string; name: string; kind: "CLAUDE" | "CODEX" }[];
+  agents: { id: string; name: string; kind: AgentKind }[];
   tasks: (Task & { description: string; acceptanceCriteria: string })[];
 }
 

@@ -3,8 +3,8 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agent } from "../db";
 import type { Member, ProjectContext, ProjectRef } from "../host";
+import { devsyncAgent } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "../testing";
-import { registerAgent } from "./agents";
 import { exportProject } from "./export";
 import { applyGithubFact } from "./pull-requests";
 import { requestRun } from "./runs";
@@ -46,7 +46,8 @@ async function setup() {
   };
   const fill = async (on: ProjectRef, title: string) => {
     const ctx: ProjectContext = { project: on, member: owner };
-    const registered = await registerAgent(host, ctx, { name: `${title} agent`, kind: "CODEX" });
+    // DevSync's own, not yet moved: its row still has its token's hash.
+    const registered = await devsyncAgent(host, on, { name: `${title} agent`, kind: "CODEX" });
     const created = await createTask(host, ctx, { title, description: "", acceptanceCriteria: "" });
     const ready = await updateTask(host, ctx, created.id, {
       version: created.version,
@@ -73,7 +74,7 @@ async function setup() {
     });
     await linkPullRequest(host, ctx, created.id, { number: 4 });
     const asked = await requestRun(host, ctx, ready.id);
-    return { taskId: created.id, agentId: registered.agent.id, runId: asked.id };
+    return { taskId: created.id, agentId: registered.id, runId: asked.id };
   };
   return {
     shop,

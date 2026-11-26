@@ -35,8 +35,8 @@ export const taskStatuses = [
   "CANCELLED",
 ] as const;
 
-/** The coding agents DevSync registers. */
-export const agentKinds = ["CLAUDE", "CODEX"] as const;
+/** The coding agents DevSync knows: Claude Code, Codex, or another agent the host registered. */
+export const agentKinds = ["CLAUDE", "CODEX", "OTHER"] as const;
 
 /** A pull request's state as GitHub reports it. */
 export const pullRequestStates = ["open", "closed", "merged"] as const;
@@ -144,6 +144,11 @@ export const taskComment = devsyncSchema.table(
   (t) => [index().on(t.taskId, t.createdAt)],
 );
 
+/**
+ * The agents DevSync has seen: the host registers them (its id is the row's), and their inbox,
+ * claims and timeline point here. A row DevSync registered before the host had agents keeps its
+ * token until the hourly `devsync.agents-move` moves it to the host and nulls both token columns.
+ */
 export const agent = devsyncSchema.table(
   "agent",
   {
@@ -151,9 +156,9 @@ export const agent = devsyncSchema.table(
     ...scope(),
     name: text("name").notNull(),
     kind: text("kind", { enum: agentKinds }).notNull(),
-    /** The SHA-256 of the agent's bearer token; the token itself is never kept. */
-    tokenHash: text("token_hash").notNull().unique(),
-    expiresAt: tstz("expires_at").notNull(),
+    /** The SHA-256 of DevSync's own bearer token, until it moves; the token itself is never kept. */
+    tokenHash: text("token_hash").unique(),
+    expiresAt: tstz("expires_at"),
     revokedAt: tstz("revoked_at"),
     lastSeenAt: tstz("last_seen_at"),
     registeredByUserId: uuid("registered_by_user_id"),

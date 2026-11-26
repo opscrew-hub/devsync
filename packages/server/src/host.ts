@@ -77,7 +77,11 @@ export interface AuditEntry {
 export type AuditActor = { userId: string } | "host";
 
 /** DevSync's queues, run by the host's worker. */
-export type QueueName = "devsync.outbox" | "devsync.github" | "devsync.runs";
+export type QueueName =
+  | "devsync.outbox"
+  | "devsync.github"
+  | "devsync.runs"
+  | "devsync.agents-move";
 
 /**
  * One GitHub delivery for a project with DevSync on, as the host forwards it on `devsync.github`

@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { outboxEvent, task } from "../db";
 import type { AgentActor, DevSyncEvent, Member, ProjectContext, ProjectRef } from "../host";
 import { jobs } from "../jobs";
-import { setClock } from "../test/helpers";
+import { hostAgent, setClock } from "../test/helpers";
 import {
   artifactFiles,
   createTestDb,
@@ -14,7 +14,6 @@ import {
   type TestDb,
 } from "../testing";
 import { reportBlocker, reportProgress, requestReview, submitReview } from "./activity";
-import { authenticateAgent, registerAgent } from "./agents";
 import { claimTask, releaseTask } from "./claims";
 import { outbox } from "./outbox";
 import { applyGithubFact } from "./pull-requests";
@@ -89,10 +88,8 @@ async function setup() {
     },
   };
   const ctx: ProjectContext = { project, member: owner };
-  const register = async (name: string): Promise<AgentActor> => {
-    const { token } = await registerAgent(host, ctx, { name, kind: "CLAUDE" });
-    return authenticateAgent(host, token);
-  };
+  const register = async (name: string): Promise<AgentActor> =>
+    (await hostAgent(host, project, { name, kind: "CLAUDE" })).actor;
   const codex = await register("Codex");
   const claude = await register("Claude");
   let read = 0;

@@ -1,7 +1,6 @@
 import {
   AgentList,
   AgentMessageReceipt,
-  AgentWithToken,
   Comment,
   ErrorAnswer,
   FindingAnswer,
@@ -19,7 +18,6 @@ import {
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { pullRequest } from "../db";
-import { registerAgent } from "../domain/agents";
 import { createTask, updateTask } from "../domain/tasks";
 import type {
   Member,
@@ -29,7 +27,7 @@ import type {
   WorkspaceContext,
   WorkspaceEnv,
 } from "../host";
-import { sampleFinding } from "../test/helpers";
+import { devsyncAgent, hostAgent, sampleFinding } from "../test/helpers";
 import { createTestDb, FAKE_NOW, type FakeHost, fakeHost, type TestDb } from "../testing";
 import { projectRoutes, workspaceRoutes } from "./index";
 
@@ -268,22 +266,21 @@ describe("project routes", () => {
     expect(MemberList.parse(answer.body)).toEqual({ members });
   });
 
-  it("register, list, rotate and revoke agents, and message one once by its key", async () => {
-    const { as } = setup();
-    const registered = await as("owner")("POST", "/agents", { name: "Codex", kind: "CODEX" });
-    expect(registered.status).toBe(201);
-    expect(registered.headers.get("cache-control")).toBe("no-store");
-    const { agent, token } = AgentWithToken.parse(registered.body);
-    expect(agent).toMatchObject({ name: "Codex", kind: "CODEX", status: "Offline" });
+  it("list the host's agents and DevSync's own, message one once by its key, and register none", async () => {
+    const { host, project, as } = setup();
+    const agent = await hostAgent(host, project, { name: "Codex", kind: "CODEX" });
+    const own = await devsyncAgent(host, project, { name: "Own", kind: "CLAUDE" });
 
     const listed = await as("developer")("GET", "/agents");
-    expect(AgentList.parse(listed.body).agents.map((a) => a.id)).toEqual([agent.id]);
-    expect(JSON.stringify(listed.body)).not.toContain(token);
-
-    const rotated = await as("admin")("POST", `/agents/${agent.id}/rotate`);
-    expect(rotated.status).toBe(200);
-    expect(rotated.headers.get("cache-control")).toBe("no-store");
-    expect(AgentWithToken.parse(rotated.body).token).not.toBe(token);
+    expect(listed.status).toBe(200);
+    expect(listed.headers.get("cache-control")).toBe("no-store");
+    expect(AgentList.parse(listed.body).agents.map((a) => [a.id, a.name, a.status])).toEqual([
+      [agent.id, "Codex", "Recently active"],
+      [own.id, "Own", "Offline"],
+    ]);
+    for (const token of [agent.token, own.token]) {
+      expect(JSON.stringify(listed.body)).not.toContain(token);
+    }
 
     const message = {
       kind: "clarification.answered",
@@ -302,22 +299,23 @@ describe("project routes", () => {
       "conflict",
     );
 
-    const revoked = await as("owner")("DELETE", `/agents/${agent.id}`);
-    expect(revoked.status).toBe(204);
-    expect(revoked.body).toBeUndefined();
-    expect(AgentList.parse((await as("owner")("GET", "/agents")).body).agents[0]?.status).toBe(
-      "Revoked",
-    );
-    expect((await as("owner")("DELETE", `/agents/${agent.id}`)).status).toBe(204);
+    // The host registers, rotates and revokes agents: DevSync has no route for it.
+    const routes = projectRoutes(host);
+    for (const [method, path] of [
+      ["POST", "/agents"],
+      ["POST", `/agents/${agent.id}/rotate`],
+      ["DELETE", `/agents/${agent.id}`],
+    ] as const) {
+      expect((await routes.request(path, { method })).status, `${method} ${path}`).toBe(404);
+    }
+    expect(AgentList.parse((await as("owner")("GET", "/agents")).body).agents).toHaveLength(2);
   });
 
   describe.each(ROLES)("a member who is %s", (role) => {
-    const manages = role === "owner" || role === "admin";
-
-    it(`reads everything, changes tasks and messages agents, and ${manages ? "manages" : "can't manage"} agents`, async () => {
+    it("reads everything, changes tasks and messages agents", async () => {
       const { host, project, ctx, as } = setup();
       const task = await createTask(host, ctx("owner"), newTask);
-      const { agent } = await registerAgent(host, ctx("owner"), { name: "Codex", kind: "CODEX" });
+      const agent = await hostAgent(host, project, { name: "Codex", kind: "CODEX" });
       await addPullRequest(project, 1, new Date(FAKE_NOW));
       const member = as(role);
 
@@ -339,36 +337,15 @@ describe("project routes", () => {
         idempotencyKey: crypto.randomUUID(),
       };
       expect((await member("POST", `/agents/${agent.id}/messages`, message)).status).toBe(201);
-
-      const register = await member("POST", "/agents", { name: "Claude", kind: "CLAUDE" });
-      const rotate = await member("POST", `/agents/${agent.id}/rotate`);
-      // A refused member is refused before their body is read.
-      const invalid = await member("POST", "/agents", { name: "" });
-      const revoke = await member("DELETE", `/agents/${agent.id}`);
-      if (manages) {
-        expect(register.status).toBe(201);
-        expect(rotate.status).toBe(200);
-        refusal(invalid, 422, "invalid");
-        expect(revoke.status).toBe(204);
-      } else {
-        for (const answer of [register, rotate, invalid, revoke]) {
-          expect(refusal(answer, 403, "forbidden").message).toBe(
-            "Only an Owner or Admin can register, rotate or revoke agents. Ask one of them.",
-          );
-        }
-        const { agents } = AgentList.parse((await member("GET", "/agents")).body);
-        expect(agents.map((a) => [a.id, a.status])).toEqual([[agent.id, "Offline"]]);
-      }
+      const { agents } = AgentList.parse((await member("GET", "/agents")).body);
+      expect(agents.map((a) => a.id)).toEqual([agent.id]);
     });
   });
 
   it("don't find another project's tasks and agents, or ids that aren't UUIDs", async () => {
     const { host, other, ctx, as } = setup();
     const theirs = await createTask(host, ctx("owner", other), newTask);
-    const { agent } = await registerAgent(host, ctx("owner", other), {
-      name: "Theirs",
-      kind: "CLAUDE",
-    });
+    const agent = await hostAgent(host, other, { name: "Theirs", kind: "CLAUDE" });
     await addPullRequest(other, 3, new Date(FAKE_NOW));
     const owner = as("owner");
     const mine = Task.parse((await owner("POST", "/tasks", newTask)).body);
@@ -391,16 +368,14 @@ describe("project routes", () => {
       "not-found",
     );
     refusal(await owner("PUT", `/tasks/${mine.id}/pull-request`, { number: 3 }), 404, "not-found");
-    refusal(await owner("POST", `/agents/${agent.id}/rotate`), 404, "not-found");
-    refusal(await owner("DELETE", `/agents/${agent.id}`), 404, "not-found");
     const message = { kind: "system.warning", message: "x", idempotencyKey: crypto.randomUUID() };
     refusal(await owner("POST", `/agents/${agent.id}/messages`, message), 404, "not-found");
+    refusal(await owner("POST", "/agents/not-a-uuid/messages", message), 404, "not-found");
     refusal(await owner("GET", "/tasks/not-a-uuid"), 404, "not-found");
     refusal(await owner("PATCH", "/tasks/not-a-uuid", { version: 1 }), 404, "not-found");
-    refusal(await owner("DELETE", "/agents/not-a-uuid"), 404, "not-found");
 
     const { agents } = AgentList.parse((await as("owner", other)("GET", "/agents")).body);
-    expect(agents.map((a) => a.status)).toEqual(["Offline"]);
+    expect(agents.map((a) => a.id)).toEqual([agent.id]);
     const unchanged = TaskDetail.parse(
       (await as("owner", other)("GET", `/tasks/${theirs.id}`)).body,
     );
@@ -422,10 +397,14 @@ describe("project routes", () => {
     ).toEqual(["priority"]);
     expect(refusal(await owner("POST", "/tasks", "{"), 422, "invalid").fields).toEqual(["body"]);
     expect(refusal(await owner("POST", "/tasks"), 422, "invalid").fields).toEqual(["body"]);
+    const message = { kind: "hello", message: "", idempotencyKey: crypto.randomUUID() };
     expect(
-      refusal(await owner("POST", "/agents", { name: "x".repeat(81), kind: "GPT" }), 422, "invalid")
-        .fields,
-    ).toEqual(["name", "kind"]);
+      refusal(
+        await owner("POST", `/agents/${crypto.randomUUID()}/messages`, message),
+        422,
+        "invalid",
+      ).fields,
+    ).toEqual(["kind", "message"]);
     expect(refusal(await owner("GET", "/tasks?status=SOMEDAY"), 422, "invalid").fields).toEqual([
       "status",
     ]);
@@ -473,16 +452,16 @@ describe("project routes", () => {
     expect(host.errors[0]).toContain("/members");
     expect(host.errors[0]).toContain("The directory is unavailable.");
 
-    host.audit = async () => {
-      throw new Error("The audit log is unavailable.");
+    host.emit = async () => {
+      throw new Error("The events are unavailable.");
     };
-    const registered = await as("owner")("POST", "/agents", { name: "Secret name", kind: "CODEX" });
-    expect(registered.status).toBe(500);
-    expect(registered.body).toEqual({ error: { code: "internal", message: INTERNAL } });
+    const created = await as("owner")("POST", "/tasks", { ...newTask, title: "Secret title" });
+    expect(created.status).toBe(500);
+    expect(created.body).toEqual({ error: { code: "internal", message: INTERNAL } });
     expect(host.errors).toHaveLength(2);
-    expect(host.errors[1]).toContain("The audit log is unavailable.");
-    expect(host.errors[1]).not.toContain("Secret name");
-    expect((await as("owner")("GET", "/agents")).body).toEqual({ agents: [] });
+    expect(host.errors[1]).toContain("The events are unavailable.");
+    expect(host.errors[1]).not.toContain("Secret title");
+    expect((await as("owner")("GET", "/tasks")).body).toEqual({ tasks: [] });
   });
 });
 

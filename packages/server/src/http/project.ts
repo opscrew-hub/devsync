@@ -6,11 +6,9 @@
  */
 import {
   type Action,
-  AgentInput,
   AgentList,
   AgentMessage,
   AgentMessageReceipt,
-  AgentWithToken,
   Comment,
   CommentInput,
   FindingAnswer,
@@ -29,7 +27,7 @@ import {
   TaskUpdate,
 } from "@devsync/schemas";
 import { Hono, type MiddlewareHandler } from "hono";
-import { listAgents, registerAgent, revokeAgent, rotateAgent } from "../domain/agents";
+import { listAgents } from "../domain/agents";
 import { requireRole } from "../domain/common";
 import { findingTask } from "../domain/findings";
 import { listPullRequests } from "../domain/pull-requests";
@@ -59,7 +57,6 @@ export function projectRoutes(host: DevSyncHost): Hono<ProjectEnv> {
   app.onError(errorHandler(host));
   app.use(noStore);
   const write = allow("task.write");
-  const manage = allow("agent.manage");
   const decide = allow("run.decide");
 
   app.get("/tasks", async (c) => {
@@ -120,18 +117,8 @@ export function projectRoutes(host: DevSyncHost): Hono<ProjectEnv> {
     return answer(c, MemberList, { members });
   });
 
+  // The host registers, rotates and revokes agents (its Agents dialog): DevSync lists them.
   app.get("/agents", async (c) => answer(c, AgentList, await listAgents(host, c.get("module"))));
-  app.post("/agents", manage, async (c) => {
-    const input = await readBody(c, AgentInput);
-    return answer(c, AgentWithToken, await registerAgent(host, c.get("module"), input), 201);
-  });
-  app.post("/agents/:agentId/rotate", manage, async (c) =>
-    answer(c, AgentWithToken, await rotateAgent(host, c.get("module"), c.req.param("agentId"))),
-  );
-  app.delete("/agents/:agentId", manage, async (c) => {
-    await revokeAgent(host, c.get("module"), c.req.param("agentId"));
-    return c.body(null, 204);
-  });
   app.post("/agents/:agentId/messages", write, async (c) => {
     const input = await readBody(c, AgentMessage);
     const receipt = await publishSignal(host, c.get("module"), c.req.param("agentId"), input);

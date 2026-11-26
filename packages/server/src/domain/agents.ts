@@ -1,26 +1,28 @@
 /**
- * Agents: registration, tokens and authentication (docs/host.md, MCP for coding agents). An Owner
- * or Admin registers an agent for a project; its bearer token is shown once and DevSync keeps only
- * its SHA-256. A token lasts 24 hours and can be rotated or revoked.
+ * Agents (docs/host.md, MCP for coding agents). The host registers a project's agents once for
+ * every module, and rotates and revokes their tokens; DevSync keeps a row of each agent it has seen,
+ * with the host's id, so its inbox, claims and timeline point at it. The agents DevSync registered
+ * itself before the host had any move to the host with their tokens (`moveAgents`, the hourly
+ * `devsync.agents-move`); until one has, its token is checked against DevSync's own row.
  */
-import { createHash, randomBytes } from "node:crypto";
-import { type Agent, AgentInput, type AgentList, type AgentWithToken, Id } from "@devsync/schemas";
-import { and, desc, eq, gt, isNull } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { type Agent, type AgentKind, type AgentList, Id } from "@devsync/schemas";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull } from "drizzle-orm";
+import { z } from "zod";
 import { type AgentRow, agent } from "../db";
 import {
+  type AdoptedAgent,
   type AgentActor,
-  type DevSyncDb,
+  type AgentRef,
   DevSyncError,
   type DevSyncHost,
   type ProjectContext,
 } from "../host";
-import { parse, REFUSAL, requireRole } from "./common";
+import { REFUSAL } from "./common";
 
-/** How long a token lasts from its registration or rotation. */
-const AGENT_TOKEN_LIFETIME_MS = 24 * 60 * 60 * 1000;
 /** Seen within this long: "Recently active" (two minutes). */
 const RECENTLY_ACTIVE_MS = 2 * 60 * 1000;
-/** 32 random bytes, base64url. */
+/** DevSync's own tokens: 32 random bytes, base64url. */
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{43}$/;
 
 /** What DevSync (and the host) keeps of a token: its SHA-256, as 64 hex characters. */
@@ -28,170 +30,163 @@ export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function requireManage(ctx: ProjectContext): void {
-  requireRole(ctx.member.role, "agent.manage");
+/** DevSync's kinds as the host names them, and back. */
+const HOST_KIND = { CLAUDE: "claude", CODEX: "codex", OTHER: "other" } as const satisfies Record<
+  AgentKind,
+  AgentRef["kind"]
+>;
+const KIND_OF = { claude: "CLAUDE", codex: "CODEX", other: "OTHER" } as const satisfies Record<
+  AgentRef["kind"],
+  AgentKind
+>;
+
+/** The host's `AgentRef`, checked before DevSync uses it. */
+const HostAgent = z.object({
+  agentId: Id,
+  projectId: Id,
+  workspaceId: Id,
+  name: z.string().min(1),
+  kind: z.enum(["claude", "codex", "other"]),
+  modules: z.array(z.string()),
+});
+
+/**
+ * The host's agent, parsed: an answer that doesn't parse is the host's fault, so it fails as
+ * unexpected, its message naming fields only, never their values.
+ */
+function hostAgent(answer: unknown): AgentRef {
+  const parsed = HostAgent.safeParse(answer);
+  if (parsed.success) return parsed.data;
+  const paths = [...new Set(parsed.error.issues.map((i) => i.path.join(".") || "(root)"))];
+  throw new Error(`The host's agent doesn't match DevSync's schema at ${paths.join(", ")}.`);
 }
 
-/** An agent id from a path: anything but a UUID is no agent of the project's. */
-function agentIdOf(agentId: string): string {
-  if (!Id.safeParse(agentId).success) throw new DevSyncError("not-found", REFUSAL.noSuchAgent);
-  return agentId;
+/** "Recently active" when seen within two minutes, else "Offline". */
+function presence(seen: Date | null | undefined, now: Date): Agent["status"] {
+  return seen && now.getTime() - seen.getTime() < RECENTLY_ACTIVE_MS
+    ? "Recently active"
+    : "Offline";
 }
 
-function inProject(ctx: ProjectContext, agentId: string) {
-  return and(eq(agent.id, agentIdOf(agentId)), eq(agent.projectId, ctx.project.projectId));
-}
-
-function toAgent(row: AgentRow, now: Date): Agent {
-  const at = now.getTime();
+/** One of DevSync's own agents, not yet moved to the host. */
+function ownAgent(row: AgentRow, now: Date): Agent {
   const status: Agent["status"] = row.revokedAt
     ? "Revoked"
-    : row.expiresAt.getTime() <= at
+    : row.expiresAt && row.expiresAt.getTime() <= now.getTime()
       ? "Expired"
-      : row.lastSeenAt && at - row.lastSeenAt.getTime() < RECENTLY_ACTIVE_MS
-        ? "Recently active"
-        : "Offline";
+      : presence(row.lastSeenAt, now);
   return {
     id: row.id,
     name: row.name,
     kind: row.kind,
     status,
-    expiresAt: row.expiresAt.toISOString(),
+    expiresAt: row.expiresAt?.toISOString() ?? null,
     lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
   };
 }
 
-/** A fresh token and what DevSync keeps of it. */
-function newToken(now: Date) {
-  const token = randomBytes(32).toString("base64url");
+/**
+ * One of the host's agents, with when DevSync's row of it (if it has one: the agent has connected)
+ * was made and last seen. The host lists only the agents that may reach DevSync, so none is
+ * revoked or expired.
+ */
+function hostsAgent(ref: AgentRef, row: AgentRow | undefined, now: Date): Agent {
   return {
-    token,
-    tokenHash: hashToken(token),
-    expiresAt: new Date(now.getTime() + AGENT_TOKEN_LIFETIME_MS),
+    id: ref.agentId,
+    name: ref.name,
+    kind: KIND_OF[ref.kind],
+    status: presence(row?.lastSeenAt, now),
+    expiresAt: null,
+    lastSeenAt: row?.lastSeenAt?.toISOString() ?? null,
+    createdAt: row?.createdAt.toISOString() ?? null,
   };
 }
 
-function audit(
-  host: DevSyncHost,
-  tx: DevSyncDb,
-  ctx: ProjectContext,
-  action: "devsync.agent.registered" | "devsync.agent.rotated" | "devsync.agent.revoked",
-  row: AgentRow,
-): Promise<void> {
-  return host.audit(
-    tx,
-    { userId: ctx.member.userId },
-    {
-      workspaceId: ctx.project.workspaceId,
-      projectId: ctx.project.projectId,
-      action,
-      detail: { agentId: row.id, name: row.name, kind: row.kind },
-    },
-  );
-}
-
-/** `POST /agents` (`agent.manage`): the agent, and its token, shown once. */
-export async function registerAgent(
-  host: DevSyncHost,
-  ctx: ProjectContext,
-  input: AgentInput,
-): Promise<AgentWithToken> {
-  requireManage(ctx);
-  const fields = parse(AgentInput, input);
-  const now = host.clock.now();
-  const { token, tokenHash, expiresAt } = newToken(now);
-  const row = await host.db.transaction(async (tx) => {
-    const [created] = await tx
-      .insert(agent)
-      .values({
-        workspaceId: ctx.project.workspaceId,
-        projectId: ctx.project.projectId,
-        name: fields.name,
-        kind: fields.kind,
-        tokenHash,
-        expiresAt,
-        registeredByUserId: ctx.member.userId,
-        createdAt: now,
-      })
-      .returning();
-    if (!created) throw new Error("The agent wasn't saved.");
-    await audit(host, tx, ctx, "devsync.agent.registered", created);
-    return created;
-  });
-  return { agent: toAgent(row, now), token };
-}
-
 /**
- * `POST /agents/:agentId/rotate` (`agent.manage`): a new token for 24 hours from now; the old one
- * stops working. It revives a revoked agent and keeps its inbox.
+ * `GET /agents`: the agents that may reach DevSync in the project. The host's first, in its order,
+ * then DevSync's own not yet moved, newest first, with their statuses.
  */
-export async function rotateAgent(
-  host: DevSyncHost,
-  ctx: ProjectContext,
-  agentId: string,
-): Promise<AgentWithToken> {
-  requireManage(ctx);
-  const where = inProject(ctx, agentId);
-  const now = host.clock.now();
-  const { token, tokenHash, expiresAt } = newToken(now);
-  const row = await host.db.transaction(async (tx) => {
-    const [updated] = await tx
-      .update(agent)
-      .set({ tokenHash, expiresAt, revokedAt: null, lastSeenAt: null })
-      .where(where)
-      .returning();
-    if (!updated) throw new DevSyncError("not-found", REFUSAL.noSuchAgent);
-    await audit(host, tx, ctx, "devsync.agent.rotated", updated);
-    return updated;
-  });
-  return { agent: toAgent(row, now), token };
-}
-
-/**
- * `DELETE /agents/:agentId` (`agent.manage`): its token is refused from now on. Revoking a revoked
- * agent changes nothing (and isn't audited again).
- */
-export async function revokeAgent(
-  host: DevSyncHost,
-  ctx: ProjectContext,
-  agentId: string,
-): Promise<void> {
-  requireManage(ctx);
-  const where = inProject(ctx, agentId);
-  const now = host.clock.now();
-  await host.db.transaction(async (tx) => {
-    const [revoked] = await tx
-      .update(agent)
-      .set({ revokedAt: now })
-      .where(and(where, isNull(agent.revokedAt)))
-      .returning();
-    if (revoked) return audit(host, tx, ctx, "devsync.agent.revoked", revoked);
-    const [found] = await tx.select({ id: agent.id }).from(agent).where(where);
-    if (!found) throw new DevSyncError("not-found", REFUSAL.noSuchAgent);
-  });
-}
-
-/** `GET /agents`: the project's agents, newest first, with their statuses. */
 export async function listAgents(host: DevSyncHost, ctx: ProjectContext): Promise<AgentList> {
+  const { projectId, workspaceId } = ctx.project;
   const now = host.clock.now();
-  const rows = await host.db
-    .select()
-    .from(agent)
-    .where(eq(agent.projectId, ctx.project.projectId))
-    .orderBy(desc(agent.createdAt), desc(agent.id));
-  return { agents: rows.map((row) => toAgent(row, now)) };
+  const [refs, rows] = await Promise.all([
+    host.agents.list(projectId),
+    host.db
+      .select()
+      .from(agent)
+      .where(and(eq(agent.projectId, projectId), eq(agent.workspaceId, workspaceId)))
+      .orderBy(desc(agent.createdAt), desc(agent.id)),
+  ]);
+  const hosts = refs
+    .map(hostAgent)
+    .filter((ref) => ref.projectId === projectId && ref.workspaceId === workspaceId);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const listed = new Set(hosts.map((ref) => ref.agentId));
+  return {
+    agents: [
+      ...hosts.map((ref) => hostsAgent(ref, byId.get(ref.agentId), now)),
+      ...rows
+        .filter((row) => row.tokenHash !== null && !listed.has(row.id))
+        .map((row) => ownAgent(row, now)),
+    ],
+  };
 }
 
+const forbidden = () => new DevSyncError("forbidden", REFUSAL.devSyncOff);
+
 /**
- * The agent a bearer token belongs to, and its project as the host answers it now: refused alike
- * (`unauthenticated`) when the token is malformed, unknown, expired or revoked, and `forbidden`
- * when the token is live but its project is gone or has DevSync off (docs/host.md, MCP for coding
- * agents). Records when the agent was last seen.
+ * The agent a bearer token belongs to, and its project as the host answers it now. The host's
+ * `agents.verify` is asked first, on every request; then DevSync's own rows not yet moved to the
+ * host. Refused alike (`unauthenticated`) when neither knows a live agent for the token (a host's
+ * agent revoked or expired is refused, whatever DevSync's row of it holds), and `forbidden` when
+ * the token is live but its project is gone or has DevSync off. Records when the agent was last
+ * seen.
  */
 export async function authenticateAgent(host: DevSyncHost, token: string): Promise<AgentActor> {
+  if (typeof token !== "string" || token === "") {
+    throw new DevSyncError("unauthenticated", REFUSAL.unauthenticated);
+  }
+  const ref = await host.agents.verify(token);
+  return ref ? hostsActor(host, hostAgent(ref)) : ownActor(host, token);
+}
+
+/**
+ * A host's agent as the actor: DevSync's row of it is made the first time it is seen (with no
+ * token, so the foreign keys hold), and takes the host's name and liveness each time after.
+ */
+async function hostsActor(host: DevSyncHost, ref: AgentRef): Promise<AgentActor> {
+  const project = await host.project(ref.projectId);
+  if (!project || project.projectId !== ref.projectId || project.workspaceId !== ref.workspaceId) {
+    throw forbidden();
+  }
+  const now = host.clock.now();
+  const [row] = await host.db
+    .insert(agent)
+    .values({
+      id: ref.agentId,
+      workspaceId: ref.workspaceId,
+      projectId: ref.projectId,
+      name: ref.name,
+      kind: KIND_OF[ref.kind],
+      lastSeenAt: now,
+      createdAt: now,
+    })
+    .onConflictDoUpdate({
+      target: agent.id,
+      // The host verified it, so it is live: a revoke DevSync recorded before the move is undone.
+      set: { name: ref.name, revokedAt: null, lastSeenAt: now },
+      setWhere: and(eq(agent.projectId, ref.projectId), eq(agent.workspaceId, ref.workspaceId)),
+    })
+    .returning({ id: agent.id, name: agent.name });
+  if (!row) throw new Error(`DevSync has the host's agent ${ref.agentId} in another project.`);
+  return { kind: "agent", agentId: row.id, name: row.name, project };
+}
+
+/** One of DevSync's own agents, not yet moved to the host, as the actor. */
+async function ownActor(host: DevSyncHost, token: string): Promise<AgentActor> {
   const refused = () => new DevSyncError("unauthenticated", REFUSAL.unauthenticated);
-  if (typeof token !== "string" || !TOKEN_SHAPE.test(token)) throw refused();
+  if (!TOKEN_SHAPE.test(token)) throw refused();
   const now = host.clock.now();
   const live = and(
     eq(agent.tokenHash, hashToken(token)),
@@ -209,7 +204,7 @@ export async function authenticateAgent(host: DevSyncHost, token: string): Promi
     project.projectId !== found.projectId ||
     project.workspaceId !== found.workspaceId
   ) {
-    throw new DevSyncError("forbidden", REFUSAL.devSyncOff);
+    throw forbidden();
   }
   const [seen] = await host.db
     .update(agent)
@@ -218,4 +213,77 @@ export async function authenticateAgent(host: DevSyncHost, token: string): Promi
     .returning({ id: agent.id, name: agent.name });
   if (!seen) throw refused();
   return { kind: "agent", agentId: seen.id, name: seen.name, project };
+}
+
+/**
+ * `devsync.agents-move`, hourly: moves DevSync's own agents, every row that still has a token, to
+ * the host with `host.agents.adopt`, keeping their ids and token hashes, so their tokens go on
+ * working. One transaction per project adopts its rows and nulls their token columns. A project
+ * the host doesn't answer (gone, or DevSync off) is skipped, and one whose move fails is logged;
+ * both are tried again next hour. Answers how many agents moved.
+ */
+export async function moveAgents(host: DevSyncHost): Promise<number> {
+  const projects = await host.db
+    .selectDistinct({ projectId: agent.projectId })
+    .from(agent)
+    .where(isNotNull(agent.tokenHash))
+    .orderBy(asc(agent.projectId));
+  let moved = 0;
+  for (const { projectId } of projects) {
+    const project = await host.project(projectId);
+    if (project?.projectId !== projectId) continue;
+    try {
+      moved += await host.db.transaction(async (tx) => {
+        const rows = await tx
+          .select()
+          .from(agent)
+          .where(
+            and(
+              eq(agent.projectId, projectId),
+              eq(agent.workspaceId, project.workspaceId),
+              isNotNull(agent.tokenHash),
+            ),
+          )
+          .orderBy(asc(agent.createdAt), asc(agent.id))
+          .for("update");
+        const adopted = rows.flatMap((row): AdoptedAgent[] =>
+          row.tokenHash && row.expiresAt
+            ? [
+                {
+                  agentId: row.id,
+                  workspaceId: row.workspaceId,
+                  projectId: row.projectId,
+                  name: row.name,
+                  kind: HOST_KIND[row.kind],
+                  tokenHash: row.tokenHash,
+                  expiresAt: row.expiresAt,
+                  revokedAt: row.revokedAt,
+                  lastSeenAt: row.lastSeenAt,
+                  registeredBy: row.registeredByUserId,
+                  createdAt: row.createdAt,
+                },
+              ]
+            : [],
+        );
+        if (adopted.length === 0) return 0;
+        await host.agents.adopt(tx, adopted);
+        await tx
+          .update(agent)
+          .set({ tokenHash: null, expiresAt: null })
+          .where(
+            inArray(
+              agent.id,
+              adopted.map((a) => a.agentId),
+            ),
+          );
+        return adopted.length;
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.name : "unknown error";
+      host.log.error(
+        `DevSync couldn't move project ${projectId}'s agents to the host (${reason}); it tries again next hour.`,
+      );
+    }
+  }
+  return moved;
 }

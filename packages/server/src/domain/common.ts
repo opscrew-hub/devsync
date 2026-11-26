@@ -29,8 +29,6 @@ export const REFUSAL = {
   noSuchTask: "There's no such task in this project.",
   /** A task not found, told to an agent claiming it or reporting on it. */
   noSuchTaskForAgent: "There's no such task in this project. Check its id with get_project_state.",
-  /** An agent not found, told to an Owner or Admin managing agents. */
-  noSuchAgent: "There's no such agent in this project. Reload the agents list.",
   /** A message's recipient not found, told to a member. */
   noSuchRecipient:
     "There's no such agent in this project, or it was revoked. Reload the agents list.",
@@ -47,7 +45,6 @@ export const REFUSAL = {
 const ROLE_REFUSAL: Record<Action, string> = {
   "task.write":
     "Your role can't change this project's tasks. Ask an Owner or Admin for a role that can.",
-  "agent.manage": "Only an Owner or Admin can register, rotate or revoke agents. Ask one of them.",
   "run.request": "Your role can't ask for managed runs. Ask an Owner or Admin for a role that can.",
   "run.decide": "Only an Owner, Admin or Approver can approve or reject a run. Ask one of them.",
 };

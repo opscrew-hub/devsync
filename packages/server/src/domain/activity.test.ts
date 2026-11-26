@@ -2,7 +2,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { outboxEvent, task } from "../db";
 import type { AgentActor, ProjectRef } from "../host";
-import { refusal, setClock } from "../test/helpers";
+import { hostAgent, refusal, setClock } from "../test/helpers";
 import {
   createTestDb,
   FAKE_NOW,
@@ -12,7 +12,6 @@ import {
   type TestDb,
 } from "../testing";
 import { reportBlocker, reportProgress, requestReview, submitReview } from "./activity";
-import { authenticateAgent, registerAgent } from "./agents";
 import { claimTask } from "./claims";
 
 const SECOND = 1000;
@@ -41,17 +40,8 @@ async function setup() {
     members: { [project.workspaceId]: [owner] },
     projects: [project, other],
   });
-  const register = async (name: string, on = project) => {
-    const { token } = await registerAgent(
-      host,
-      { project: on, member: owner },
-      {
-        name,
-        kind: "CLAUDE",
-      },
-    );
-    return authenticateAgent(host, token);
-  };
+  const register = async (name: string, on = project) =>
+    (await hostAgent(host, on, { name, kind: "CLAUDE" })).actor;
   const codex = await register("Codex");
   const claude = await register("Claude");
   const outsider = await register("Outsider", other);
