@@ -1,8 +1,8 @@
 /**
  * What the domain files share: parsing an input, the role and read-only checks, the agent-row lock,
- * an agent's signal limit, finding a task of the project, reading a security finding from the host,
- * naming members and agents, and the refusals more than one of them gives. Internal to the server:
- * the package's index doesn't export it.
+ * an agent's signal limit, finding a task of the project and the open task it waits for, reading a
+ * security finding from the host, naming members and agents, and the refusals more than one of them
+ * gives. Internal to the server: the package's index doesn't export it.
  */
 import {
   type Action,
@@ -13,9 +13,9 @@ import {
   type Role,
   SignalKind,
 } from "@devsync/schemas";
-import { and, count, eq, gte, inArray, type SQL, sql } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, notInArray, type SQL, sql } from "drizzle-orm";
 import type { z } from "zod";
-import { agent, question, signal, task } from "../db";
+import { agent, question, signal, task, taskDependency } from "../db";
 import {
   type AgentActor,
   type DevSyncDb,
@@ -123,6 +123,38 @@ export function taskIn(
     eq(task.projectId, project.projectId),
     eq(task.workspaceId, project.workspaceId),
   ) as SQL;
+}
+
+/**
+ * The title of the first task, in its order, that task `taskId` of the project waits for and that
+ * is still open (neither Done nor Cancelled), or null when there is none: such a task is neither
+ * claimed nor run.
+ */
+export async function openDependency(
+  db: DevSyncDb,
+  project: Pick<ProjectRef, "projectId">,
+  taskId: string,
+): Promise<string | null> {
+  const [waiting] = await db
+    .select({ title: task.title })
+    .from(taskDependency)
+    .innerJoin(
+      task,
+      and(
+        eq(task.id, taskDependency.dependsOnTaskId),
+        eq(task.projectId, taskDependency.projectId),
+      ),
+    )
+    .where(
+      and(
+        eq(taskDependency.taskId, taskId),
+        eq(taskDependency.projectId, project.projectId),
+        notInArray(task.status, ["DONE", "CANCELLED"]),
+      ),
+    )
+    .orderBy(asc(taskDependency.position))
+    .limit(1);
+  return waiting?.title ?? null;
 }
 
 /**

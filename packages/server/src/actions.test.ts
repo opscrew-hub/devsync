@@ -1,7 +1,8 @@
 /**
  * DevSync's actions as the host calls them (docs/platform.md, Actions): the start-up rules the host
  * checks, the kinds and callers of the table, the guidance in the descriptions, the size budget,
- * and each caller kind: a member with their role, an agent, and a managed run that only reads.
+ * and each caller kind: a member with their role, an agent, and a managed run that reads only its
+ * own task.
  */
 import { MCP_TOOL_INPUTS, type Role } from "@devsync/schemas";
 import { eq } from "drizzle-orm";
@@ -27,11 +28,11 @@ afterAll(async () => {
 
 /**
  * The most characters the actions' list (names as the host lists them, descriptions and input
- * JSON schemas, as JSON) may take: the size P6 reached (13,956: P4's 11,960 with questions and
- * the briefing; P3's was 9,384), rounded up to the next 1,000. Raise it only with a reason: every
- * agent reads the whole list.
+ * JSON schemas, as JSON) may take: the size P7 reached (14,096: P6's 13,956 with a managed run's
+ * own-task rule in the project-wide reads; P4's was 11,960, P3's 9,384), rounded up to the next
+ * 1,000. Raise it only with a reason: every agent reads the whole list.
  */
-const ACTIONS_BUDGET = 14_000;
+const ACTIONS_BUDGET = 15_000;
 
 const KINDS = {
   get_project_state: "read",
@@ -110,7 +111,12 @@ async function setup() {
   });
   const asCodex: Caller = { kind: "agent", agentId: codex.id, name: "Codex" };
   const asClaude: Caller = { kind: "agent", agentId: claudeId, name: "Claude" };
-  const asRun: Caller = { kind: "run", runRef: crypto.randomUUID(), module: "devsync" };
+  /** A managed run's caller: one of no run of the project's, or of `runId`. */
+  const asRun = (runId: string = crypto.randomUUID()): Caller => ({
+    kind: "run",
+    runRef: runId,
+    module: "devsync",
+  });
 
   /** Calls an action as the host does: its input parsed with the action's schema, over `/mcp`. */
   const call = (name: keyof typeof KINDS, caller: Caller, input: object = {}, on = project) => {
@@ -248,7 +254,7 @@ describe("a member calling an action", () => {
     // A minute on, so the second run is the latest by its time, not by its random id.
     setClock(s.host, Date.parse(FAKE_NOW) + 60_000);
     const second = await requestRun(s.host, s.memberCtx(developer), task.id);
-    for (const caller of [s.asMember(), s.asCodex, s.asRun]) {
+    for (const caller of [s.asMember(), s.asCodex, s.asRun(second.id)]) {
       const { latestRun } = await s.result("get_task", caller, { taskId: task.id });
       expect(latestRun).toMatchObject({ id: second.id, status: "REQUESTED" });
     }
@@ -538,29 +544,67 @@ describe("an agent calling an action", () => {
 });
 
 describe("a managed run calling an action", () => {
-  it("reads the project and its tasks", async () => {
+  it("reads its own task only, never another task nor the project's lists", async () => {
     const s = await setup();
     const task = await s.readyTask();
-    const state = await s.result("get_project_state", s.asRun);
-    expect(state.tasks.map((t: { id: string }) => t.id)).toEqual([task.id]);
-    expect((await s.result("list_tasks", s.asRun, { status: "READY" })).tasks).toHaveLength(1);
-    expect((await s.result("get_task", s.asRun, { taskId: task.id })).task.id).toBe(task.id);
+    const other = await s.readyTask("Restyle checkout");
+    const asked = await requestRun(s.host, s.memberCtx(), task.id);
+    const asRun = s.asRun(asked.id);
+    const read = await s.result("get_task", asRun, { taskId: task.id });
+    expect(read.task.id).toBe(task.id);
+    expect(read.latestRun).toMatchObject({ id: asked.id });
     // Its briefing has no context: the host takes no run there.
-    const briefing = await s.result("get_briefing", s.asRun, { taskId: task.id });
+    const briefing = await s.result("get_briefing", asRun, { taskId: task.id.toUpperCase() });
     expect(briefing.task.id).toBe(task.id);
     expect(briefing.context).toEqual({ instructions: [], facts: [] });
     expect(s.host.contextAsked).toEqual([]);
-    expect((await s.refused("list_tasks", s.asRun, { assignee: "me" })).code).toBe("invalid");
+
+    const ownTask = {
+      code: "forbidden",
+      message:
+        "A managed run reads only its own task: use get_briefing or get_task with its task id.",
+    };
+    for (const taskId of [other.id, crypto.randomUUID()]) {
+      expect(await s.refused("get_task", asRun, { taskId })).toEqual(ownTask);
+      expect(await s.refused("get_briefing", asRun, { taskId })).toEqual(ownTask);
+    }
+    expect(await s.refused("get_project_state", asRun)).toEqual(ownTask);
+    expect(await s.refused("list_tasks", asRun, { status: "READY" })).toEqual(ownTask);
+  });
+
+  it("reads nothing with a run that isn't the project's", async () => {
+    const s = await setup();
+    const task = await s.readyTask();
+    const elsewhere = await setup();
+    const theirs = await requestRun(
+      elsewhere.host,
+      elsewhere.memberCtx(),
+      (await elsewhere.readyTask()).id,
+    );
+    const noRun = {
+      code: "not-found",
+      message:
+        "There's no such managed run in this project, so it reads none of the project's tasks.",
+    };
+    for (const runRef of [crypto.randomUUID(), theirs.id, "run 1"]) {
+      const caller: Caller = { kind: "run", runRef, module: "devsync" };
+      expect(await s.refused("get_task", caller, { taskId: task.id })).toEqual(noRun);
+      expect(await s.refused("get_briefing", caller, { taskId: task.id })).toEqual(noRun);
+    }
+    // Another module's run, even with one of DevSync's run ids, reads none of its tasks.
+    const ours = await requestRun(s.host, s.memberCtx(), task.id);
+    const other: Caller = { kind: "run", runRef: ours.id, module: "notes" };
+    expect(await s.refused("get_task", other, { taskId: task.id })).toEqual(noRun);
   });
 
   it("is refused every write, an agent's inbox and a start, changing nothing", async () => {
     const s = await setup();
     const task = await s.readyTask();
     const message =
-      "A managed run can only read the project's state and its tasks; what it changes reaches the task through its draft pull request.";
+      "A managed run can only read its own task; what it changes reaches the task through its draft pull request.";
     for (const name of Object.keys(KINDS) as (keyof typeof KINDS)[]) {
       if (["get_project_state", "list_tasks", "get_task", "get_briefing"].includes(name)) continue;
-      expect(await s.refused(name, s.asRun, sampleInput(name, task.id))).toEqual({
+      expect(await s.refused(name, s.asRun(), sampleInput(name, task.id))).toEqual({
         code: "forbidden",
         message,
       });

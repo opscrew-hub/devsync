@@ -121,13 +121,15 @@ repository.
 **Acceptance Scenarios**:
 
 1. **Given** a Ready task, **When** a member asks for a run, **Then** it waits for approval; an
-   Owner, Admin or Approver approves or rejects it, and the requester may cancel it.
+   Owner, Admin or Approver approves or rejects it, and the requester may cancel it. A task that
+   waits for an open task gets no run, asked for or approved, until that one is done.
 2. **Given** an approved run, **Then** OpsCrew dispatches the project's DevSync workflow with the
    run's id and the task's requirements at the approved revision; approving is refused if the
    task's requirements changed since the run was asked for.
 3. **Given** a finished run, **Then** its result (succeeded or failed with why, changed files, token
    use, the draft pull request's link) is read through the dashboard's GitHub App from the run
-   OpsCrew started in that repository, and from no other, checked, and shown on the task.
+   OpsCrew started in that repository, and from no other, checked, and shown on the task, its
+   changed paths and models through the host's redactor.
 4. **Given** a repository without the DevSync workflow, **Then** asking for a run says exactly
    what to add and where, as the checks setup does. Without an Anthropic, OpenRouter or OpenAI key
    (the `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` secret), the setup says the
@@ -211,7 +213,7 @@ briefing as an agent, a member and a managed run with a long context.
 1. **Given** an open task, **When** an agent asks a question (or a member on the task's panel),
    **Then** it is on the task, open, with who asked and when, and on its timeline; the task's
    creator, when it is another agent, receives a `clarification.requested` signal. A Done or
-   Cancelled task is refused.
+   Cancelled task is refused, and so is a 51st open question.
 2. **Given** an agent holding a task's claim, **When** it asks with `wait`, **Then** its claim ends
    and the task moves to Blocked; without the claim, `wait` is refused.
 3. **Given** an open question, **When** a member answers it on the panel, or a peer agent with
@@ -224,7 +226,8 @@ briefing as an agent, a member and a managed run with a long context.
    has the task, its open and answered questions, its paths, the tasks it waits for with their
    statuses, its overlaps and the host's context for its title (none for a run), within 8,000
    characters of JSON: the context cut first, then the oldest answered questions, then the newest
-   open ones, only the task kept whole.
+   open ones, only the task kept whole. A managed run reads only its own task's briefing and
+   detail.
 
 ---
 
@@ -273,16 +276,22 @@ briefing as an agent, a member and a managed run with a long context.
   that report, apart from the payload its peers receive, and shown apart from the task's managed
   runs' usage, as the agents' own estimate.
 - **R-14**: A question MUST be asked only on an open task, answered once and never by the agent
-  that asked it, and an agent's text and answer MUST pass the host's redactor. Only the agent
+  that asked it, and an agent's text and answer MUST pass the host's redactor. A task MUST hold at
+  most 50 open questions, and its detail MUST list at most its 50 most recently asked answered ones,
+  saying how many it leaves out. Only the agent
   holding the task's live claim MAY make it wait; the task MUST return to Ready only when a
   question's wait blocked it and none of its open questions still has `wait`, which a move off
   Blocked clears. Each question and answer of an agent MUST count against its 20 signals a minute,
   whether or not it signals anyone.
 - **R-15**: A briefing MUST NOT pass 8,000 characters of JSON unless its task, with its paths,
   waits and overlaps, alone does, cutting the context first, then the oldest answered questions,
-  then the newest open ones, and saying how many of each it cut. It MUST ask the host's context as the caller (a
-  member or an agent), never for a managed run, and pass on only the contract's fields of a context
-  that parses.
+  then the newest open ones, and saying how many of each it cut (the answered questions the task's
+  detail leaves out among them), measuring each part once so the cut is linear. It MUST ask the
+  host's context as the caller (a member or an agent), never for a managed run, and pass on only
+  the contract's fields of a context that parses.
+- **R-16**: A managed run's token MUST read only its own run's task (`get_task`, `get_briefing`),
+  never the project's lists nor another task, and a run MUST NOT be asked for or approved while its
+  task waits for an open task.
 
 ## Data (the `devsync` schema)
 

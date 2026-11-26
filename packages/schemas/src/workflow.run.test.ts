@@ -44,7 +44,7 @@ const RECORDED = [
 
 /**
  * Stands in for Codex: records what it was given, changes a file (leaking the variable
- * `FAKE_LEAK` names into one) and prints `FAKE/events`.
+ * `FAKE_LEAK` names into one, and copying `FAKE_COPY` into another) and prints `FAKE/events`.
  */
 const FAKE_CODEX = `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$FAKE/args"
@@ -53,6 +53,7 @@ printenv CODEX_API_KEY > "$FAKE/codex-api-key"
 printenv OPSCREW_MCP_TOKEN > "$FAKE/mcp-token"
 cat > "$FAKE/stdin"
 [ -z "\${FAKE_LEAK:-}" ] || printenv "$FAKE_LEAK" > leaked.txt
+[ -z "\${FAKE_COPY:-}" ] || printf '%s\\n' "$FAKE_COPY" > copied.txt
 printf 'changed\\n' > change.txt
 cat "$FAKE/events"
 exit "\${FAKE_EXIT:-0}"
@@ -60,7 +61,8 @@ exit "\${FAKE_EXIT:-0}"
 
 /**
  * Stands in for Claude Code: records what it was given (its MCP configuration's content too),
- * changes a file (leaking the variable `FAKE_LEAK` names into one) and prints `FAKE/claude.json`.
+ * changes a file (leaking the variable `FAKE_LEAK` names into one, and copying `FAKE_COPY` into
+ * another) and prints `FAKE/claude.json`.
  */
 const FAKE_CLAUDE = `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$FAKE/args"
@@ -74,6 +76,7 @@ for arg in "$@"; do
 done
 cat > "$FAKE/stdin"
 [ -z "\${FAKE_LEAK:-}" ] || printenv "$FAKE_LEAK" > leaked.txt
+[ -z "\${FAKE_COPY:-}" ] || printf '%s\\n' "$FAKE_COPY" > copied.txt
 printf 'changed\\n' > change.txt
 cat "$FAKE/claude.json"
 `;
@@ -184,6 +187,8 @@ interface Run {
   temp: string;
   home: string;
   key: string;
+  /** GitHub's OIDC request token, as the runner set it for the step. */
+  requestToken: string;
   /** The tokens the step before left for this one, and the AI credential OpsCrew answers. */
   oidc: string;
   mcpToken: string;
@@ -210,6 +215,10 @@ function runStep(
     exit?: number;
     /** The variable the agent copies into the change. */
     leak?: string;
+    /** The agent writes GitHub's OIDC request token into the change, as one it read elsewhere. */
+    copy?: boolean;
+    /** GitHub sets the OIDC request variables (by default), as in a job that may ask for one. */
+    requestToken?: boolean;
     key?: boolean;
     grep?: "all" | "contents" | "names";
     find?: boolean;
@@ -273,6 +282,7 @@ function runStep(
   git("add", "--all");
   git("commit", "-qm", "base");
   const key = `test-${randomUUID()}`;
+  const requestToken = `test-request-${randomUUID()}`;
   const provider = options.provider ?? "openai";
   const given = options.key === false ? "" : key;
   const env: Record<string, string> = {
@@ -282,8 +292,12 @@ function runStep(
     RUNNER_ENVIRONMENT: options.environment ?? "github-hosted",
     GITHUB_OUTPUT: join(root, "output"),
     // As GitHub sets them in every step of a job that may ask for OIDC tokens.
-    ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.example/idtoken?api-version=2.0",
-    ACTIONS_ID_TOKEN_REQUEST_TOKEN: `test-request-${randomUUID()}`,
+    ...(options.requestToken === false
+      ? {}
+      : {
+          ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.example/idtoken?api-version=2.0",
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: requestToken,
+        }),
     OPSCREW_ORIGIN: options.request ? ORIGIN : "",
     OPSCREW_REQUEST: options.request ? REQUEST : "",
     FAKE: fake,
@@ -302,6 +316,7 @@ function runStep(
     REAL_GREP: real("grep"),
     REAL_FIND: real("find"),
     ...(options.leak ? { FAKE_LEAK: options.leak } : {}),
+    ...(options.copy ? { FAKE_COPY: requestToken } : {}),
     ...(options.grep ? { FAKE_GREP: options.grep } : {}),
   };
   const step = spawnSync("bash", ["-e", "-c", script("Run the coding agent")], {
@@ -331,6 +346,7 @@ function runStep(
     temp,
     home,
     key,
+    requestToken,
     oidc,
     mcpToken,
     credential,
@@ -517,11 +533,33 @@ describe.skipIf(!tools)("the agent step, run (needs bash and jq)", () => {
     expect(run.outputs.has("provider")).toBe(false);
   });
 
-  it("gives no agent GitHub's means to ask for OIDC tokens", () => {
+  it("gives no agent GitHub's means to ask for OIDC tokens, nor the request token's copy", () => {
     for (const run of [runStep(), runStep({ provider: "anthropic" })]) {
       const names = readFileSync(join(run.fake, "env-names"), "utf8").split("\n");
       expect(names.filter((name) => name.startsWith("ACTIONS_ID_TOKEN"))).toEqual([]);
+      expect(names).not.toContain("request_token");
     }
+  });
+
+  it.each(["openai", "anthropic"] as const)(
+    "refuses a change that holds GitHub's OIDC request token, with %s's key",
+    (provider) => {
+      const run = runStep({ provider, copy: true });
+      expect(run.ran).toBe(true);
+      expect(run.outputs.get("failure")).toBe("agent-failed");
+      expect(run.published).toBe(false);
+      expect(run.log).toContain(
+        "::error::The change holds the ACTIONS_ID_TOKEN_REQUEST_TOKEN secret, so it is not published.",
+      );
+      expect(run.log).not.toContain(run.requestToken);
+    },
+  );
+
+  it("publishes a clean change when GitHub set no request token", () => {
+    const run = runStep({ provider: "anthropic", requestToken: false });
+    expect(run.outputs.get("failure")).toBe("");
+    expect(run.published).toBe(true);
+    expect(run.log).not.toContain("ACTIONS_ID_TOKEN_REQUEST_TOKEN");
   });
 
   it("pays with the workspace's AI credits without a key: Claude Code through OpsCrew's gateway", () => {

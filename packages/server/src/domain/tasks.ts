@@ -89,12 +89,7 @@ import {
   taskIn,
 } from "./common";
 import { type OutboxActor, outbox } from "./outbox";
-import {
-  questionAgentIds,
-  releaseWaitingQuestions,
-  selectQuestions,
-  toQuestion,
-} from "./questions";
+import { questionAgentIds, releaseWaitingQuestions, taskQuestions, toQuestion } from "./questions";
 
 /** Who acts on a task: a member on a project route, or an agent through MCP. */
 export type TaskActor = ProjectContext | AgentActor;
@@ -530,9 +525,10 @@ async function usageOf(
 
 /**
  * `GET /tasks/:taskId` and `get_task`: the task with its requirements, creator, revisions and
- * comments (newest first), its questions (the open ones first), its timeline (its latest outbox
- * events, oldest first), its linked pull request, the tasks it waits for, the open tasks whose
- * paths overlap its own, and its usage.
+ * comments (newest first), its questions (every open one, then its 50 most recently asked answered
+ * ones, with how many older ones it leaves out), its timeline (its latest outbox events, oldest
+ * first), its linked pull request, the tasks it waits for, the open tasks whose paths overlap its
+ * own, and its usage.
  * It depends on the project only, so every reader reads the same.
  */
 export async function getTask(
@@ -577,7 +573,7 @@ export async function getTask(
       dependenciesOf(host.db, project, row.id),
       overlapsOf(host.db, project, row),
       usageOf(host.db, project, row.id),
-      selectQuestions(host.db, project, row.id),
+      taskQuestions(host.db, project, row.id),
     ]);
 
   const agentIds = new Set<string>();
@@ -585,7 +581,7 @@ export async function getTask(
     row.creatorAgentId,
     ...revisions.map((r) => r.authorAgentId),
     ...events.map((e) => e.actorAgentId),
-    ...questions.flatMap(questionAgentIds),
+    ...questions.rows.flatMap(questionAgentIds),
   ]) {
     if (id) agentIds.add(id);
   }
@@ -624,7 +620,8 @@ export async function getTask(
         createdAt: c.createdAt.toISOString(),
       }),
     ),
-    questions: questions.map((q) => toQuestion(q, names)),
+    questions: questions.rows.map((q) => toQuestion(q, names)),
+    answeredNotShown: questions.answeredNotShown,
     timeline: events.reverse().map((e): TimelineEvent => {
       const payload = (e.payload ?? {}) as Record<string, unknown>;
       return {

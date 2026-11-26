@@ -5,12 +5,13 @@
  */
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { signal, task } from "../db";
+import { question, signal, task } from "../db";
 import type { AgentActor, Member, ProjectContext, ProjectRef } from "../host";
 import { hostAgent, refusal, setClock } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, fakeToken, type TestDb } from "../testing";
 import { reportBlocker } from "./activity";
 import { claimTask } from "./claims";
+import { exportProject } from "./export";
 import { answerAgentQuestion, answerQuestion, askAgentQuestion, askQuestion } from "./questions";
 import { publishAgentSignal } from "./signals";
 import { createTask, getTask, updateTask } from "./tasks";
@@ -472,5 +473,84 @@ describe("an answer", () => {
     await answerQuestion(s.host, s.member(), one.id, { answer: "1" });
     const listed = (await getTask(s.host, s.member(), s.memberTask.id)).questions;
     expect(listed.map((q) => q.id)).toEqual([three.id, one.id, two.id]);
+  });
+});
+
+/**
+ * Writes `count` of the owner's questions on `taskId` straight into the table, a second apart
+ * from `from` (in milliseconds), answered when `answered`: many questions without a transaction
+ * each.
+ */
+async function insertQuestions(
+  s: Awaited<ReturnType<typeof setup>>,
+  taskId: string,
+  count: number,
+  answered: boolean,
+  from = Date.parse(FAKE_NOW),
+) {
+  const rows = Array.from({ length: count }, (_, n) => {
+    const at = new Date(from + n * 1000);
+    return {
+      workspaceId: s.project.workspaceId,
+      projectId: s.project.projectId,
+      taskId,
+      askerUserId: s.owner.userId,
+      text: `Question ${n}?`,
+      createdAt: at,
+      ...(answered
+        ? { answer: `Answer ${n}.`, answererUserId: s.owner.userId, answeredAt: at }
+        : {}),
+    };
+  });
+  return testDb.db.insert(question).values(rows).returning({ id: question.id });
+}
+
+describe("a task's many questions", () => {
+  it("holds a task to 50 open questions, for members and agents alike", async () => {
+    const s = await setup();
+    const taskId = s.codexTask.id;
+    await insertQuestions(s, taskId, 49, false);
+    await insertQuestions(s, taskId, 5, true);
+    s.tick();
+    const fiftieth = { taskId, requestId: crypto.randomUUID(), text: "The fiftieth?" };
+    const saved = await askAgentQuestion(s.host, s.claude, fiftieth);
+
+    const full = "This task has 50 open questions. Answer some before asking another.";
+    const byMember = await refusal(askQuestion(s.host, s.member(), taskId, { text: "51?" }));
+    expect([byMember.code, byMember.message]).toEqual(["conflict", full]);
+    const byAgent = await refusal(
+      askAgentQuestion(s.host, s.codex, { taskId, requestId: crypto.randomUUID(), text: "51?" }),
+    );
+    expect([byAgent.code, byAgent.message]).toEqual(["conflict", full]);
+    // A retry of a question already saved is no new question: it answers what was saved.
+    expect(await askAgentQuestion(s.host, s.claude, fiftieth)).toEqual(saved);
+    // Another task takes its own 50.
+    await askQuestion(s.host, s.member(), s.memberTask.id, { text: "Elsewhere?" });
+
+    // One answered makes room for one more.
+    await answerQuestion(s.host, s.member(), saved.id, { answer: "Yes." });
+    s.tick();
+    await askQuestion(s.host, s.member(), taskId, { text: "The new fiftieth?" });
+    await refusal(askQuestion(s.host, s.member(), taskId, { text: "51?" }), "conflict");
+  });
+
+  it("lists every open question and the 50 most recently asked answered ones, counting the rest", async () => {
+    const s = await setup();
+    const taskId = s.memberTask.id;
+    const answered = await insertQuestions(s, taskId, 55, true);
+    const open = await insertQuestions(s, taskId, 3, false, Date.parse(FAKE_NOW) + 100_000);
+
+    const detail = await getTask(s.host, s.member(), taskId);
+    expect(detail.questions.map((q) => q.id)).toEqual([
+      ...open.map((q) => q.id),
+      ...answered.slice(5).map((q) => q.id),
+    ]);
+    expect(detail.answeredNotShown).toBe(5);
+    // The export keeps them all.
+    const exported = await exportProject(testDb.db, s.project.projectId);
+    expect(exported.tasks.find((t) => t.id === taskId)?.questions).toHaveLength(58);
+
+    // With none past the 50, none goes unshown.
+    expect((await getTask(s.host, s.member(), s.codexTask.id)).answeredNotShown).toBe(0);
   });
 });

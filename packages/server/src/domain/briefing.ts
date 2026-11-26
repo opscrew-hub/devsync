@@ -6,8 +6,9 @@
  * may see it; a managed run gets none, as the host takes no run there), within 8,000 characters of
  * JSON. Past them the context is cut first, from its last entry (its facts before its
  * instructions), then the answered questions, the oldest first, then the open questions, the newest
- * first; `omitted` counts what was cut. Only the task, with its paths, waits and overlaps, is never
- * cut, so it alone may pass 8,000.
+ * first; `omitted` counts what was cut, with the older answered questions the task's detail leaves
+ * out. Only the task, with its paths, waits and overlaps, is never cut, so it alone may pass 8,000.
+ * Each entry and question is measured once and the briefing once, so the cut is linear in them.
  */
 import type { Question, TaskDetail, TaskSummary } from "@devsync/schemas";
 import { z } from "zod";
@@ -76,6 +77,9 @@ async function contextFor(
   return NO_CONTEXT;
 }
 
+/** How many characters `n` takes in JSON. */
+const digits = (n: number) => String(n).length;
+
 /**
  * `get_briefing`: the task's briefing for `reader`, a member, an agent or a managed run, within
  * 8,000 characters of JSON (the context cut first, then the oldest answered questions, then the
@@ -91,6 +95,7 @@ export async function getBriefing(
   const open = detail.questions.filter((q) => q.status === "OPEN");
   const answered = detail.questions.filter((q) => q.status === "ANSWERED");
   const entries = context.instructions.length + context.facts.length;
+  const notShown = detail.answeredNotShown;
 
   /** The briefing with its first `kept` context entries, last `answers` and first `asked`. */
   const briefing = (kept: number, answers: number, asked: number): Briefing => ({
@@ -113,18 +118,32 @@ export async function getBriefing(
     },
     omitted: {
       contextEntries: entries - kept,
-      answeredQuestions: answered.length - answers,
+      answeredQuestions: notShown + answered.length - answers,
       openQuestions: open.length - asked,
     },
   });
-  const fits = (kept: number, answers: number, asked: number) =>
-    JSON.stringify(briefing(kept, answers, asked)).length <= BRIEFING_LIMIT;
-
   let kept = entries;
   let answers = answered.length;
   let asked = open.length;
-  while (kept > 0 && !fits(kept, answers, asked)) kept--;
-  while (answers > 0 && !fits(kept, answers, asked)) answers--;
-  while (asked > 0 && !fits(kept, answers, asked)) asked--;
+  // The whole briefing is measured once, and each item once: cutting one takes its JSON away, with
+  // the comma beside it unless it was its list's last, and its `omitted` count grows by one.
+  let length = JSON.stringify(briefing(kept, answers, asked)).length;
+  /** Cuts `item`, one of `inList` items in its list, whose `omitted` count is `omitted`. */
+  const cut = (item: unknown, inList: number, omitted: number) => {
+    length -= JSON.stringify(item).length + (inList > 1 ? 1 : 0);
+    length += digits(omitted + 1) - digits(omitted);
+  };
+  const { instructions, facts } = context;
+  for (; kept > 0 && length > BRIEFING_LIMIT; kept--) {
+    const fact = kept > instructions.length;
+    const item = fact ? facts[kept - 1 - instructions.length] : instructions[kept - 1];
+    cut(item, fact ? kept - instructions.length : kept, entries - kept);
+  }
+  for (; answers > 0 && length > BRIEFING_LIMIT; answers--) {
+    cut(answered[answered.length - answers], answers, notShown + answered.length - answers);
+  }
+  for (; asked > 0 && length > BRIEFING_LIMIT; asked--) {
+    cut(open[asked - 1], asked, open.length - asked);
+  }
   return briefing(kept, answers, asked);
 }

@@ -33,7 +33,7 @@ import {
 } from "@devsync/schemas";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, type SQL } from "drizzle-orm";
 import { z } from "zod";
-import { type RunRow, run, type TaskRow, task, taskRevision } from "../db";
+import { migrations, type RunRow, run, type TaskRow, task, taskRevision } from "../db";
 import {
   type DevSyncDb,
   DevSyncError,
@@ -48,6 +48,7 @@ import {
   memberAuthor,
   namesOf,
   noSuchTask,
+  openDependency,
   requireRole,
   requireWritable,
   taskIdOf,
@@ -235,8 +236,8 @@ function taskInput(fields: { title: string; description: string; acceptanceCrite
 }
 
 /**
- * The task a run may be asked for: the project's, Ready, short enough for the run's input, and
- * without a run that hasn't ended. `lock` reads its row `FOR UPDATE`.
+ * The task a run may be asked for: the project's, Ready, waiting for no open task, short enough for
+ * the run's input, and without a run that hasn't ended. `lock` reads its row `FOR UPDATE`.
  */
 async function requestable(
   db: DevSyncDb,
@@ -248,6 +249,13 @@ async function requestable(
   const [current] = lock ? await query.for("update") : await query;
   if (!current) throw noSuchTask();
   if (current.status !== "READY") throw new DevSyncError("conflict", REFUSED.notReady);
+  const waiting = await openDependency(db, project, taskId);
+  if (waiting !== null) {
+    throw new DevSyncError(
+      "conflict",
+      `This task waits for task "${waiting}". Ask for a run once that is done.`,
+    );
+  }
   if (taskInput(current).length > TASK_INPUT_LIMIT) {
     throw new DevSyncError("conflict", REFUSED.tooLong);
   }
@@ -263,6 +271,29 @@ async function requestable(
     );
   if (unended) throw new DevSyncError("conflict", REFUSED.unended);
   return current;
+}
+
+/**
+ * The task of the project's managed run `runId`, for the run's own token (actions.ts): a run reads
+ * only its own task, and a run that isn't the project's reads none.
+ */
+export async function runTaskId(
+  host: DevSyncHost,
+  project: ProjectRef,
+  caller: { runRef: string; module: string },
+): Promise<string> {
+  const noRun = () =>
+    new DevSyncError(
+      "not-found",
+      "There's no such managed run in this project, so it reads none of the project's tasks.",
+    );
+  // Only DevSync's own runs have a task: the module's id is its migrations' schema (the contract).
+  if (caller.module !== migrations.schema) throw noRun();
+  const runId = caller.runRef;
+  if (!Id.safeParse(runId).success) throw noRun();
+  const [row] = await host.db.select({ taskId: run.taskId }).from(run).where(runIn(project, runId));
+  if (!row) throw noRun();
+  return row.taskId;
 }
 
 /** The project's run, locked for the rest of the transaction. */
@@ -330,7 +361,8 @@ function failed(failure: RunFailure): Ending {
 
 /**
  * Ends `row` in `tx` as `ending` says, records it, and links a succeeded run's draft pull request
- * to the task when the task has none.
+ * to the task when the task has none. The result's changed paths and models, the run's own text,
+ * are kept as the host's redactor leaves them.
  */
 async function recordEnd(
   host: DevSyncHost,
@@ -340,14 +372,17 @@ async function recordEnd(
   at: Date,
 ): Promise<void> {
   const { result, pullRequestNumber } = ending;
+  const redacted = (texts: string[]) => texts.map((text) => host.redact(text));
   const [ended] = await tx
     .update(run)
     .set({
       status: ending.status,
       failure: ending.failure,
       finishedAt: at,
-      tokenUsage: result ? { ...result.usage, models: result.models, turns: result.turns } : null,
-      changedFiles: result ? result.changedFiles : null,
+      tokenUsage: result
+        ? { ...result.usage, models: redacted(result.models), turns: result.turns }
+        : null,
+      changedFiles: result ? redacted(result.changedFiles) : null,
       provider: result ? result.provider : null,
       draftPullRequestUrl: pullRequestNumber !== null ? (result?.pullRequestUrl ?? null) : null,
     })
@@ -447,9 +482,9 @@ export async function runSetup(host: DevSyncHost, ctx: ProjectContext): Promise<
 
 /**
  * What asking for a run checks, creating nothing: a writable project, the member's `run.request`,
- * the task (Ready, short enough for the run's input, no run that hasn't ended) and the repository's
- * setup (the workflow; without a key the run pays with AI credits). Answers the task and the
- * revision a run would take. `requestRun` checks it first; the `request_run` action (actions.ts)
+ * the task (Ready, waiting for no open task, short enough for the run's input, no run that hasn't
+ * ended) and the repository's setup (the workflow; without a key the run pays with AI credits).
+ * Answers the task and the revision a run would take. `requestRun` checks it first; the `request_run` action (actions.ts)
  * proposes a run with it.
  */
 export async function checkRunRequest(
@@ -470,8 +505,8 @@ export async function checkRunRequest(
 
 /**
  * `POST /tasks/:taskId/runs` (`run.request`): a run of the task's current revision, waiting for
- * approval. Refused unless the task is Ready, fits the run's input and has no run that hasn't
- * ended, and while the repository lacks the workflow (the setup's own words).
+ * approval. Refused unless the task is Ready, waits for no open task, fits the run's input and has
+ * no run that hasn't ended, and while the repository lacks the workflow (the setup's own words).
  */
 export async function requestRun(
   host: DevSyncHost,
@@ -512,8 +547,8 @@ export async function requestRun(
 
 /**
  * Approves or rejects a run waiting for approval (`run.decide`). Approving is refused when the
- * task's requirements changed since the run was asked for, or it is no longer Ready; an approved
- * run is queued for its dispatch once the change commits.
+ * task's requirements changed since the run was asked for, it is no longer Ready, or a task it
+ * waits for is open; an approved run is queued for its dispatch once the change commits.
  */
 async function decideRun(
   host: DevSyncHost,
@@ -536,6 +571,13 @@ async function decideRun(
         .for("update");
       if (requested?.status !== "READY" || requested.revision !== current.revision) {
         throw new DevSyncError("conflict", REFUSED.taskChanged);
+      }
+      const waiting = await openDependency(tx, project, current.taskId);
+      if (waiting !== null) {
+        throw new DevSyncError(
+          "conflict",
+          `This task waits for task "${waiting}". Approve the run once that is done.`,
+        );
       }
     }
     const [saved] = await tx

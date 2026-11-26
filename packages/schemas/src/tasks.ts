@@ -267,7 +267,9 @@ export type TimelineEvent = z.infer<typeof TimelineEvent>;
  * Cancelled keeps it from being claimed); while it is open, the other open tasks whose paths
  * overlap its own, each with the paths they share (`overlaps`); the usage its agents reported
  * beside its managed runs', kept apart (`usage`, each null when there is none); and its questions,
- * the open ones first, each group oldest first (`questions`).
+ * the open ones first, each group oldest first (`questions`): every open one (asking holds them to
+ * 50) and the 50 most recently asked answered ones, with how many older answered ones it leaves out
+ * (`answeredNotShown`; the project's export has them all).
  */
 export const TaskDetail = Task.extend({
   description: z.string(),
@@ -276,6 +278,7 @@ export const TaskDetail = Task.extend({
   revisions: z.array(Revision),
   comments: z.array(Comment),
   questions: z.array(Question),
+  answeredNotShown: z.number().int().nonnegative(),
   timeline: z.array(TimelineEvent),
   pullRequest: PullRequest.nullable(),
   dependencies: z.array(TaskSummary),

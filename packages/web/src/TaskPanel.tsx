@@ -229,9 +229,10 @@ const CLOSED: readonly TaskStatus[] = ["DONE", "CANCELLED"];
 
 /**
  * The task's questions, as the server orders them (the open ones first), each with who asked it
- * and its answer. An open one has its answer form, and an open task the form to ask another, both
- * locked for a role without `task.write` and on a read-only or disconnected project. "The task
- * waits for its answer" shows only on a question still holding the task in Blocked.
+ * and its answer, and how many older answered ones the server leaves out. An open one has its
+ * answer form, and an open task the form to ask another, both locked for a role without
+ * `task.write` and on a read-only or disconnected project. "The task waits for its answer" shows
+ * only on a question still holding the task in Blocked.
  */
 function Questions({ task }: { task: TaskDetail }) {
   const { ui, may } = useDevSync();
@@ -259,6 +260,13 @@ function Questions({ task }: { task: TaskDetail }) {
           <QuestionItem key={question.id} question={question} write={write} />
         ))}
       </ul>
+      {task.answeredNotShown > 0 && (
+        <p className="sub">
+          {task.answeredNotShown === 1
+            ? "1 older answered question isn't shown."
+            : `${task.answeredNotShown} older answered questions aren't shown.`}
+        </p>
+      )}
       {CLOSED.includes(task.status) ? (
         <p className="sub">{`A ${STATUS_LABEL[task.status]} task takes no more questions.`}</p>
       ) : (

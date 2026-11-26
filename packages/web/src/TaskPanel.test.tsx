@@ -433,6 +433,28 @@ describe("the task panel", () => {
 
     const none = await withQuestions(detail, []);
     expect(within(none.panel).getByText("No questions yet.")).toBeTruthy();
+    expect(within(none.panel).queryByText(/older answered/)).toBeNull();
+  });
+
+  it("says how many older answered questions it doesn't show", async () => {
+    const answered: Question = {
+      id: id(40),
+      taskId: detail.id,
+      askedBy: builder,
+      text: "Which fields?",
+      wait: false,
+      status: "ANSWERED",
+      answer: "Email and password.",
+      answeredBy: ana,
+      createdAt: at,
+      answeredAt: at,
+    };
+    const many = await open({ ...detail, questions: [answered], answeredNotShown: 12 });
+    const section = within(many.panel).getByRole("region", { name: "Questions" });
+    expect(within(section).getByText("12 older answered questions aren't shown.")).toBeTruthy();
+    cleanup();
+    const one = await open({ ...detail, questions: [answered], answeredNotShown: 1 });
+    expect(within(one.panel).getByText("1 older answered question isn't shown.")).toBeTruthy();
   });
 
   it("answers an open question and asks one, each checked before it is sent", async () => {

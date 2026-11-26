@@ -12,6 +12,7 @@ import {
   FAKE_NOW,
   type FakeHost,
   fakeHost,
+  fakeToken,
   type TestDb,
 } from "../testing";
 import {
@@ -260,6 +261,46 @@ describe("requestRun", () => {
     expect(
       (await listRuns(s.host, s.ctx("developer"), second.id)).runs.map((r) => r.status).sort(),
     ).toEqual(["REJECTED", "REQUESTED"]);
+  });
+
+  it("refuses a task while a task it waits for is open, as a claim does", async () => {
+    const s = setup();
+    const cart = await createTask(s.host, s.ctx("owner"), { ...requirements, title: "Add a cart" });
+    const prices = await readyTask(s, { ...requirements, title: "Show the prices" });
+    const created = await createTask(s.host, s.ctx("owner"), {
+      ...requirements,
+      dependsOn: [cart.id, prices.id],
+    });
+    const waiting = await updateTask(s.host, s.ctx("owner"), created.id, {
+      version: created.version,
+      status: "READY",
+    });
+    for (const title of ["Add a cart", "Show the prices"]) {
+      const refused = {
+        code: "conflict",
+        message: `This task waits for task "${title}". Ask for a run once that is done.`,
+      };
+      await expect(checkRunRequest(s.host, s.ctx("developer"), waiting.id)).rejects.toMatchObject(
+        refused,
+      );
+      await expect(requestRun(s.host, s.ctx("developer"), waiting.id)).rejects.toMatchObject(
+        refused,
+      );
+      // The first open one in its order is named; once it is Cancelled, the next.
+      if (title === "Add a cart") {
+        await updateTask(s.host, s.ctx("owner"), cart.id, {
+          version: cart.version,
+          status: "CANCELLED",
+        });
+      }
+    }
+    expect(await listRuns(s.host, s.ctx("developer"), waiting.id)).toEqual({ runs: [] });
+
+    await updateTask(s.host, s.ctx("owner"), prices.id, {
+      version: prices.version,
+      status: "CANCELLED",
+    });
+    expect((await requestRun(s.host, s.ctx("developer"), waiting.id)).status).toBe("REQUESTED");
   });
 
   it("refuses a task whose requirements are longer than the run's input takes", async () => {
@@ -516,6 +557,33 @@ describe("approveRun, rejectRun and cancelRun", () => {
     expect(fresh.revision).toBe(2);
     expect((await approveRun(s.host, s.ctx("owner"), fresh.id)).status).toBe("QUEUED");
     expect(auditsOf(s.host, "devsync.run.approved")).toHaveLength(1);
+  });
+
+  it("refuses approving while a task the run's task waits for is open", async () => {
+    const s = setup();
+    const ready = await readyTask(s);
+    const asked = await requestRun(s.host, s.ctx("developer"), ready.id);
+    // A task it waits for, given after the run was asked for: no new revision.
+    const cart = await createTask(s.host, s.ctx("owner"), { ...requirements, title: "Add a cart" });
+    await updateTask(s.host, s.ctx("owner"), ready.id, {
+      version: ready.version,
+      dependsOn: [cart.id],
+    });
+    await expect(approveRun(s.host, s.ctx("approver"), asked.id)).rejects.toMatchObject({
+      code: "conflict",
+      message: 'This task waits for task "Add a cart". Approve the run once that is done.',
+    });
+    expect((await rowOf(asked.id)).status).toBe("REQUESTED");
+    // Rejecting it isn't held back.
+    const rejected = await rejectRun(s.host, s.ctx("approver"), asked.id);
+    expect(rejected.status).toBe("REJECTED");
+
+    await updateTask(s.host, s.ctx("owner"), cart.id, {
+      version: cart.version,
+      status: "CANCELLED",
+    });
+    const again = await requestRun(s.host, s.ctx("developer"), ready.id);
+    expect((await approveRun(s.host, s.ctx("approver"), again.id)).status).toBe("QUEUED");
   });
 
   it("queues an approved run's dispatch once the approval commits", async () => {
@@ -831,6 +899,26 @@ describe("a workflow_run fact (devsync.github)", () => {
         },
       },
     ]);
+  });
+
+  it("keeps a result's changed paths and models through the host's redactor", async () => {
+    const s = setup();
+    const ready = await readyTask(s);
+    const started = await startedRun(s, ready.id);
+    const token = fakeToken();
+    await complete(s, started, {
+      result: resultOf(started.id, {
+        changedFiles: ["src/export.ts", `config/${token}.env`],
+        models: ["claude-sonnet-5-5", token],
+      }),
+    });
+    const [ended] = (await listRuns(s.host, s.ctx("developer"), ready.id)).runs;
+    expect(ended).toMatchObject({
+      status: "SUCCEEDED",
+      changedFiles: ["src/export.ts", "config/[redacted].env"],
+      usage: { models: ["claude-sonnet-5-5", "[redacted]"] },
+    });
+    expect(JSON.stringify(await rowOf(started.id))).not.toContain(token);
   });
 
   it("leaves a task's own pull request linked", async () => {

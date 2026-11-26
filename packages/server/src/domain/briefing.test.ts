@@ -4,12 +4,13 @@
  * characters of JSON.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { question } from "../db";
 import type { ContextEntry, Member, ProjectContext, ProjectRef } from "../host";
 import { hostAgent, setClock } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "../testing";
 import { BRIEFING_LIMIT, getBriefing } from "./briefing";
 import { answerQuestion, askQuestion } from "./questions";
-import { createTask, updateTask } from "./tasks";
+import { createTask, getTask, updateTask } from "./tasks";
 
 let testDb: TestDb;
 
@@ -187,6 +188,159 @@ describe("a task's briefing", () => {
     expect(briefing.answeredQuestions).toEqual([]);
     expect(briefing.context).toEqual({ instructions: [], facts: [] });
     expect(briefing.omitted).toEqual({ contextEntries: 1, answeredQuestions: 1, openQuestions: 1 });
+  });
+
+  it("briefs a task with 50 open and 500 answered questions quickly, within 8,000 characters", async () => {
+    const s = await setup();
+    // Written straight into the table: 500 answers asked first, then 50 open questions.
+    const rows = Array.from({ length: 550 }, (_, n) => {
+      const at = new Date(Date.parse(FAKE_NOW) + n * 1000);
+      const answered = n < 500;
+      return {
+        workspaceId: s.project.workspaceId,
+        projectId: s.project.projectId,
+        taskId: s.task.id,
+        askerUserId: s.owner.userId,
+        text: `Question ${n}: ${"q".repeat(400)}?`,
+        createdAt: at,
+        ...(answered
+          ? { answer: "a".repeat(800), answererUserId: s.owner.userId, answeredAt: at }
+          : {}),
+      };
+    });
+    await testDb.db.insert(question).values(rows);
+    s.host.contextBlock = {
+      instructions: Array.from({ length: 20 }, (_, n) =>
+        entry("instruction", `${n}`.repeat(300), "trusted"),
+      ),
+      facts: Array.from({ length: 20 }, (_, n) => entry("fact", `${n}`.repeat(300), "untrusted")),
+    };
+    await getBriefing(s.host, s.ctx, s.task.id); // warmed up: the first query plans its statements
+
+    const started = performance.now();
+    const briefing = await getBriefing(s.host, s.ctx, s.task.id);
+    const took = performance.now() - started;
+    expect(took).toBeLessThan(200);
+    expect(JSON.stringify(briefing).length).toBeLessThanOrEqual(BRIEFING_LIMIT);
+    // No context and no answer fits beside the open questions: those are cut from the newest.
+    const cut = briefing.omitted.openQuestions;
+    expect(briefing.omitted).toEqual({
+      contextEntries: 40,
+      answeredQuestions: 500,
+      openQuestions: cut,
+    });
+    expect(briefing.answeredQuestions).toEqual([]);
+    expect(briefing.openQuestions.map((q) => q.text.split(":")[0])).toEqual(
+      Array.from({ length: 50 - cut }, (_, n) => `Question ${500 + n}`),
+    );
+    const oneMore = await getTask(s.host, s.ctx, s.task.id);
+    const next = oneMore.questions[50 - cut] as (typeof oneMore.questions)[number];
+    const withNext = { ...briefing, openQuestions: [...briefing.openQuestions, next] };
+    expect(JSON.stringify(withNext).length).toBeGreaterThan(BRIEFING_LIMIT);
+  });
+
+  it.each([
+    // [context entries, their length, answered questions, open questions, a question's length]
+    [12, 150, 55, 8, 40],
+    [3, 2500, 20, 30, 120],
+    [25, 40, 0, 50, 60],
+    [0, 0, 70, 12, 10],
+  ])(
+    "cuts where measuring the whole briefing at every step would (%i entries of %i, %i answered, %i open)",
+    async (entries, entryLength, answeredCount, openCount, textLength) => {
+      const s = await setup();
+      const rows = Array.from({ length: answeredCount + openCount }, (_, n) => {
+        const at = new Date(Date.parse(FAKE_NOW) + n * 1000);
+        return {
+          workspaceId: s.project.workspaceId,
+          projectId: s.project.projectId,
+          taskId: s.task.id,
+          askerUserId: s.owner.userId,
+          text: `${n}`.repeat(textLength + (n % 7)),
+          createdAt: at,
+          ...(n < answeredCount
+            ? { answer: "x".repeat(n % 5), answererUserId: s.owner.userId, answeredAt: at }
+            : {}),
+        };
+      });
+      if (rows.length > 0) await testDb.db.insert(question).values(rows);
+      const context = {
+        instructions: Array.from({ length: Math.ceil(entries / 2) }, (_, n) =>
+          entry("instruction", "i".repeat(entryLength + n), "trusted"),
+        ),
+        facts: Array.from({ length: Math.floor(entries / 2) }, (_, n) =>
+          entry("fact", "f".repeat(entryLength + 2 * n), "untrusted"),
+        ),
+      };
+      s.host.contextBlock = context;
+      const briefing = await getBriefing(s.host, s.ctx, s.task.id);
+
+      // As before the cut was linear: the whole briefing stringified at every step.
+      const detail = await getTask(s.host, s.ctx, s.task.id);
+      const open = detail.questions.filter((q) => q.status === "OPEN");
+      const answered = detail.questions.filter((q) => q.status === "ANSWERED");
+      const all = context.instructions.length + context.facts.length;
+      const fits = (kept: number, answers: number, asked: number) =>
+        JSON.stringify({
+          ...briefing,
+          openQuestions: open.slice(0, asked),
+          answeredQuestions: answered.slice(answered.length - answers),
+          context: {
+            instructions: context.instructions.slice(0, kept),
+            facts: context.facts.slice(0, Math.max(0, kept - context.instructions.length)),
+          },
+          omitted: {
+            contextEntries: all - kept,
+            answeredQuestions: detail.answeredNotShown + answered.length - answers,
+            openQuestions: open.length - asked,
+          },
+        }).length <= BRIEFING_LIMIT;
+      let kept = all;
+      let answers = answered.length;
+      let asked = open.length;
+      while (kept > 0 && !fits(kept, answers, asked)) kept--;
+      while (answers > 0 && !fits(kept, answers, asked)) answers--;
+      while (asked > 0 && !fits(kept, answers, asked)) asked--;
+
+      expect(briefing.omitted).toEqual({
+        contextEntries: all - kept,
+        answeredQuestions: detail.answeredNotShown + answered.length - answers,
+        openQuestions: open.length - asked,
+      });
+      expect(JSON.stringify(briefing).length).toBeLessThanOrEqual(BRIEFING_LIMIT);
+    },
+  );
+
+  it("counts the answered questions the task's detail leaves out as omitted", async () => {
+    const s = await setup();
+    const rows = Array.from({ length: 60 }, (_, n) => {
+      const at = new Date(Date.parse(FAKE_NOW) + n * 1000);
+      return {
+        workspaceId: s.project.workspaceId,
+        projectId: s.project.projectId,
+        taskId: s.task.id,
+        askerUserId: s.owner.userId,
+        text: `Q${n}?`,
+        createdAt: at,
+        answer: "Yes.",
+        answererUserId: s.owner.userId,
+        answeredAt: at,
+      };
+    });
+    await testDb.db.insert(question).values(rows);
+    const briefing = await getBriefing(s.host, s.ctx, s.task.id);
+    // Of the 50 most recently asked, the newest that fit; the 10 older ones count as omitted too.
+    const kept = briefing.answeredQuestions.length;
+    expect(kept).toBeGreaterThan(0);
+    expect(kept).toBeLessThan(50);
+    expect(briefing.answeredQuestions.map((q) => q.text)).toEqual(
+      Array.from({ length: kept }, (_, n) => `Q${60 - kept + n}?`),
+    );
+    expect(briefing.omitted).toEqual({
+      contextEntries: 0,
+      answeredQuestions: 60 - kept,
+      openQuestions: 0,
+    });
   });
 
   it("gives no context the host's answer doesn't parse, and logs where without its text", async () => {
