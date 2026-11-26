@@ -9,6 +9,7 @@ import {
   ReviewDecisionInput,
   TaskActivityInput,
   TaskClaimInput,
+  TaskRef,
 } from "./mcp";
 
 const text = (length: number) => "a".repeat(length);
@@ -18,6 +19,9 @@ describe("the MCP tools' inputs", () => {
     expect(Object.keys(MCP_TOOL_INPUTS).sort()).toEqual(
       [
         "get_project_state",
+        "list_tasks",
+        "get_task",
+        "request_run",
         "get_pending_signals",
         "acknowledge_signal",
         "publish_signal",
@@ -34,6 +38,22 @@ describe("the MCP tools' inputs", () => {
     );
     expect(MCP_TOOL_INPUTS.get_project_state.safeParse({}).success).toBe(true);
     expect(MCP_TOOL_INPUTS.get_project_state.safeParse({ x: 1 }).success).toBe(false);
+  });
+
+  it("list the tasks by status and assignee, and name one task by its id", () => {
+    const list = MCP_TOOL_INPUTS.list_tasks;
+    expect(list.safeParse({}).success).toBe(true);
+    expect(list.safeParse({ status: "READY", assignee: "me" }).success).toBe(true);
+    expect(list.safeParse({ assignee: randomUUID() }).success).toBe(true);
+    expect(list.safeParse({ status: "DONE", assignee: "none" }).success).toBe(true);
+    expect(list.safeParse({ status: "SHIPPED" }).success).toBe(false);
+    expect(list.safeParse({ assignee: "someone" }).success).toBe(false);
+    expect(list.safeParse({ projectId: randomUUID() }).success).toBe(false);
+    expect(MCP_TOOL_INPUTS.get_task).toBe(TaskRef);
+    expect(MCP_TOOL_INPUTS.request_run).toBe(TaskRef);
+    expect(TaskRef.safeParse({ taskId: randomUUID() }).success).toBe(true);
+    expect(TaskRef.safeParse({ taskId: "t1" }).success).toBe(false);
+    expect(TaskRef.safeParse({ taskId: randomUUID(), extra: 1 }).success).toBe(false);
   });
 
   it("take UUID ids", () => {

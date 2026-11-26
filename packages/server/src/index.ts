@@ -1,9 +1,11 @@
 /**
  * DevSync's server half, for its host (docs/host.md): `serverModule`, the entry the host imports;
  * the interface the host implements, the routes it mounts, the queues its worker runs, the
- * migrations it applies, the removal hooks it calls, and the tables. Nothing else: the domain is
- * reached through the routes and the queues, and tests import internals from their own modules.
+ * migrations it applies, the removal hooks it calls, the actions it serves, and the tables.
+ * Nothing else: the domain is reached through the routes, the queues and the actions, and tests
+ * import internals from their own modules.
  */
+export type { Refused } from "./actions";
 export {
   agent,
   githubDelivery,
@@ -22,8 +24,11 @@ export {
   type AgentRef,
   type AuditActor,
   type AuditEntry,
+  type Caller,
   type ContextBlock,
   type ContextEntry,
+  type DevSyncAction,
+  type DevSyncActionContext,
   type DevSyncAgents,
   type DevSyncDb,
   DevSyncError,
@@ -38,6 +43,7 @@ export {
   type GithubFailure,
   type GithubJob,
   type Member,
+  type ModulePermission,
   type ProjectContext,
   type ProjectEnv,
   type ProjectRef,

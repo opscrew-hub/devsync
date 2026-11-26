@@ -68,6 +68,9 @@ import { type OutboxActor, outbox } from "./outbox";
 /** Who acts on a task: a member on a project route, or an agent through MCP. */
 export type TaskActor = ProjectContext | AgentActor;
 
+/** Who reads a project's tasks: a member, an agent, or a managed run, which has only its project. */
+export type TaskReader = TaskActor | Pick<TaskActor, "project">;
+
 /** The name shown for an agent whose row is gone. */
 const REMOVED_AGENT = "Removed agent";
 
@@ -231,28 +234,31 @@ export async function linkedTask(
 }
 
 function assigneeFilter(
-  actor: TaskActor | WorkspaceContext,
+  reader: TaskReader | WorkspaceContext,
   assignee: string | undefined,
 ): SQL | undefined {
   if (assignee === undefined) return undefined;
   if (assignee === "none") return isNull(task.assigneeUserId);
   if (assignee === "me") {
-    if ("kind" in actor && actor.kind === "agent") {
+    if (!("member" in reader)) {
       throw new DevSyncError(
         "invalid",
-        "An agent has no tasks assigned to it: leave out `assignee`.",
+        "Only a member has tasks assigned to them. Leave out `assignee`, or give a member's user id.",
         ["assignee"],
       );
     }
-    return eq(task.assigneeUserId, (actor as ProjectContext | WorkspaceContext).member.userId);
+    return eq(task.assigneeUserId, reader.member.userId);
   }
   return eq(task.assigneeUserId, assignee);
 }
 
-/** `GET /tasks`: the project's tasks, most recently updated first, by status and assignee. */
+/**
+ * `GET /tasks` and `list_tasks`: the project's tasks, most recently updated first, by status and
+ * assignee (`me` for a member only).
+ */
 export async function listTasks(
   host: DevSyncHost,
-  actor: TaskActor,
+  actor: TaskReader,
   query: TaskListQuery = {},
 ): Promise<TaskList> {
   const { status, assignee } = parse(TaskListQuery, query);
@@ -307,12 +313,13 @@ export async function listWorkspaceTasks(
 }
 
 /**
- * `GET /tasks/:taskId`: the task with its requirements, creator, revisions and comments (newest
- * first), its timeline (its latest outbox events, oldest first) and its linked pull request.
+ * `GET /tasks/:taskId` and `get_task`: the task with its requirements, creator, revisions and
+ * comments (newest first), its timeline (its latest outbox events, oldest first) and its linked
+ * pull request. It depends on the project only, so every reader reads the same.
  */
 export async function getTask(
   host: DevSyncHost,
-  actor: TaskActor,
+  actor: TaskReader,
   taskId: string,
 ): Promise<TaskDetail> {
   const { project } = actor;

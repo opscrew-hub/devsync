@@ -377,11 +377,25 @@ describe("listTasks", () => {
     expect(await titles(as(owner, projectB))).toEqual(["Elsewhere"]);
   });
 
-  it("refuses an agent's `me` and an invalid filter", async () => {
+  it("refuses an agent's and a run's `me` and an invalid filter", async () => {
     const builder = await seedAgent(projectA);
-    expect((await refusal(listTasks(host, builder, { assignee: "me" }))).code).toBe("invalid");
+    for (const reader of [builder, { project: projectA }]) {
+      const me = await refusal(listTasks(host, reader, { assignee: "me" }), "invalid");
+      expect(me.message).toBe(
+        "Only a member has tasks assigned to them. Leave out `assignee`, or give a member's user id.",
+      );
+      expect(me.fields).toEqual(["assignee"]);
+    }
     const error = await refusal(listTasks(host, as(owner), { status: "LATER" } as never));
     expect(error.fields).toEqual(["status"]);
+  });
+
+  it("lets a managed run, which has only its project, list the project's tasks", async () => {
+    await createTask(host, as(owner), { ...fields, title: "Mine" });
+    await createTask(host, as(owner, projectB), { ...fields, title: "Elsewhere" });
+    const run = { project: projectA };
+    expect((await listTasks(host, run)).tasks.map((t) => t.title)).toEqual(["Mine"]);
+    expect((await listTasks(host, run, { assignee: "none" })).tasks).toHaveLength(1);
   });
 
   it("shows a claim with its agent's name", async () => {
@@ -530,6 +544,14 @@ describe("getTask", () => {
       expect(error.code).toBe("not-found");
       expect(error.message).toBe("There's no such task in this project.");
     }
+  });
+
+  it("answers a managed run, which has only its project, the same task", async () => {
+    const created = await createTask(host, as(owner), fields);
+    expect(await getTask(host, { project: projectA }, created.id)).toEqual(
+      await getTask(host, as(owner), created.id),
+    );
+    await refusal(getTask(host, { project: projectB }, created.id), "not-found");
   });
 });
 

@@ -305,10 +305,13 @@ export async function acknowledgeSignal(
   return { id, acknowledged: true };
 }
 
-/** `get_project_state`: the project, its live agents by name, and its 100 latest-updated tasks. */
+/**
+ * `get_project_state`: the project, its live agents by name, and its 100 latest-updated tasks. It
+ * depends on the project only, so an agent, a member and a managed run read the same.
+ */
 export async function agentProjectState(
   host: DevSyncHost,
-  actor: AgentActor,
+  actor: Pick<AgentActor, "project">,
 ): Promise<AgentProjectState> {
   const { project } = actor;
   const [agents, tasks] = await Promise.all([

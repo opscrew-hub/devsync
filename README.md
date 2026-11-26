@@ -19,7 +19,8 @@ and their developers plan the work in DevSync, their coding agents do it, and Op
   review requests and review decisions.
 - **Coding agents through MCP.** An Owner or Admin registers an agent (Claude Code, Codex or
   another, on a developer's computer) from the project's **Agents** button, once for every module,
-  and gives it its token. The agent connects to DevSync's MCP endpoint, reads
+  and gives it its token. The agent connects to the dashboard's MCP address,
+  `https://app.opscrew.dev/mcp`, where DevSync's tools are listed with every module's; it reads
   the project's tasks and its inbox, claims a Ready task, reports progress or a blocker and asks
   for review; a peer agent approves or requests changes, and a person marks the task done.
   Messages reach agents exactly once, even across disconnections.
@@ -54,16 +55,18 @@ and their developers plan the work in DevSync, their coding agents do it, and Op
 2. The project gains a **DevSync** tab: create tasks, move them to Ready, assign them, comment.
 3. To let a coding agent work, register it from the project's **Agents** button, at the top of the
    project's page, and copy its token (shown once; rotate or revoke it from the same place). The
-   tab's Agents section lists the agents that may reach DevSync. Then set `DEVSYNC_AGENT_TOKEN` in
-   the agent's environment and add the server. For Claude Code:
+   tab's Agents section lists the agents that may reach DevSync. Then set `OPSCREW_AGENT_TOKEN` in
+   the agent's environment and add the dashboard's MCP address, one for every module, where
+   DevSync's tools are `devsync_<name>` ([docs/host.md](docs/host.md), MCP for coding agents). For
+   Claude Code:
 
    ```json
    {
      "mcpServers": {
-       "devsync": {
+       "opscrew": {
          "type": "http",
-         "url": "https://app.opscrew.dev/m/devsync/mcp",
-         "headers": { "Authorization": "Bearer ${DEVSYNC_AGENT_TOKEN}" }
+         "url": "https://app.opscrew.dev/mcp",
+         "headers": { "Authorization": "Bearer ${OPSCREW_AGENT_TOKEN}" }
        }
      }
    }
@@ -72,10 +75,13 @@ and their developers plan the work in DevSync, their coding agents do it, and Op
    For Codex, in `config.toml`:
 
    ```toml
-   [mcp_servers.devsync]
-   url = "https://app.opscrew.dev/m/devsync/mcp"
-   bearer_token_env_var = "DEVSYNC_AGENT_TOKEN"
+   [mcp_servers.opscrew]
+   url = "https://app.opscrew.dev/mcp"
+   bearer_token_env_var = "OPSCREW_AGENT_TOKEN"
    ```
+
+   DevSync's own endpoint, `https://app.opscrew.dev/m/devsync/mcp`, serves the same tools until a
+   later release.
 
 Switching DevSync off hides it and keeps its data; removing the project or the workspace deletes it.
 
@@ -96,8 +102,9 @@ uses the host's instead of its own:
 
 The dashboard names no module: it has a module system, and DevSync plugs into it. DevSync never
 imports the dashboard's code either. It follows the dashboard's module contract with its own copy of
-the types, checked by type-level tests, and gives the dashboard its routes, MCP endpoint, queues,
-migrations, removal hooks and pages through two entries, `serverModule` and `webModule`, named in
+the types, checked by type-level tests, and gives the dashboard its routes, actions (its MCP
+tools), queues, migrations, removal hooks and pages through two entries, `serverModule` and
+`webModule`, named in
 the `opscrewModule` manifest of its `package.json`. [docs/host.md](docs/host.md) is DevSync's side of
 that contract: the interface, the mount points, the roles, the HTTP API, the MCP tools, the queues
 and the page props. The dashboard switches DevSync on per workspace and per project and checks every
@@ -132,7 +139,7 @@ pnpm db:generate      # a new migration after changing packages/server/src/db
 | Package | What it holds |
 |---|---|
 | `packages/schemas` (`@devsync/schemas`) | zod shapes of the API and MCP tools, the statuses and their moves, the permission table: shared by the server and the browser |
-| `packages/server` (`@devsync/server`) | the host interface, the `devsync` schema and migrations, the domain, the HTTP routes and MCP endpoint, the queues, the removal hooks, and `serverModule`; `@devsync/server/testing` has `createTestDb()`, `fakeHost()` and `fakeToken()` |
+| `packages/server` (`@devsync/server`) | the host interface, the `devsync` schema and migrations, the domain, the actions, the HTTP routes and MCP endpoint, the queues, the removal hooks, and `serverModule`; `@devsync/server/testing` has `createTestDb()`, `fakeHost()` and `fakeToken()` |
 | `packages/web` (`@devsync/web`) | the DevSync tab and the workspace page, and `webModule` |
 
 The code follows OpsCrew's conventions: TypeScript strict ESM, Biome, Vitest, zod for every input,

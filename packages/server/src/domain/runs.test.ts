@@ -3,7 +3,7 @@ import { type Role, Run, RunList } from "@devsync/schemas";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { type RunRow, run, task } from "../db";
-import type { GithubFailure, Member, ProjectContext, ProjectRef } from "../host";
+import type { DevSyncError, GithubFailure, Member, ProjectContext, ProjectRef } from "../host";
 import { jobs } from "../jobs";
 import { setClock } from "../test/helpers";
 import {
@@ -17,6 +17,7 @@ import {
 import {
   approveRun,
   cancelRun,
+  checkRunRequest,
   DISPATCH_RETRY_MS,
   failureMessage,
   listRuns,
@@ -376,6 +377,58 @@ describe("requestRun", () => {
     }
     expect((await rowOf(asked.id)).status).toBe("REQUESTED");
     expect((await listRuns(s.host, ctx("owner"), ready.id)).runs).toHaveLength(1);
+  });
+});
+
+describe("checkRunRequest", () => {
+  it("answers the task's revision a run would take, creating nothing", async () => {
+    const s = setup();
+    const ready = await readyTask(s);
+    for (const secrets of [["ANTHROPIC_API_KEY"], []]) {
+      s.host.github.repository = { workflow: true, secrets };
+      expect(await checkRunRequest(s.host, s.ctx("developer"), ready.id)).toEqual({
+        taskId: ready.id,
+        title: requirements.title,
+        revision: 1,
+      });
+    }
+    expect((await listRuns(s.host, s.ctx("developer"), ready.id)).runs).toEqual([]);
+    expect(auditsOf(s.host, "devsync.run.requested")).toEqual([]);
+  });
+
+  it("refuses what asking for a run refuses, in the same words", async () => {
+    const s = setup();
+    const backlog = await createTask(s.host, s.ctx("owner"), requirements);
+    const ready = await readyTask(s);
+    const asked = await readyTask(s);
+    await requestRun(s.host, s.ctx("developer"), asked.id);
+    const refusals = async (ctx: ProjectContext, taskId: string) => {
+      const [check, request] = await Promise.allSettled([
+        checkRunRequest(s.host, ctx, taskId),
+        requestRun(s.host, ctx, taskId),
+      ]);
+      expect(check.status).toBe("rejected");
+      expect(request.status).toBe("rejected");
+      const reason = (settled: PromiseSettledResult<unknown>) =>
+        settled.status === "rejected" ? (settled.reason as DevSyncError) : null;
+      expect([reason(check)?.code, reason(check)?.message]).toEqual([
+        reason(request)?.code,
+        reason(request)?.message,
+      ]);
+      return reason(check);
+    };
+    expect((await refusals(s.ctx("owner"), backlog.id))?.code).toBe("conflict");
+    expect((await refusals(s.ctx("owner"), asked.id))?.code).toBe("conflict");
+    expect((await refusals(s.ctx("owner"), "not-a-uuid"))?.code).toBe("not-found");
+    expect((await refusals(s.ctx("owner", s.other), ready.id))?.code).toBe("not-found");
+    const readOnly: ProjectContext = {
+      ...s.ctx("owner"),
+      project: { ...s.project, readOnly: true },
+    };
+    expect((await refusals(readOnly, ready.id))?.code).toBe("forbidden");
+    s.host.github.repository = { workflow: false, secrets: [] };
+    expect((await refusals(s.ctx("owner"), ready.id))?.message).toBe(SETUP_STEP.workflow);
+    expect((await listRuns(s.host, s.ctx("owner"), ready.id)).runs).toEqual([]);
   });
 });
 
@@ -1151,6 +1204,8 @@ describe("listRuns", () => {
     await expect(listRuns(s.host, s.ctx("owner"), "nope")).rejects.toMatchObject({
       code: "not-found",
     });
+    // An agent or a managed run reads the same: the list depends on the project only.
+    expect(await listRuns(s.host, { project: s.project }, ready.id)).toEqual(answer);
   });
 });
 

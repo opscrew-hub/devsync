@@ -1,17 +1,27 @@
 import { existsSync, readFileSync } from "node:fs";
-import { type Finding as FindingSchema, MemberList, type Role, TaskList } from "@devsync/schemas";
+import {
+  type Finding as FindingSchema,
+  MemberList,
+  type Role,
+  TaskList,
+  type TaskRef,
+} from "@devsync/schemas";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { z } from "zod";
+import { actions } from "./actions";
 import { hashToken } from "./domain/agents";
 import type { GithubJob as GithubJobSchema } from "./domain/pull-requests";
 import { createTask } from "./domain/tasks";
 import type {
   AdoptedAgent,
   AgentRef,
+  Caller,
   ContextBlock,
   ContextEntry,
+  DevSyncAction,
+  DevSyncActionContext,
   DevSyncAgents,
   DevSyncEvent,
   DevSyncGithub,
@@ -21,6 +31,7 @@ import type {
   GithubFailure,
   GithubJob,
   Member,
+  ModulePermission,
   ProjectContext,
   ProjectEnv,
   ProjectRef,
@@ -236,6 +247,37 @@ namespace Contract {
     removeWorkspace(tx: ModuleDb, workspaceId: string): Promise<void>;
     removeMember(tx: ModuleDb, workspaceId: string, userId: string): Promise<void>;
     exportProject?: (tx: ModuleDb, projectId: string) => Promise<unknown>;
+    // biome-ignore lint/suspicious/noExplicitAny: each action types its own input.
+    actions?: readonly ModuleAction<any>[];
+  }
+  export type Role = Member["role"];
+  export type Caller =
+    | { kind: "member"; userId: string; name: string; role: Role }
+    | { kind: "agent"; agentId: string; name: string }
+    | { kind: "run"; runRef: string; module: string };
+  export type ModulePermission =
+    | "spend.view"
+    | "change.request"
+    | "modules.manage"
+    | "agents.manage"
+    | "memory.instruct";
+  export interface ModuleActionContext {
+    project: ProjectRef;
+    caller: Caller;
+    via: "chat" | "panel" | "mcp" | "module";
+    host: ModuleHost;
+  }
+  export interface ModuleAction<I extends z.ZodType = z.ZodType> {
+    name: string;
+    description: string;
+    input: I;
+    permission?: ModulePermission;
+    kind: "read" | "start" | "write";
+    handover?: "investigate";
+    run: (
+      ctx: ModuleActionContext,
+      input: z.output<I>,
+    ) => Promise<{ result: unknown; confirm?: { label: string } }>;
   }
 }
 
@@ -289,6 +331,8 @@ describe("the contract's types (checked by the typecheck)", () => {
     assignable<Github["artifact"]>(some<TakingLess<Github["artifact"]>>());
     // @ts-expect-error: takes less
     assignable<Github["deleteArtifact"]>(some<TakingLess<Github["deleteArtifact"]>>());
+    // @ts-expect-error: takes less
+    assignable<DevSyncAction["run"]>(some<TakingLess<DevSyncAction["run"]>>());
     // The check itself: a method's widened parameter still takes the host's; an arrow's doesn't.
     type Widened = { redact(text: string | null): string };
     assignable<Widened>(some<Contract.ModuleHost>());
@@ -330,6 +374,19 @@ describe("the contract's types (checked by the typecheck)", () => {
     assignable<Contract.ModuleHost["ai"]>(some<DevSyncHost["ai"]>());
     assignable<DevSyncHost["context"]>(some<Contract.ModuleHost["context"]>());
     assignable<Contract.ModuleHost["context"]>(some<DevSyncHost["context"]>());
+    expect(true).toBe(true);
+  });
+
+  it("DevSync's copies of the action types are the contract's, and its actions are the host's to call", () => {
+    assignable<Caller>(some<Contract.Caller>());
+    assignable<Contract.Caller>(some<Caller>());
+    assignable<ModulePermission>(some<Contract.ModulePermission>());
+    assignable<Contract.ModulePermission>(some<ModulePermission>());
+    // The host's context is one DevSync's actions take (its host a DevSyncHost)...
+    assignable<DevSyncActionContext>(some<Contract.ModuleActionContext>());
+    // ...so each of DevSync's actions is one of the contract's, whatever its input.
+    assignable<Contract.ModuleAction<typeof TaskRef>>(some<DevSyncAction<typeof TaskRef>>());
+    assignable<Contract.ServerModule["actions"]>(serverModule.actions);
     expect(true).toBe(true);
   });
 
@@ -388,6 +445,14 @@ describe("the opscrewModule manifest", () => {
     // The host's rule for `workflows`: bare `*.yml` or `*.yaml` names, and `github` with them.
     expect(serverModule.workflows).toEqual(["devsync.yml"]);
     for (const file of serverModule.workflows) expect(file).toMatch(/^[\w.-]+\.ya?ml$/);
+    // The host's rule for actions: each registry name, `<id with "-" as "_">_<name>`, once and
+    // at most 64 characters.
+    expect(serverModule.actions).toBe(actions);
+    const registry = serverModule.actions.map(
+      (a) => `${manifest.id.replaceAll("-", "_")}_${a.name}`,
+    );
+    expect(new Set(registry).size).toBe(registry.length);
+    for (const name of registry) expect(name.length).toBeLessThanOrEqual(64);
   });
 });
 

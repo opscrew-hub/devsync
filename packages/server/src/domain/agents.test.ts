@@ -21,7 +21,7 @@ import {
   fakeToken,
   type TestDb,
 } from "../testing";
-import { authenticateAgent, listAgents, moveAgents } from "./agents";
+import { authenticateAgent, callerActor, listAgents, moveAgents } from "./agents";
 
 const HOUR = 60 * 60 * 1000;
 const START = Date.parse(FAKE_NOW);
@@ -350,6 +350,78 @@ describe("authenticateAgent", () => {
     host.directory.projects.pop();
     host.directory.projects.push(project);
     await authenticateAgent(host, one.token);
+  });
+});
+
+describe("callerActor", () => {
+  it("makes DevSync's row of the host's agent the first time it calls an action, with its kind from the host", async () => {
+    const { host, project } = setup();
+    const { ref } = registerOnHost(host, project, { name: "Helper", kind: "codex" });
+
+    expect(await callerActor(host, project, { agentId: ref.agentId, name: "Helper" })).toEqual({
+      kind: "agent",
+      agentId: ref.agentId,
+      name: "Helper",
+      project,
+    });
+    expect(await rowOf(ref.agentId)).toMatchObject({
+      workspaceId: project.workspaceId,
+      projectId: project.projectId,
+      name: "Helper",
+      kind: "CODEX",
+      tokenHash: null,
+      revokedAt: null,
+      lastSeenAt: new Date(START),
+      createdAt: new Date(START),
+    });
+
+    // After that, its row gives the kind, and the caller's name and the time are kept.
+    host.directory.agents = [];
+    setClock(host, START + HOUR);
+    const renamed = await callerActor(host, project, { agentId: ref.agentId, name: "Reviewer" });
+    expect(renamed.name).toBe("Reviewer");
+    expect(await rowOf(ref.agentId)).toMatchObject({
+      name: "Reviewer",
+      kind: "CODEX",
+      lastSeenAt: new Date(START + HOUR),
+      createdAt: new Date(START),
+    });
+  });
+
+  it("takes an agent DevSync already has, its own not yet moved too, without asking the host", async () => {
+    const { host, project } = setup();
+    const own = await devsyncAgent(host, project, { name: "Own", kind: "CLAUDE" });
+    const { tokenHash } = (await rowOf(own.id)) ?? {};
+    let listed = 0;
+    host.agents.list = async () => {
+      listed += 1;
+      return [];
+    };
+
+    expect((await callerActor(host, project, { agentId: own.id, name: "Own" })).agentId).toBe(
+      own.id,
+    );
+    expect(listed).toBe(0);
+    // Its token stays DevSync's until it moves.
+    expect(await rowOf(own.id)).toMatchObject({ tokenHash, lastSeenAt: new Date(START) });
+  });
+
+  it("refuses an agent the host doesn't list for the project, and fails for one DevSync has elsewhere", async () => {
+    const { host, project, other } = setup();
+    const { ref } = registerOnHost(host, other);
+    const error = await refusal(
+      callerActor(host, project, { agentId: ref.agentId, name: "Helper" }),
+      "unauthenticated",
+    );
+    expect(error.message).toBe(REFUSED);
+    expect(await rowOf(ref.agentId)).toBeUndefined();
+
+    // DevSync's row of it is in the other project: the host's answer for this one is the host's fault.
+    await callerActor(host, other, { agentId: ref.agentId, name: "Helper" });
+    host.directory.agents.push({ ...ref, projectId: project.projectId });
+    await expect(
+      callerActor(host, project, { agentId: ref.agentId, name: "Helper" }),
+    ).rejects.toThrow("another project");
   });
 });
 
