@@ -3,8 +3,8 @@
 The dashboard's module platform gives every module the same pieces: events between modules,
 actions declared once, the project's agents registered once, one MCP address (`/mcp`) for every
 module's tools, a run's own token for it, the server's redactor, and AI on the workspace's
-credits. This is DevSync's move onto them, with the task-side ideas from the proposed coordination
-module that was folded into DevSync, the host and other modules instead. The host's side is the
+credits. This is DevSync's move onto them, with the task-side ideas once proposed for coordinating
+people and agents across tools. The host's side is the
 dashboard's module contract; DevSync's copy of it is `host.ts` and `module.ts`, as for the rest.
 
 DevSync names no other module. It emits its events for whoever consumes them, and its actions and
@@ -159,3 +159,7 @@ time. Then `app.opscrew.dev` pins the reviewed commit.
   `packages/schemas/src/workflow.ts`, `packages/schemas/src/runs.ts` and their tests,
   `packages/server/src/domain/runs.ts`, `packages/web/src/Runs*`, `docs/managed-runs.md`,
   `docs/host.md`'s Managed runs).
+- [ ] **P7, the whole change's review** (after P6; the files below). The review of everything since the
+  last pinned commit: the briefing measured once per item and a cap on a task's open questions; a
+  run's token reads only its own task; a run asked for only once its task's dependencies are done;
+  a run's changed paths and models redacted; the OIDC request token in the key backstop.
