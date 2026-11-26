@@ -10,6 +10,7 @@
 | **Stack** | TypeScript strict ESM monorepo (pnpm 10.29.1): Hono 4.13.18, Drizzle ORM 0.45.4, zod 4.6.7, `@modelcontextprotocol/server` 2.4.0, React 19.3.1, PostgreSQL (`devsync` schema), Vitest 5.1.0 + PGlite |
 | **Code reviewed** | 59 first-party production files / 11,044 LOC, 43 test files / 14,448 LOC, 8 SQL migrations, CI, and the shipped GitHub Actions workflow |
 | **Result** | **0 Critical, 0 High, 3 Medium, 6 Low, 4 Informational** (13 findings). No authentication bypass, cross-tenant access, SQL injection, XSS, or command injection found. |
+| **Status** | P7 (`e5775fa`) later fixed F-01, F-02, F-07 and F-10, and partly fixed F-03 - see "Status after P7" |
 
 ---
 
@@ -48,6 +49,25 @@ before the first live project.
 
 ---
 
+## Status after P7 (updated 2026-11-26)
+
+The audit was performed at `48ab6f5`. Before this report was published, `main` received the P7
+change (`fa64889`, `d8c33be`, `e5775fa`). Re-checked against `e5775fa`:
+
+| Finding | Status on `e5775fa` |
+|---|---|
+| F-01 - a run reads every task | **Fixed**: `reader()` refuses a run, and `taskReader()` binds it to its own task through `runTaskId()` |
+| F-02 - runs ignore dependencies | **Fixed**: `openDependency()` is checked in `requestable()` and `decideRun()`; `dispatchRun()` still does not re-check |
+| F-07 - result paths and models unredacted | **Fixed**: `recordEnd()` passes `changedFiles` and `models` through `host.redact` |
+| F-10 - future caller kinds read the project | **Fixed**: `reader()` refuses any caller that is not a member or an agent |
+| F-03 - unbounded growth | **Partly fixed**: at most 50 open questions per task and 50 answered in its detail; revisions, comments, task lists, overlaps and retention remain unbounded |
+| F-04, F-05, F-06, F-08, F-09, F-11, F-12, F-13 | **Unchanged** at `e5775fa` |
+
+Issues #74, #75 and #80 are closed as fixed; #76 and #83 stay open for the remainder. The
+proof-of-gap tests in `docs/audit/security-audit.test.ts` assert the `48ab6f5` behaviour, so those
+for the fixed findings now fail by design.
+
+---
 ## 2. Scope, method and limitations
 
 ### 2.1 In scope
