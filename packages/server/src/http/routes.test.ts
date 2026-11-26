@@ -505,14 +505,13 @@ describe("project run routes", () => {
     ]);
   });
 
-  it("answer 409 with the setup's words while the repository lacks the workflow or the key", async () => {
+  it("answer 409 with the setup's words while the repository lacks the workflow", async () => {
     const s = setup();
     const ready = await readyTask(s);
     s.host.github.repository = { workflow: false, secrets: [] };
     const missing = RunSetup.parse((await s.as("owner")("GET", "/runs/setup")).body).missing;
     expect(missing).toEqual([
       "Add .github/workflows/devsync.yml from the runs section to the repository's default branch.",
-      "Add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization.",
     ]);
     const refused = refusal(
       await s.as("developer")("POST", `/tasks/${ready.id}/runs`),

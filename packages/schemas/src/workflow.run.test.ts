@@ -563,7 +563,7 @@ describe.skipIf(!tools)("the agent step, run (needs bash and jq)", () => {
     expect(run.outputs.get("provider")).toBe("opscrew");
     expect(run.outputs.get("failure")).toBe("no-credits");
     expect(run.log).toContain(
-      "::error::OpsCrew didn't let this run use the workspace's AI credits. Buy AI credits on the dashboard's Billing page,",
+      "::error::OpsCrew didn't let this run use the workspace's AI credits (they may be switched off, used up or at their cap). Buy AI credits on the dashboard's Billing page,",
     );
     expect(existsSync(join(run.temp, "devsync-oidc"))).toBe(false);
   });

@@ -141,7 +141,7 @@ export function failureMessage(
   const agent = provider === "openai" ? "Codex" : "Claude Code";
   const messages: Record<RunFailure, string> = {
     "no-key": SETUP_STEP.secret,
-    "no-credits": `OpsCrew didn't let this run use the workspace's AI credits: they are switched off, used up or at their cap. Buy AI credits on the dashboard's Billing page, or add a key of your own as the ${API_KEY_SECRET_NAMES} Actions secret of the repository or its organization, then ask for a new run.`,
+    "no-credits": `OpsCrew didn't let this run use the workspace's AI credits (they may be switched off, used up or at their cap). Buy AI credits on the dashboard's Billing page, or add a key of your own as the ${API_KEY_SECRET_NAMES} Actions secret of the repository or its organization, then ask for a new run.`,
     "agent-failed": `${agent} stopped with an error. Open the GitHub run to see why, then ask for a new run.`,
     budget: `Claude Code reached the workflow's budget before it finished. Raise --max-budget-usd in ${WORKFLOW_PATH}, or narrow the task, then ask for a new run.`,
     turns: `Claude Code reached the workflow's turn limit before it finished. Raise --max-turns in ${WORKFLOW_PATH}, or narrow the task, then ask for a new run.`,

@@ -886,7 +886,7 @@ describe("a workflow_run fact (devsync.github)", () => {
       failure: {
         code: "no-credits",
         message:
-          "OpsCrew didn't let this run use the workspace's AI credits: they are switched off, used up or at their cap. Buy AI credits on the dashboard's Billing page, or add a key of your own as the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret of the repository or its organization, then ask for a new run.",
+          "OpsCrew didn't let this run use the workspace's AI credits (they may be switched off, used up or at their cap). Buy AI credits on the dashboard's Billing page, or add a key of your own as the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret of the repository or its organization, then ask for a new run.",
       },
     });
     expect(failureMessage("agent-failed", refused.id, "opscrew")).toMatch(/^Claude Code /);

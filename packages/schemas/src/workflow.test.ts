@@ -453,7 +453,7 @@ describe("the managed runs' workflow file", () => {
       `OPSCREW_AI_CREDENTIAL=$(printf '%s' "$oidc" | jq -Rsc --arg request "$OPSCREW_REQUEST" '{token: ., request: $request}' |`,
       "--data-binary @- \"$OPSCREW_ORIGIN/ai/credential\" | jq -r '.token | strings')",
       'if [ -z "$OPSCREW_AI_CREDENTIAL" ]; then',
-      `echo "::error::OpsCrew didn't let this run use the workspace's AI credits. Buy AI credits on the dashboard's Billing page, or add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization."`,
+      `echo "::error::OpsCrew didn't let this run use the workspace's AI credits (they may be switched off, used up or at their cap). Buy AI credits on the dashboard's Billing page, or add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization."`,
       'echo "failure=no-credits" >> "$GITHUB_OUTPUT"',
       'echo "::add-mask::$OPSCREW_AI_CREDENTIAL"',
       'export ANTHROPIC_BASE_URL="$OPSCREW_ORIGIN/ai"',

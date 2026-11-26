@@ -276,15 +276,15 @@ jobs:
           export OPSCREW_AI_CREDENTIAL=
           if [ "$provider" = opscrew ]; then
             # The same OIDC token, through stdin, for a gateway credential that lasts 30 minutes:
-            # Claude Code reaches the model through OpsCrew's gateway, as a bearer token. A refusal
-            # (credits off, used up or at their cap) ends the run here.
+            # Claude Code reaches the model through OpsCrew's gateway, as a bearer token. A refusal,
+            # whatever its cause (OpsCrew answers each one alike), ends the run here.
             if [ -n "$oidc" ]; then
               OPSCREW_AI_CREDENTIAL=$(printf '%s' "$oidc" | jq -Rsc --arg request "$OPSCREW_REQUEST" '{token: ., request: $request}' |
                 curl --silent --show-error --fail --max-time 30 --header 'Content-Type: application/json' \\
                   --data-binary @- "$OPSCREW_ORIGIN/ai/credential" | jq -r '.token | strings')
             fi
             if [ -z "$OPSCREW_AI_CREDENTIAL" ]; then
-              echo "::error::OpsCrew didn't let this run use the workspace's AI credits. Buy AI credits on the dashboard's Billing page, or add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization."
+              echo "::error::OpsCrew didn't let this run use the workspace's AI credits (they may be switched off, used up or at their cap). Buy AI credits on the dashboard's Billing page, or add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization."
               echo "failure=no-credits" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -384,7 +384,8 @@ jobs:
             fi
             model=$DEVSYNC_MODEL
             limit=()
-            # OpsCrew's gateway answers with its own model, and its credential lasts 30 minutes.
+            # On the AI credits, OpsCrew's gateway sets the model itself, whatever is asked: this
+            # name only feeds Claude Code's cost estimate. The gateway's credential lasts 30 minutes.
             if [ "$provider" = opscrew ]; then
               model=claude-haiku-5-5
               limit=(timeout 30m)

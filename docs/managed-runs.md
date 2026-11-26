@@ -187,8 +187,11 @@ repository has no key of the workspace's own, pays for it with the workspace's A
   the run is dispatched with its two inputs only, and has neither `/mcp` nor the credits. An
   answer that doesn't parse is logged, without it, and treated as null. A host that fails leaves
   the run unclaimed, so the job's retry dispatches it.
-- **The OIDC token.** The `agent` job alone has `id-token: write`. The step "Ask OpsCrew for the
-  run's MCP token" runs only with a request, right before the agent step:
+- **The OIDC token.** The `agent` job alone has `id-token: write`. GitHub grants it per job, not
+  per step, so the job's install steps (the pinned Claude Code and Codex packages from npm) could
+  ask for OIDC tokens too. That adds little: those packages already run in the step that holds the
+  keys. The step "Ask OpsCrew for the run's MCP token" runs only with a request, right before the
+  agent step:
   - it asks GitHub for the job's OIDC token, with the origin as its audience; GitHub's request
     token reaches curl in a header file, never in its arguments;
   - it exchanges that token, through stdin, at `POST <origin>/mcp/credential { token, request }`
@@ -213,10 +216,11 @@ repository has no key of the workspace's own, pays for it with the workspace's A
     why. The turn and budget caps are the workflow's, as with a key.
   - `provider` is `opscrew`, shown as "via AI credits". Its cost is Claude Code's estimate from
     Anthropic's prices, as with a key.
-  - A refused exchange (credits off, used up or at their cap, or any other refusal), or no OIDC
-    token, ends the run `no-credits` before an agent starts: "OpsCrew didn't let this run use the
-    workspace's AI credits: they are switched off, used up or at their cap. Buy AI credits on the
-    dashboard's Billing page, or add a key of your own as the … Actions secret of the repository
+  - A refused exchange, or no OIDC token, ends the run `no-credits` before an agent starts. DevSync
+    can't tell why (a network error, a request over 24 hours old, a dashboard without its own AI
+    key, or credits switched off, used up or at their cap all look alike), so the message says what
+    may be the cause: "OpsCrew didn't let this run use the workspace's AI credits (they may be
+    switched off, used up or at their cap). Buy AI credits on the dashboard's Billing page, or add a key of your own as the … Actions secret of the repository
     or its organization, then ask for a new run."
   - The credits never run Codex: the gateway speaks Anthropic's API only. With only an OpenAI key,
     Codex runs on it.
@@ -236,6 +240,12 @@ repository has no key of the workspace's own, pays for it with the workspace's A
     token in its environment.
 - **The backstop** checks the change for the MCP token and the gateway credential as it does for
   the keys, every one that is set, failing closed.
+
+What remains: through `/mcp`, a run's agent can read the project's data on the dashboard, whatever
+the run's token lets it read. A prompt injection in the default branch's code, which the agent
+reads as it works, could make it copy that data into the change. The backstop looks for the keys
+and tokens only, not for that data, and `publish` pushes the branch and opens the draft pull request
+before anyone reviews it, so in a public repository what was copied is public at once.
 
 ## Not in the first version
 

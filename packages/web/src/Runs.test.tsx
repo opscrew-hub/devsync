@@ -732,7 +732,7 @@ describe("a run's state and result", () => {
     const noCredits = {
       code: "no-credits" as const,
       message:
-        "OpsCrew didn't let this run use the workspace's AI credits: they are switched off, used up or at their cap. Buy AI credits on the dashboard's Billing page, or add a key of your own as the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret of the repository or its organization, then ask for a new run.",
+        "OpsCrew didn't let this run use the workspace's AI credits (they may be switched off, used up or at their cap). Buy AI credits on the dashboard's Billing page, or add a key of your own as the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret of the repository or its organization, then ask for a new run.",
     };
     show({
       runs: [
