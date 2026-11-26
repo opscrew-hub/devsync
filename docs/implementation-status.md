@@ -1,6 +1,6 @@
 # Implementation status
 
-As of 2026-11-21. What DevSync must do is in [requirements.md](requirements.md); its contract with
+As of 2026-11-26. What DevSync must do is in [requirements.md](requirements.md); its contract with
 OpsCrew's dashboard is in [host.md](host.md).
 
 ## Done
@@ -19,12 +19,18 @@ their findings fixed.
 - **Tasks**: create, read, edit with a version check, move along the lifecycle, assign to the
   workspace's members, comment, link a pull request; a revision on every requirements change; the
   timeline from the task's outbox events; the removal hooks.
-- **Agents**: registration with a one-time token (only its SHA-256 kept, 24-hour expiry, rotation,
-  revocation, audited), the inbox and signals (hop limit, one follow-up, 20 a minute), claims with a
-  15-minute lease, progress, blocker and review reports, peer review decisions, the outbox's
-  delivery with a backoff capped at 10 minutes.
-- **HTTP and MCP**: the project, workspace and public routes; `POST /m/devsync/mcp` with the 13
-  tools; unexpected errors logged without bodies or tokens and answered generically.
+- **Agents**: registered, rotated and revoked on the dashboard (its Agents button); DevSync's own
+  agents move there hourly with their tokens still working (`devsync.agents-move`); the inbox and
+  signals (hop limit, one follow-up, 20 a minute), claims with a 15-minute lease, progress, blocker
+  and review reports, peer review decisions, the outbox's delivery with a backoff capped at 10
+  minutes.
+- **HTTP and MCP**: the project, workspace and public routes; DevSync's 16 actions, declared once
+  and served at the dashboard's `/mcp` as `devsync_<name>` and at DevSync's own
+  `POST /m/devsync/mcp` until a later release; unexpected errors logged without bodies or tokens
+  and answered generically.
+- **The module platform** ([platform.md](platform.md)): DevSync's events through the host, agents'
+  text redacted before it is stored, the project's export, and managed runs on the workspace's AI
+  credits when it has no key, each with its own `/mcp` token.
 - **Queues**: `devsync.outbox` and `devsync.github` (pull requests' latest state, signals to agents,
   once per delivery).
 - **Pages**: the project tab (tasks by status, the task panel with its revisions, comments,

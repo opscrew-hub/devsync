@@ -145,7 +145,7 @@ time. Then `app.opscrew.dev` pins the reviewed commit.
   `packages/server/migrations/**`, `packages/schemas/src/agents.ts`, `packages/web/src/Agents*`,
   `docs/host.md`). As above: the move job, `verify` first, the row for a new host agent, the
   Agents section, the routes removed; a migration making the token columns nullable.
-- [ ] **P3, the actions** (after P2; `packages/server/src/actions.ts` (new),
+- [x] **P3, the actions** (after P2; `packages/server/src/actions.ts` (new),
   `packages/server/src/http/mcp.ts`, `module.ts`, `packages/schemas/src/mcp.ts`, `docs/host.md`).
   As above, with a test per caller kind and the size budget.
 - [ ] **P4, the task-side ideas** (after P3; `packages/schemas/src/**`,
