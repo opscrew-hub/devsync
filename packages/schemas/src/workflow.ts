@@ -45,6 +45,9 @@ export const WORKFLOW = `# DevSync's managed runs. DevSync starts this workflow 
 # Claude Code (or Codex, with only an OpenAI key) makes the task's change in the checkout, the
 # change is opened as a draft pull request, and the result is left for DevSync to read. With no
 # key of your own, the run pays with the workspace's AI credits.
+#
+# Every action is pinned to a full commit, its release in the comment beside it, so a moved tag
+# can't change what a run does: to update one, take the commit of its new release's tag.
 name: DevSync run
 
 on:
@@ -108,7 +111,7 @@ jobs:
     steps:
       # The branch DevSync dispatched on, with no git credentials left behind.
       - name: Check out the repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -138,11 +141,14 @@ jobs:
           fi
 
       # A pinned version, so that a release cannot change what a run does. You may update it
-      # (2.1.259 or later).
+      # (2.1.259 or later). Its install script stays: without --ignore-scripts, its postinstall
+      # puts the native binary of the runner's platform (from its own optional package) in place
+      # of the claude stub, which otherwise only says the binary is missing.
       - name: Install Claude Code
         run: npm install --global @anthropic-ai/claude-code@2.1.311
 
-      # Codex runs only with an OpenAI key, pinned as above, and only on GitHub's own runners. A
+      # Codex runs only with an OpenAI key, pinned as above, and only on GitHub's own runners; its
+      # packages have no install script, so it is installed with none run (--ignore-scripts). A
       # problem here, a hang included, keeps Codex from running, never Claude Code: the job goes
       # on whatever this step does, and only a passed check leaves what Codex needs.
       - name: Install Codex
@@ -153,7 +159,7 @@ jobs:
           # job: on another runner Codex doesn't run, and this step changes nothing on the host.
           if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
             ready=true
-            if ! npm install --global @openai/codex@0.171.0; then
+            if ! npm install --global --ignore-scripts @openai/codex@0.171.0; then
               echo "::warning::Codex didn't install, so Codex won't run here."
               ready=false
             fi
@@ -482,7 +488,7 @@ jobs:
 
       - name: Upload the patch
         if: steps.patch.outputs.has_changes == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: devsync-patch
           path: \${{ runner.temp }}/devsync-patch/
@@ -505,10 +511,10 @@ jobs:
       # The same commit the agent job started from. Its credentials stay for the push: no model
       # runs in this job.
       - name: Check out the repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download the patch
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: devsync-patch
           path: \${{ runner.temp }}/devsync-patch
@@ -554,7 +560,7 @@ jobs:
       - name: Download the changed files
         if: needs.agent.outputs.has_changes == 'true'
         continue-on-error: true
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: devsync-patch
           path: \${{ runner.temp }}/devsync-patch
@@ -611,7 +617,7 @@ jobs:
             }' > "$RUNNER_TEMP/devsync-result/result.json"
 
       - name: Upload the result
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: devsync-result
           path: \${{ runner.temp }}/devsync-result/result.json

@@ -568,6 +568,38 @@ describe("the managed runs' workflow file", () => {
     expect(write).toContain("turns: parsed($turns; null),");
   });
 
+  it("pins every action to a full commit, its release in a comment beside it", () => {
+    const uses = lines.filter((line) => /^\s*(- )?uses:/.test(line)).map((line) => line.trim());
+    expect(uses.length).toBeGreaterThan(0);
+    for (const line of uses) {
+      expect(line).toMatch(/^(- )?uses: [\w.-]+\/[\w.-]+@[0-9a-f]{40} # v\d+\.\d+\.\d+$/);
+    }
+    expect([...new Set(uses.map((line) => line.replace(/^- /, "")))].sort()).toEqual([
+      "uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
+      "uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2",
+      "uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2",
+    ]);
+    // Said at the top, with how to update one: its commit and its release together.
+    expect(WORKFLOW).toContain(
+      "# Every action is pinned to a full commit, its release in the comment beside it",
+    );
+  });
+
+  it("installs Codex without its packages' scripts, and Claude Code with the one it needs", () => {
+    const codex = text(step("agent", "Install Codex"));
+    expect(codex).toContain("npm install --global --ignore-scripts @openai/codex@");
+    const claude = step("agent", "Install Claude Code");
+    expect(text(claude)).toMatch(/run: npm install --global @anthropic-ai\/claude-code@[\d.]+$/);
+    // Why Claude Code keeps its script, said where it is installed.
+    const before = lines.slice(0, lines.indexOf(claude[0] ?? "")).reverse();
+    const comment = before.slice(
+      0,
+      before.findIndex((line) => !line.trim().startsWith("#")),
+    );
+    expect(comment.join(" ")).toMatch(/postinstall/);
+    expect(comment.join(" ")).toMatch(/--ignore-scripts/);
+  });
+
   it("runs a pinned Claude Code headless, with file tools only and nothing from the repository", () => {
     const install = text(step("agent", "Install Claude Code"));
     const version = /@anthropic-ai\/claude-code@(\d+)\.(\d+)\.(\d+)$/.exec(install);
@@ -629,7 +661,10 @@ describe("the managed runs' workflow file", () => {
     expect(install.slice(0, hosted)).not.toMatch(/^ {10}[^ #]/m);
     expect(end).toBe(install.trimEnd().length - "\n          fi".length);
     // A pinned Codex; a failed install keeps Codex from running, never fails the step.
-    const version = /npm install --global @openai\/codex@(\d+)\.(\d+)\.(\d+); then\n/.exec(install);
+    const version =
+      /npm install --global --ignore-scripts @openai\/codex@(\d+)\.(\d+)\.(\d+); then\n/.exec(
+        install,
+      );
     expect(version).not.toBeNull();
     const [major = 0, minor = 0] = (version ?? []).slice(1).map(Number);
     expect([major, minor]).toEqual([0, 171]);
@@ -758,9 +793,7 @@ describe("the managed runs' workflow file", () => {
       return name?.trim().slice("name: ".length);
     };
     const uploads = ["agent", "publish", "report"].flatMap((name) =>
-      steps(name).filter((candidate) =>
-        text(candidate).includes("uses: actions/upload-artifact@v7"),
-      ),
+      steps(name).filter((candidate) => text(candidate).includes("uses: actions/upload-artifact@")),
     );
     expect(uploads.map(artifact)).toEqual([PATCH_ARTIFACT, RESULT_ARTIFACT]);
     expect(text(step("agent", "Upload the patch"))).toContain("retention-days: 1");
