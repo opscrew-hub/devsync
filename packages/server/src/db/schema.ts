@@ -288,7 +288,7 @@ export const run = devsyncSchema.table(
     finishedAt: tstz("finished_at"),
     /** A failed run's `RunFailure`. */
     failure: text("failure"),
-    /** The result's `usage` and `models`. */
+    /** The result's `usage`, `models` and `turns`. */
     tokenUsage: jsonb("token_usage"),
     /** The result's changed paths. */
     changedFiles: jsonb("changed_files"),

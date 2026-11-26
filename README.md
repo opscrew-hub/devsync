@@ -29,11 +29,12 @@ and their developers plan the work in DevSync, their coding agents do it, and Op
   filterable by project, status and "assigned to me".
 - **Managed runs.** A member asks for a run on a Ready task; once an Owner, Admin or Approver
   approves the exact text, the project's own GitHub Actions run Claude Code on the workspace's own
-  Anthropic or OpenRouter key (or Codex on its OpenAI key) and open a draft pull request, and the
-  task shows the result: changed files, tokens and cost, the pull request. OpsCrew holds no AI key
-  and opens no pull request itself; the repository needs the workflow file the task's runs section
-  shows, the `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` secret (the first of
-  them that is set is used), and "Allow GitHub Actions to create and approve pull requests" on
+  Anthropic or OpenRouter key (or Codex on its OpenAI key), or on the workspace's AI credits when
+  it has no key, and open a draft pull request, and the task shows the result: changed files,
+  tokens and cost, the pull request. OpsCrew holds none of the workspace's keys and opens no pull
+  request itself; the repository needs the workflow file the task's runs section shows, and "Allow
+  GitHub Actions to create and approve pull requests" on. A key is optional: the first of the
+  `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` and `OPENAI_API_KEY` secrets that is set is used
   ([docs/managed-runs.md](docs/managed-runs.md)). With an OpenRouter key, set a spending limit on
   the key and put Anthropic first in the account's provider routing, as OpenRouter recommends. A
   run's cost is Claude Code's estimate from Anthropic's prices; through OpenRouter, OpenRouter's

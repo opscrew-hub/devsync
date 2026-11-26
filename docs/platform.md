@@ -152,7 +152,7 @@ time. Then `app.opscrew.dev` pins the reviewed commit.
   `packages/server/src/domain/**`, `packages/server/src/db/**`, `packages/server/migrations/**`,
   `packages/server/src/actions.ts`, `packages/web/src/TaskPanel*`, `docs/host.md`,
   `docs/requirements.md`).
-- [ ] **P5, managed runs on credits and the run's token** (after P1, beside P2 to P4;
+- [x] **P5, managed runs on credits and the run's token** (after P1, beside P2 to P4;
   `packages/schemas/src/workflow.ts`, `packages/schemas/src/runs.ts` and their tests,
   `packages/server/src/domain/runs.ts`, `packages/web/src/Runs*`, `docs/managed-runs.md`,
   `docs/host.md`'s Managed runs).

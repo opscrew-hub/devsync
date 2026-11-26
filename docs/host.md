@@ -185,8 +185,9 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
   `finishedAt`, `failure` (`{ code, message }`: why it failed and what to do, or null),
   `changedFiles`, `usage` (`inputTokens`, `outputTokens`, `cacheCreationInputTokens`,
   `cacheReadInputTokens`, `costUsd` (an estimate: Claude Code's, or with Codex the workflow's from
-  OpenAI's prices), `models`, or null), `provider` (`anthropic`, `openrouter` or `openai`: whose
-  key it used, or null), `draftPullRequestUrl` and
+  OpenAI's prices), `models`, `turns` (the agent's turn count, or null), or null), `provider`
+  (`anthropic`, `openrouter` or `openai`: whose key it used; `opscrew`: the workspace's AI
+  credits; or null), `draftPullRequestUrl` and
   `githubRunUrl` (`https://github.com/<owner>/<repo>/actions/runs/<id>`, once GitHub started it).
 - `RunSetup`: `workflow` (`.github/workflows/devsync.yml` is on the default branch), `secret`
   (runs can read the `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` Actions secret),

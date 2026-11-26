@@ -105,7 +105,8 @@ pull requests, a task's link and its state, and the signals delivered to registe
 
 A member asks for a managed run on a Ready task; an Owner, Admin or Approver approves it; OpsCrew
 starts a workflow in the project's own GitHub Actions, which runs Claude Code on an Anthropic or
-OpenRouter key of the workspace's own (or Codex on an OpenAI key, without either), commits its
+OpenRouter key of the workspace's own (or Codex on an OpenAI key, without either; or Claude Code on
+the workspace's AI credits, with no key at all), commits its
 change to a new branch and opens a draft pull request. The run's state, its changed files, token
 use and the draft's link come back to the task.
 
@@ -127,9 +128,10 @@ repository.
 3. **Given** a finished run, **Then** its result (succeeded or failed with why, changed files, token
    use, the draft pull request's link) is read through the dashboard's GitHub App from the run
    OpsCrew started in that repository, and from no other, checked, and shown on the task.
-4. **Given** a repository without the DevSync workflow or without an Anthropic, OpenRouter or
-   OpenAI key (the `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` secret), **Then**
-   asking for a run says exactly what to add and where, as the checks setup does.
+4. **Given** a repository without the DevSync workflow, **Then** asking for a run says exactly
+   what to add and where, as the checks setup does. Without an Anthropic, OpenRouter or OpenAI key
+   (the `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` secret), the setup says the
+   run pays with the workspace's AI credits.
 
 ### Story 5 - Fix a security finding with a task (Priority: P3)
 
@@ -178,10 +180,11 @@ task, open it again from the same finding and from a moved one, and check a reso
   configuration.
 - **R-8**: DevSync's managed runs MUST run in the project's own GitHub Actions on an Anthropic,
   OpenRouter or OpenAI key of the workspace's own (Claude Code on the first two, in that order,
-  else Codex on the OpenAI key: [managed-runs.md](managed-runs.md), D5 and D6), report back
+  else Codex on the OpenAI key: [managed-runs.md](managed-runs.md), D5 and D6), or with no key on
+  the workspace's AI credits through the dashboard's gateway (platform.md, P5), report back
   through the run's artifact read by the dashboard's GitHub App, and leave opening the draft pull
-  request to the user's workflow: OpsCrew holds no AI key and no write token, and opens no pull
-  request itself.
+  request to the user's workflow: OpsCrew holds none of the workspace's keys and no write token,
+  and opens no pull request itself.
 - **R-9**: DevSync MUST run only inside the dashboard: it has no sign-in, projects or pages of its
   own.
 - **R-10**: A task made from a security finding MUST come from the finding as the dashboard gives it
