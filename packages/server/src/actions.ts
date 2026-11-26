@@ -121,7 +121,7 @@ async function reader(ctx: DevSyncActionContext): Promise<TaskReader> {
 async function taskReader(ctx: DevSyncActionContext, taskId: string): Promise<TaskReader> {
   const { caller, project, host } = ctx;
   if (caller.kind !== "run") return reader(ctx);
-  const own = await runTaskId(host, project, caller.runRef);
+  const own = await runTaskId(host, project, caller);
   if (own !== taskId.toLowerCase()) throw new DevSyncError("forbidden", RUN_OWN_TASK);
   return { project };
 }

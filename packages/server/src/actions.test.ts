@@ -591,6 +591,10 @@ describe("a managed run calling an action", () => {
       expect(await s.refused("get_task", caller, { taskId: task.id })).toEqual(noRun);
       expect(await s.refused("get_briefing", caller, { taskId: task.id })).toEqual(noRun);
     }
+    // Another module's run, even with one of DevSync's run ids, reads none of its tasks.
+    const ours = await requestRun(s.host, s.memberCtx(), task.id);
+    const other: Caller = { kind: "run", runRef: ours.id, module: "notes" };
+    expect(await s.refused("get_task", other, { taskId: task.id })).toEqual(noRun);
   });
 
   it("is refused every write, an agent's inbox and a start, changing nothing", async () => {

@@ -33,7 +33,7 @@ import {
 } from "@devsync/schemas";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, type SQL } from "drizzle-orm";
 import { z } from "zod";
-import { type RunRow, run, type TaskRow, task, taskRevision } from "../db";
+import { migrations, type RunRow, run, type TaskRow, task, taskRevision } from "../db";
 import {
   type DevSyncDb,
   DevSyncError,
@@ -280,13 +280,16 @@ async function requestable(
 export async function runTaskId(
   host: DevSyncHost,
   project: ProjectRef,
-  runId: string,
+  caller: { runRef: string; module: string },
 ): Promise<string> {
   const noRun = () =>
     new DevSyncError(
       "not-found",
       "There's no such managed run in this project, so it reads none of the project's tasks.",
     );
+  // Only DevSync's own runs have a task: the module's id is its migrations' schema (the contract).
+  if (caller.module !== migrations.schema) throw noRun();
+  const runId = caller.runRef;
   if (!Id.safeParse(runId).success) throw noRun();
   const [row] = await host.db.select({ taskId: run.taskId }).from(run).where(runIn(project, runId));
   if (!row) throw noRun();
