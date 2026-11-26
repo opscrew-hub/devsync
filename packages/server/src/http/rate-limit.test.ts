@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clientOf, TokenBuckets } from "./rate-limit";
+import { TokenBuckets } from "./rate-limit";
 
 describe("TokenBuckets", () => {
   it("takes a minute's requests at once, then refills at that rate on the clock given", () => {
@@ -33,21 +33,12 @@ describe("TokenBuckets", () => {
     now = 60_000;
     buckets.take("busy");
     buckets.take("new");
+    // Every refilled one went, not only the oldest.
     expect(buckets.has("old-0")).toBe(false);
+    expect(buckets.has("old-9999")).toBe(false);
+    expect(buckets.has("new")).toBe(true);
     expect(buckets.has("busy")).toBe(true);
     expect(buckets.take("busy")).toBe(0);
     expect(buckets.take("busy")).toBeGreaterThan(0);
-  });
-});
-
-describe("clientOf", () => {
-  it("takes the address the host's proxy added, else X-Real-IP, else one shared key", () => {
-    const headers = (values: Record<string, string>) => (name: string) => values[name];
-    expect(clientOf(headers({ "x-forwarded-for": "198.51.100.9, 203.0.113.7" }))).toBe(
-      "203.0.113.7",
-    );
-    expect(clientOf(headers({ "x-forwarded-for": "203.0.113.7" }))).toBe("203.0.113.7");
-    expect(clientOf(headers({ "x-real-ip": " 203.0.113.8 " }))).toBe("203.0.113.8");
-    expect(clientOf(headers({}))).toBe("unknown");
   });
 });

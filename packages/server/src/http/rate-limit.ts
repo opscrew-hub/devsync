@@ -1,7 +1,9 @@
 /**
- * The rate limits of DevSync's own MCP endpoint (docs/host.md, DevSync's own endpoint): token
- * buckets in the server's memory, checked before a token is verified, so a flood costs the host's
- * verification nothing. Each server process keeps its own; the host's edge limits come first.
+ * The rate limit of DevSync's own MCP endpoint (docs/host.md, DevSync's own endpoint): token
+ * buckets in the server's memory, one per token seen valid, checked before the token is verified
+ * again, so a flood of one agent's requests costs the host's verification nothing. Each server
+ * process keeps its own. Requests without a valid token are the host's to limit, by the visitor's
+ * address, which only it can tell behind its proxies.
  */
 
 /** A bucket: the requests it still takes, as of `at` (ms). */
@@ -72,15 +74,5 @@ export class TokenBuckets {
   }
 }
 
-/** Requests a minute per agent token, and per client without a valid one. */
-export const MCP_RATE = { perToken: 120, perClient: 20 } as const;
-
-/**
- * The client a request comes from, for the limit on requests without a valid token: the last
- * address of `X-Forwarded-For` (the one the host's proxy added, which the client can't choose),
- * else `X-Real-IP`, else one shared key.
- */
-export function clientOf(header: (name: string) => string | undefined): string {
-  const forwarded = header("x-forwarded-for")?.split(",").at(-1)?.trim();
-  return forwarded || header("x-real-ip")?.trim() || "unknown";
-}
+/** Requests a minute per agent token seen valid. */
+export const TOKEN_REQUESTS_PER_MINUTE = 120;

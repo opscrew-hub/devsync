@@ -111,7 +111,7 @@ permission (see MCP for coding agents).
 |---|---|---|
 | `projectRoutes(host)` | `/api/w/<workspace>/projects/<project>/m/devsync` | the session, the workspace, the guard |
 | `workspaceRoutes(host)` | `/api/w/<workspace>/m/devsync` | the session, the workspace, DevSync on for it |
-| `publicRoutes(host)` | `/m/devsync` | the host's body limit (1 MiB on `/m/*`) and `Cache-Control: no-store`; DevSync rate-limits and authenticates agents itself |
+| `publicRoutes(host)` | `/m/devsync` | the host's body limit (1 MiB on `/m/*`) and `Cache-Control: no-store`; DevSync authenticates agents itself, and rate-limits each token seen valid |
 
 Each is a Hono app with its own `onError`, answering refusals as
 `{ "error": { "code", "message", "fields"? } }` with the dashboard's codes and statuses:
@@ -460,26 +460,20 @@ DevSync's own token whose project is gone, disconnected or has DevSync off is re
 is off for this project"), as is a request with an origin other than the host's. Every answer
 carries `Cache-Control: no-store`.
 
-Before a token is verified, the endpoint limits its requests with token buckets in the server's
-memory (each of the host's server processes keeps its own), on `host.clock`:
+A token seen valid takes 120 requests a minute, two a second coming back, from a token bucket in
+the server's memory (each of the host's server processes keeps its own), keyed by the token's
+SHA-256, never the token itself, on `host.clock`. Past them it is refused 429 (`rate-limited`,
+"This agent sent 120 requests to DevSync's MCP endpoint in the last minute, the most it may. Try
+again in 1 second.") with `Retry-After`, before the host is asked to verify it again. 120 is twice
+what an agent calling a tool every second needs. The limiter keeps at most 10,000 tokens, dropping
+those refilled to full first (they limit nothing), then the oldest.
 
-- a token seen valid before takes 120 requests a minute (by its SHA-256, never the token itself),
-  two a second coming back: past them it is refused 429 (`rate-limited`, "This agent sent 120
-  requests to DevSync's MCP endpoint in the last minute, the most it may. Try again in 1 second.")
-  with `Retry-After`, and the host isn't asked to verify it. 120 is twice what an agent calling a
-  tool every second needs;
-- any other request (no token, or one not seen valid yet) waits for its client's 20 a minute, one
-  every 3 seconds, which each refusal (401 or 403) takes from: past them it is refused 429 ("Too
-  many requests without a valid token came from this address in the last minute. Check the agent's
-  token, then try again in 3 seconds."), before verifying anything. A token seen valid before
-  isn't held back by its client's refusals, so an agent goes on while another behind the same
-  address sends bad tokens;
-- the client is the last address of `X-Forwarded-For`, the one the host's proxy adds, else
-  `X-Real-IP`, else one key shared by every such request;
-- each limiter keeps at most 10,000 keys, dropping those refilled to full first, then the oldest.
-
-The host's own limits at its edge come first; these keep a flood from reaching the host's token
-verification through DevSync's endpoint.
+A request without a valid token (none, or one not seen valid yet) isn't limited by DevSync: it is
+verified as before, an indexed lookup, so the first request of a new agent, or of one whose bucket
+a restart emptied, never waits behind someone else's bad tokens. Limiting those requests by the
+visitor's address is the host's: only it knows its proxy chain (on the dashboard, the last
+`X-Forwarded-For` entry is its own proxy's), so DevSync can't tell one visitor from another, and
+the dashboard records it as its own task.
 
 An agent revoked on the dashboard is refused at once. DevSync's row of it isn't marked revoked,
 though (only a revoke DevSync made before the move is), so until a later release reads the host's

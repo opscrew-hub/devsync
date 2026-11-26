@@ -6,8 +6,8 @@
  * (which also checks DevSync is still on for the agent's project), then answered by a fresh MCP
  * server whose tools are DevSync's actions (actions.ts), called as that agent, so this endpoint
  * and the host's `/mcp` never differ. Its tools keep their names, without the host's `devsync_`.
- * Before a token is verified, a rate limit (rate-limit.ts): 120 requests a minute per token seen
- * valid before, and 20 a minute per client for every other request, a missing or bad token's.
+ * Before a token seen valid is verified again, a rate limit (rate-limit.ts): 120 requests a minute
+ * per token. A token not seen valid yet is verified as before.
  */
 
 import {
@@ -27,7 +27,7 @@ import {
   ERROR_STATUS,
 } from "../host";
 import { describeError, errorHandler, INTERNAL_MESSAGE, noStore, refusalBody } from "./errors";
-import { clientOf, MCP_RATE, TokenBuckets } from "./rate-limit";
+import { TOKEN_REQUESTS_PER_MINUTE, TokenBuckets } from "./rate-limit";
 
 const FOREIGN_ORIGIN =
   "This request's origin isn't DevSync's, so it was refused. Connect your agent to the MCP endpoint directly, not from a web page.";
@@ -42,11 +42,9 @@ function refuse(c: Context, error: DevSyncError, extra: Record<string, string> =
 /** "1 second", "3 seconds". */
 const seconds = (n: number) => `${n} ${n === 1 ? "second" : "seconds"}`;
 
-/** A request past its limit: answered 429 with `Retry-After`, its token unverified. */
-function rateLimited(c: Context, byToken: boolean, wait: number): Response {
-  const message = byToken
-    ? `This agent sent ${MCP_RATE.perToken} requests to DevSync's MCP endpoint in the last minute, the most it may. Try again in ${seconds(wait)}.`
-    : `Too many requests without a valid token came from this address in the last minute. Check the agent's token, then try again in ${seconds(wait)}.`;
+/** A token's request past its limit: answered 429 with `Retry-After`, the token unverified. */
+function rateLimited(c: Context, wait: number): Response {
+  const message = `This agent sent ${TOKEN_REQUESTS_PER_MINUTE} requests to DevSync's MCP endpoint in the last minute, the most it may. Try again in ${seconds(wait)}.`;
   return refuse(c, new DevSyncError("rate-limited", message), { "Retry-After": String(wait) });
 }
 
@@ -99,10 +97,8 @@ export function publicRoutes(host: DevSyncHost): Hono {
   const app = new Hono();
   app.onError(errorHandler(host));
   app.use(noStore);
-  const now = () => host.clock.now().getTime();
-  // By the SHA-256 of a token seen valid before, and by client for every other request.
-  const tokens = new TokenBuckets(MCP_RATE.perToken, now);
-  const clients = new TokenBuckets(MCP_RATE.perClient, now);
+  // By the SHA-256 of each token seen valid, never the token itself.
+  const tokens = new TokenBuckets(TOKEN_REQUESTS_PER_MINUTE, () => host.clock.now().getTime());
 
   app.post("/mcp", async (c) => {
     const origin = c.req.header("origin");
@@ -110,20 +106,20 @@ export function publicRoutes(host: DevSyncHost): Hono {
       return refuse(c, new DevSyncError("forbidden", FOREIGN_ORIGIN));
     }
     const token = /^Bearer (\S+)$/i.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
-    // A token seen valid before takes from its own bucket; any other request waits for its
-    // client's, which each refusal below takes from.
+    // A token seen valid takes from its own bucket before it is verified again; any other is
+    // verified as before, its first valid request then starting its bucket.
     const key = token === "" ? null : hashToken(token);
     const known = key !== null && tokens.has(key);
-    const client = clientOf((name) => c.req.header(name));
-    const wait = known ? tokens.take(key) : clients.wait(client);
-    if (wait > 0) return rateLimited(c, known, wait);
+    if (known) {
+      const wait = tokens.take(key);
+      if (wait > 0) return rateLimited(c, wait);
+    }
     let actor: AgentActor;
     try {
       actor = await authenticateAgent(host, token);
     } catch (error) {
-      if (!(error instanceof DevSyncError)) throw error;
-      clients.take(client);
-      return refuse(c, error);
+      if (error instanceof DevSyncError) return refuse(c, error);
+      throw error;
     }
     if (key !== null && !known) tokens.take(key);
 
