@@ -311,6 +311,7 @@ briefing as an agent, a member and a managed run with a long context.
 DevSync's tables hold the host's ids as plain uuids, with no foreign key into the host's tables:
 DevSync's repository has no host tables, and the host's removal hooks delete DevSync's rows. Every
 table has `workspace_id` and `project_id` (except where noted), and every query filters by them.
+Each column below listing its values in parentheses has a `CHECK` of that list (a null passes).
 
 | Table | Columns (beyond `id` uuid pk, `workspace_id`, `project_id`, `created_at`) | Keys and indexes |
 |---|---|---|
@@ -319,12 +320,12 @@ table has `workspace_id` and `project_id` (except where noted), and every query 
 | `question` | `task_id` → task cascade, `asker_user_id`?, `asker_agent_id`?, `request_id` uuid? (an agent's), `text`, `wait` bool, `answer`?, `answerer_user_id`?, `answerer_agent_id`?, `answered_at`? | (`task_id`, `created_at`); unique (`project_id`, `asker_agent_id`, `request_id`) |
 | `task_revision` | `task_id` → task cascade, `number`, `title`, `description`, `acceptance_criteria`, `author_user_id`?, `author_agent_id`? | pk (`task_id`, `number`) |
 | `task_comment` | `task_id` → task cascade, `author_user_id`, `body` | (`task_id`, `created_at`) |
-| `agent` | `name`, `kind` (CLAUDE, CODEX), `token_hash` unique, `expires_at`, `revoked_at`?, `last_seen_at`?, `registered_by_user_id`?, `task_writes` jsonb (when, in milliseconds, it created or edited a task within the last minute, for its rate) | (`project_id`) |
+| `agent` | `name`, `kind` (CLAUDE, CODEX, OTHER), `token_hash` unique, `expires_at`, `revoked_at`?, `last_seen_at`?, `registered_by_user_id`?, `task_writes` jsonb (when, in milliseconds, it created or edited a task within the last minute, for its rate) | (`project_id`) |
 | `signal` | `recipient_agent_id` → agent cascade, `sender_user_id`?, `sender_agent_id`?, `github_delivery_id`?, `reply_to_id`? unique, `hop_count`, `kind`, `payload` jsonb, `idempotency_key` uuid, `acknowledged_at`? | (`project_id`, `recipient_agent_id`, `acknowledged_at`, `created_at`); unique (`recipient_agent_id`, `github_delivery_id`); unique (`project_id`, `sender_user_id`, `idempotency_key`); unique (`project_id`, `sender_agent_id`, `idempotency_key`) |
 | `outbox_event` | `actor_user_id`?, `actor_agent_id`?, `task_id`?, `request_id`?, `review_request_id`? → outbox_event unique, `kind`, `payload` jsonb, `usage` jsonb? (the usage an agent reported with a progress report or a review request, never delivered to peers), `available_at`, `processed_at`?, `attempts`. It is also the task's timeline: agents' progress, blocker, review request and review decision reports are outbox events of the task | (`processed_at`, `available_at`); (`project_id`, `task_id`, `created_at`); unique (`project_id`, `actor_agent_id`, `request_id`) |
 | `pull_request` | `number`, `title`, `state` (open, closed, merged), `url`, `head_ref`, `head_sha`, `source_updated_at` | unique (`project_id`, `number`) |
 | `github_delivery` | `delivery_id` text, `received_at`: a delivery already applied to the project | pk (`delivery_id`, `project_id`) |
-| `run` | `task_id` → task cascade, `revision`, `requested_by_user_id`, `decided_by_user_id`?, `status` (REQUESTED, QUEUED, RUNNING, SUCCEEDED, FAILED, REJECTED, CANCELLED), `decided_at`?, `started_at`?, `finished_at`?, `failure`?, `token_usage` jsonb? (the result's `usage` and `models`), `changed_files` jsonb?, `draft_pull_request_url`?, `github_run_id` bigint? | (`project_id`, `created_at`); (`task_id`, `created_at`); unique (`task_id`) where `status` in (REQUESTED, QUEUED, RUNNING); unique (`project_id`, `github_run_id`) |
+| `run` | `task_id` → task cascade, `revision`, `requested_by_user_id`, `decided_by_user_id`?, `status` (REQUESTED, QUEUED, RUNNING, SUCCEEDED, FAILED, REJECTED, CANCELLED), `decided_at`?, `started_at`?, `finished_at`?, `failure`? (a `RunFailure`), `provider`? (anthropic, openrouter, openai, opscrew), `token_usage` jsonb? (the result's `usage` and `models`), `changed_files` jsonb?, `draft_pull_request_url`?, `github_run_id` bigint? | (`project_id`, `created_at`); (`task_id`, `created_at`); unique (`task_id`) where `status` in (REQUESTED, QUEUED, RUNNING); unique (`project_id`, `github_run_id`) |
 
 The standalone version's tables `User`, `Project`, `ProjectMember`, `AuditLog`, `ProjectRealtime`, `GithubEvent`
 (raw payloads) and `GithubRepository` have no successor: the host holds users, projects, roles and

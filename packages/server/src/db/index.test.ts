@@ -1,21 +1,33 @@
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PGlite } from "@electric-sql/pglite";
 import { eq, sql } from "drizzle-orm";
 import { pgSchema, text } from "drizzle-orm/pg-core";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate } from "drizzle-orm/pglite/migrator";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { artifactFiles, createTestDb, fakeHost, fakeToken, type TestDb } from "../testing";
 import {
   agent,
+  agentKinds,
   devsyncSchema,
   githubDelivery,
   migrations,
   outboxEvent,
   pullRequest,
+  pullRequestStates,
   question,
   run,
+  runFailures,
+  runProviders,
+  runStatuses,
   signal,
   task,
   taskComment,
   taskDependency,
   taskRevision,
+  taskStatuses,
 } from ".";
 
 const workspaceId = "00000000-0000-4000-8000-000000000001";
@@ -48,7 +60,7 @@ describe("the devsync schema's migration", () => {
 
   it("applies twice, each migration journaled once in devsync.__drizzle_migrations", async () => {
     await testDb.migrate();
-    expect(await testDb.db.select().from(journal)).toHaveLength(9);
+    expect(await testDb.db.select().from(journal)).toHaveLength(10);
     const tables = await testDb.db
       .select({ name: catalog.tableName })
       .from(catalog)
@@ -379,5 +391,113 @@ describe("fakeToken", () => {
     const one = fakeToken();
     expect(one).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(fakeToken()).not.toBe(one);
+  });
+});
+
+describe("the database's checks of the closed lists", () => {
+  /** A database with DevSync's migrations up to (not with) `last`, from a copy of the folder. */
+  async function migratedUntil(last: string) {
+    const client = new PGlite();
+    const db = drizzle({ client });
+    const config = { migrationsSchema: "devsync", migrationsTable: "__drizzle_migrations" };
+    const folder = mkdtempSync(join(tmpdir(), "devsync-migrations-"));
+    try {
+      const journalFile = join(migrations.folder, "meta", "_journal.json");
+      const journal = JSON.parse(readFileSync(journalFile, "utf8")) as {
+        entries: { tag: string }[];
+      };
+      const end = journal.entries.findIndex((entry) => entry.tag === last);
+      const kept = journal.entries.slice(0, end);
+      mkdirSync(join(folder, "meta"));
+      writeFileSync(
+        join(folder, "meta", "_journal.json"),
+        JSON.stringify({ ...journal, entries: kept }),
+      );
+      for (const { tag } of kept) {
+        copyFileSync(join(migrations.folder, `${tag}.sql`), join(folder, `${tag}.sql`));
+      }
+      await migrate(db, { migrationsFolder: folder, ...config });
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+    return {
+      db,
+      close: () => client.close(),
+      migrateAll: () => migrate(db, { migrationsFolder: migrations.folder, ...config }),
+    };
+  }
+
+  it("are added over rows already there, each of the lists' values, then refuse any other", async () => {
+    const before = await migratedUntil("0009_enum_checks");
+    const { db } = before;
+    try {
+      const scope = { workspaceId, projectId };
+      const tasks = await db
+        .insert(task)
+        .values(
+          taskStatuses.map((status) => ({
+            ...scope,
+            title: status,
+            description: "",
+            acceptanceCriteria: "",
+            status,
+          })),
+        )
+        .returning({ id: task.id });
+      await db.insert(agent).values(agentKinds.map((kind) => ({ ...scope, name: kind, kind })));
+      await db.insert(pullRequest).values(
+        pullRequestStates.map((state, n) => ({
+          ...scope,
+          number: n + 1,
+          title: state,
+          state,
+          url: `https://github.com/acme/app/pull/${n + 1}`,
+          headRef: state,
+          headSha: "a".repeat(40),
+          sourceUpdatedAt: at,
+        })),
+      );
+      const runOf = (taskId: string, fields: Partial<typeof run.$inferInsert>) => ({
+        ...scope,
+        taskId,
+        revision: 1,
+        requestedByUserId: userId,
+        ...fields,
+      });
+      // A task holds one run that hasn't ended: each status on its own task.
+      await db
+        .insert(run)
+        .values(runStatuses.map((status, n) => runOf(tasks[n]?.id ?? "", { status })));
+      await db
+        .insert(run)
+        .values([
+          ...runFailures.map((failure) => runOf(tasks[0]?.id ?? "", { status: "FAILED", failure })),
+          ...runProviders.map((provider) =>
+            runOf(tasks[0]?.id ?? "", { status: "SUCCEEDED", provider }),
+          ),
+        ]);
+
+      await before.migrateAll();
+
+      const refused = [
+        db.insert(task).values({
+          ...scope,
+          title: "T",
+          description: "",
+          acceptanceCriteria: "",
+          status: "LATER" as never,
+        }),
+        db.update(agent).set({ kind: "ROBOT" as never }),
+        db.update(pullRequest).set({ state: "draft" as never }),
+        db.update(run).set({ status: "PAUSED" as never }),
+        db.update(run).set({ failure: "oops" }),
+        db.update(run).set({ provider: "acme" }),
+      ];
+      for (const write of refused) await expect(write).rejects.toThrow();
+      // A null failure and provider still pass, as every run's start.
+      await db.update(run).set({ failure: null, provider: null });
+    } finally {
+      await before.close();
+    }
   });
 });

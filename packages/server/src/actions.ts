@@ -7,7 +7,8 @@
  *
  * Callers: a member acts with their role; an agent acts as itself (`callerActor`); a managed run
  * reads only its own task (`get_task`, `get_briefing`), found by the run's id, so its agent can
- * copy no other task into its pull request. An action answers DevSync's refusals as its
+ * copy no other task into its pull request. A caller of any other kind, one a later contract might
+ * add, is refused every action until DevSync names it. An action answers DevSync's refusals as its
  * result, `{ refused: { code, message } }`, and throws only for a fault, which the host reports as
  * "failed".
  */
@@ -35,11 +36,13 @@ import {
 } from "./domain/tasks";
 import {
   type AgentActor,
+  type Caller,
   type DevSyncAction,
   type DevSyncActionContext,
   DevSyncError,
   type ErrorCode,
   type ProjectContext,
+  type ProjectRef,
 } from "./host";
 
 /**
@@ -98,20 +101,41 @@ function runReadsOnly(): DevSyncError {
   return new DevSyncError("forbidden", RUN_READS_ONLY);
 }
 
-/** The member calling, with their role, as a project route's context. */
-function memberOf(ctx: DevSyncActionContext): ProjectContext | null {
-  const { caller, project } = ctx;
-  if (caller.kind !== "member") return null;
+/** What a caller of a kind no action names is told, whatever the action. */
+const UNKNOWN_CALLER =
+  "DevSync's actions take a member, a coding agent or a managed run, and this caller is none of them.";
+
+/** A caller of a kind the contract may add later: refused until DevSync names it. */
+function unknownCaller(): DevSyncError {
+  return new DevSyncError("forbidden", UNKNOWN_CALLER);
+}
+
+/** A member caller, with their role, as a project route's context. */
+function asMember(
+  project: ProjectRef,
+  caller: Extract<Caller, { kind: "member" }>,
+): ProjectContext {
   return { project, member: { userId: caller.userId, name: caller.name, role: caller.role } };
+}
+
+/** The member calling, or null for another caller. */
+function memberOf(ctx: DevSyncActionContext): ProjectContext | null {
+  return ctx.caller.kind === "member" ? asMember(ctx.project, ctx.caller) : null;
 }
 
 /** A reader of the whole project: a member or an agent; a managed run reads only its own task. */
 async function reader(ctx: DevSyncActionContext): Promise<TaskReader> {
   const { caller, project, host } = ctx;
-  if (caller.kind === "agent") return callerActor(host, project, caller);
-  const member = memberOf(ctx);
-  if (!member) throw new DevSyncError("forbidden", RUN_OWN_TASK);
-  return member;
+  switch (caller.kind) {
+    case "agent":
+      return callerActor(host, project, caller);
+    case "member":
+      return asMember(project, caller);
+    case "run":
+      throw new DevSyncError("forbidden", RUN_OWN_TASK);
+    default:
+      throw unknownCaller();
+  }
 }
 
 /**
@@ -129,10 +153,16 @@ async function taskReader(ctx: DevSyncActionContext, taskId: string): Promise<Ta
 /** Who may change a task through an action: a member (by their role) or an agent; never a run. */
 async function writer(ctx: DevSyncActionContext): Promise<TaskActor> {
   const { caller, project, host } = ctx;
-  if (caller.kind === "agent") return callerActor(host, project, caller);
-  const member = memberOf(ctx);
-  if (!member) throw runReadsOnly();
-  return member;
+  switch (caller.kind) {
+    case "agent":
+      return callerActor(host, project, caller);
+    case "member":
+      return asMember(project, caller);
+    case "run":
+      throw runReadsOnly();
+    default:
+      throw unknownCaller();
+  }
 }
 
 /**
@@ -145,9 +175,16 @@ async function agentOnly(
   instead = "Register one from the project's Agents button, then ask it to.",
 ): Promise<AgentActor> {
   const { caller, project, host } = ctx;
-  if (caller.kind === "agent") return callerActor(host, project, caller);
-  if (caller.kind === "run") throw runReadsOnly();
-  throw new DevSyncError("forbidden", `Only a coding agent ${what}. ${instead}`);
+  switch (caller.kind) {
+    case "agent":
+      return callerActor(host, project, caller);
+    case "member":
+      throw new DevSyncError("forbidden", `Only a coding agent ${what}. ${instead}`);
+    case "run":
+      throw runReadsOnly();
+    default:
+      throw unknownCaller();
+  }
 }
 
 /**
@@ -328,11 +365,17 @@ export const actions: readonly DevSyncAction<any>[] = [
     async (ctx, { taskId }) => {
       const member = memberOf(ctx);
       if (member) return checkRunRequest(ctx.host, member, taskId);
-      if (ctx.caller.kind === "run") throw runReadsOnly();
-      throw new DevSyncError(
-        "forbidden",
-        "Only a member can ask for a managed run. Ask one to do it from the task's runs section in DevSync's tab.",
-      );
+      switch (ctx.caller.kind) {
+        case "agent":
+          throw new DevSyncError(
+            "forbidden",
+            "Only a member can ask for a managed run. Ask one to do it from the task's runs section in DevSync's tab.",
+          );
+        case "run":
+          throw runReadsOnly();
+        default:
+          throw unknownCaller();
+      }
     },
     { label: "Ask for a managed run" },
   ),

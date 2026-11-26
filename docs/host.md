@@ -58,7 +58,7 @@ DevSync uses (`host.ts` has the exact types). In short:
 
 | Member | What the host gives |
 |---|---|
-| `db` | its PostgreSQL database (or the current transaction). DevSync's tables are in the `devsync` schema of the same database, so DevSync's transactions are the host's, and the host's audit entry commits with the change. They run at the database's default isolation, READ COMMITTED, which the dependency check relies on: after waiting for the project's dependency lock, it reads the dependencies committed meanwhile. DevSync uses Drizzle's query builder only (never `db.query`), and `execute` for one transaction-level advisory lock (the dependency check, see `TaskFields`). |
+| `db` | its PostgreSQL database (or the current transaction). DevSync's tables are in the `devsync` schema of the same database, so DevSync's transactions are the host's, and the host's audit entry commits with the change. They run at the database's default isolation, READ COMMITTED, which the dependency check relies on: after waiting for the project's dependency lock, it reads the dependencies committed meanwhile. DevSync uses Drizzle's query builder only (never `db.query`), and `execute` for one transaction-level advisory lock (the dependency check, see `TaskFields`), keyed by the workspace and the project. |
 | `clock` | `now()`: every timestamp DevSync writes comes from it. |
 | `log` | `error(message)`: never given a token. |
 | `audit(tx, actor, entry)` | appends to the host's audit log in `tx`. Actions start with `devsync.`; details hold names, ids and figures only (see Audit). |
@@ -361,7 +361,10 @@ the same list until a later release (see DevSync's own endpoint below).
   reads can copy no other task into its pull request. Every other action refuses it ("A managed run
   can only read its own task; what it changes reaches the task through its draft pull request."),
   as an agents-only action refuses a member (`ask_question` and `answer_question` say a member asks
-  and answers on the task's panel) and `request_run` refuses an agent, each saying who can.
+  and answers on the task's panel) and `request_run` refuses an agent, each saying who can. Each
+  action names the three kinds it takes; a caller of any other kind, one a later contract might
+  add, is refused every action, a read too, 403 ("DevSync's actions take a member, a coding agent or
+  a managed run, and this caller is none of them."), until DevSync decides what it may do.
 - **Refusals.** An action answers DevSync's refusals as its result,
   `{ refused: { code, message } }`, with the codes and plain-English messages of the HTTP API, and
   agents' writes to a read-only project are refused. It throws only for a fault, which the host
@@ -436,7 +439,12 @@ registers none. DevSync's endpoint still accepts their tokens: each request asks
 `host.agents.verify(token)` first, never cached, so a token revoked on the dashboard is refused from
 the next request. An agent the host verifies for the first time gets a DevSync row with no token, so
 its inbox (which starts then: a member can message it from its first connection), claims and
-timeline point at its id; the row takes the host's name on each request.
+timeline point at its id; the row takes the host's name on each request. The host's verify is the
+authority: a request it verifies also clears a revoke DevSync recorded on its row before the move.
+DevSync has no revoke of its own any more (the host's Agents dialog revokes), so its row's
+`revoked_at` only ever holds such an old one, and a revoke on the dashboard refuses the token at
+the next request whatever the row says. Once the fallback below goes, the revoke on DevSync's
+rows goes with it.
 
 The agents DevSync registered itself, before the host had any, move to the host with their tokens:
 the hourly `devsync.agents-move` (see Queues) gives each row that still has a token to
@@ -498,7 +506,8 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
   pull-request-opened and pull-request-merged signals, once per delivery. A `workflow_run` fact,
   which the host sends only for a completed run DevSync started, ends that run (see Managed runs);
   a repeated delivery changes nothing, and a fact for a run the project doesn't have yet fails the
-  job, so the host retries it.
+  job, so the host retries it. A job whose `workspaceId` isn't its project's is the host's fault:
+  it applies nothing and is logged by its ids, not retried.
 - `devsync.runs`: `{ projectId, runId }` dispatches an approved run, at most once, enqueued once
   its approval commits. Every ten minutes (`*/10 * * * *`), with an empty payload, it sweeps every
   project's runs: it enqueues the dispatch of an approved run not claimed ten minutes after its
@@ -571,7 +580,11 @@ revision and records no event.
 ## Migrations and removal
 
 - `migrations` (`{ folder, schema: "devsync" }`): the host applies them after its own, with the
-  journal in `devsync.__drizzle_migrations`.
+  journal in `devsync.__drizzle_migrations`. The text columns holding one of a closed list have a
+  `CHECK` of it, from the schemas' own lists (`0009_enum_checks`): a task's `status`, an agent's
+  `kind`, a pull request's `state`, and a run's `status`, `failure` and `provider` (null passes),
+  so the database refuses a value the pages couldn't show, whoever writes it. A test applies the
+  migrations before it over a row of each value, then it.
 - `removeProject(db, projectId)`, `removeWorkspace(db, workspaceId)`: delete every DevSync row of
   it, its runs too, in the host's removal transaction. `removeMember(db, workspaceId, userId)`:
   unassigns them; the runs they asked for or decided are kept, and name them "Former member".
@@ -582,7 +595,10 @@ revision and records no event.
 the host's read-only `tx` only: its tasks with their revisions, comments, questions (with their
 answers), paths, labels, branch and the tasks they wait for (`dependsOn`, in their order), its
 runs, its pull requests and its timeline (the outbox's events, each with the `usage` an agent
-reported, or null). The agents are the host's to export; the timeline names them by id.
+reported, or null). The agents are the host's to export; the timeline names them by id. The host
+gives the project's id only, so the export reads every row by it and by the one workspace the
+project's rows name; rows naming two workspaces are a fault, and the export fails with none of
+them.
 
 ## Pages
 

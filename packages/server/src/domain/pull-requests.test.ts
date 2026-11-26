@@ -284,6 +284,28 @@ describe("applyGithubFact", () => {
     expect(await inboxOf(codex)).toEqual([]);
   });
 
+  it("applies nothing of a job naming another workspace than its project's, and logs it", async () => {
+    const { host, project, codex } = await setup();
+    const elsewhere = crypto.randomUUID();
+    await applyGithubFact(host, {
+      workspaceId: elsewhere,
+      projectId: project.projectId,
+      fact: pull(),
+    });
+    await applyGithubFact(host, {
+      workspaceId: elsewhere,
+      projectId: project.projectId,
+      fact: { kind: "workflow_run", deliveryId: "d1", githubRunId: 1, conclusion: "success" },
+    });
+    expect(await pullRequestsOf(project.projectId)).toEqual([]);
+    expect(await deliveriesOf(project.projectId)).toEqual([]);
+    expect(await inboxOf(codex)).toEqual([]);
+    expect(host.errors).toEqual([
+      `DevSync's devsync.github job names workspace ${elsewhere}, not project ${project.projectId}'s, so its fact was ignored.`,
+      `DevSync's devsync.github job names workspace ${elsewhere}, not project ${project.projectId}'s, so its fact was ignored.`,
+    ]);
+  });
+
   it("applies the same delivery to each project it is sent for", async () => {
     const { project, other, codex, outsider, apply } = await setup();
     const fact = push();
@@ -311,6 +333,18 @@ describe("listPullRequests", () => {
       );
     }
     await apply(pull({ number: 99, updatedAt: "2026-02-01T00:00:00Z" }), other);
+    // A row of the project's id under another workspace is none of this workspace's.
+    await testDb.db.insert(pullRequest).values({
+      workspaceId: crypto.randomUUID(),
+      projectId: project.projectId,
+      number: 98,
+      title: "Not this workspace's",
+      state: "open",
+      url: "https://github.com/acme/app/pull/98",
+      headRef: "x",
+      headSha: "d".repeat(40),
+      sourceUpdatedAt: new Date("2026-03-01T00:00:00Z"),
+    });
 
     const { pullRequests } = await listPullRequests(host, { project, member: owner });
     expect(pullRequests).toHaveLength(50);

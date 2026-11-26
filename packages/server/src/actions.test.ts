@@ -627,6 +627,26 @@ describe("a managed run calling an action", () => {
   });
 });
 
+describe("a caller of a kind no action names", () => {
+  it("is refused every action, a read too, changing nothing", async () => {
+    const s = await setup();
+    const task = await s.readyTask();
+    // A kind a later contract might add: DevSync decides about it before it reads or writes.
+    const system = { kind: "system", module: "devsync" } as unknown as Caller;
+    for (const name of Object.keys(KINDS) as (keyof typeof KINDS)[]) {
+      expect(await s.refused(name, system, sampleInput(name, task.id)), name).toEqual({
+        code: "forbidden",
+        message:
+          "DevSync's actions take a member, a coding agent or a managed run, and this caller is none of them.",
+      });
+    }
+    expect(await getTask(s.host, s.memberCtx(), task.id)).toMatchObject({
+      status: "READY",
+      version: task.version,
+    });
+  });
+});
+
 describe("a fault in an action", () => {
   it("throws, so the host reports it as failed, and a retry answers what was saved", async () => {
     const s = await setup();

@@ -773,7 +773,7 @@ async function projectTaskTitles(
  * two edits made at once can't close a circle that neither sees alone.
  */
 async function lockDependencies(tx: DevSyncDb, project: ProjectRef): Promise<void> {
-  const key = `devsync.task_dependency:${project.projectId}`;
+  const key = `devsync.task_dependency:${project.workspaceId}:${project.projectId}`;
   await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
 }
 

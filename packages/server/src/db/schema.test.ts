@@ -1,6 +1,20 @@
-import { AgentKind, PullRequest, RunStatus, TaskStatus } from "@devsync/schemas";
+import {
+  AgentKind,
+  PullRequest,
+  RunFailure,
+  RunProvider,
+  RunStatus,
+  TaskStatus,
+} from "@devsync/schemas";
 import { describe, expect, it } from "vitest";
-import { agentKinds, pullRequestStates, runStatuses, taskStatuses } from "./schema";
+import {
+  agentKinds,
+  pullRequestStates,
+  runFailures,
+  runProviders,
+  runStatuses,
+  taskStatuses,
+} from "./schema";
 
 /**
  * The database's lists repeat the schemas' enums, since drizzle-kit reads `schema.ts` and it imports
@@ -12,5 +26,7 @@ describe("the database's lists", () => {
     expect([...runStatuses]).toEqual(RunStatus.options);
     expect([...agentKinds]).toEqual(AgentKind.options);
     expect([...pullRequestStates]).toEqual(PullRequest.shape.state.options);
+    expect([...runFailures]).toEqual(RunFailure.options);
+    expect([...runProviders]).toEqual(RunProvider.options);
   });
 });
