@@ -205,17 +205,95 @@ and try again." when another came first.
 
 ## MCP for coding agents
 
-`POST /m/devsync/mcp`: a stateless Streamable HTTP MCP endpoint with JSON responses.
+DevSync's MCP tools are its actions (`serverModule.actions`, `packages/server/src/actions.ts`),
+each declared once. The host serves them at its own MCP address, `https://app.opscrew.dev/mcp`, with
+every other module's, as `devsync_<name>`, so one token reaches every module. The host adds the
+project: a member gives `projectId`, while an agent's or a run's token has its own. It lists two
+tools by default, `search` and `execute`, which reach every action;
+`https://app.opscrew.dev/mcp?tools=all` lists each action as a tool. DevSync's own endpoint serves
+the same list until a later release (see DevSync's own endpoint below).
+
+| Action | Kind | Who | Input | What it does |
+|---|---|---|---|---|
+| `get_project_state` | read | everyone | | the project, its agents and its 100 most recently updated tasks |
+| `list_tasks` | read | everyone | `status`?, `assignee`? (`me`, `none` or a user id) | `{ tasks }`, as `GET /tasks`; `me` is a member's own |
+| `get_task` | read | everyone | `taskId` | `{ task, latestRun }`: the `TaskDetail`, with its pull request, and its latest `Run` (or null) |
+| `get_pending_signals` | read | agents | | the agent's oldest unacknowledged signals |
+| `acknowledge_signal` | write | agents | `id` | acknowledges one |
+| `publish_signal` | write | agents | `recipientId`, `kind`, `payload.message`, `idempotencyKey`, `replyToId`? | to a peer agent: one follow-up per signal, four replies per chain, 20 new signals a minute |
+| `claim_task` | write | agents | `taskId`, `claimId` | claims a Ready task (or an expired claim) for 15 minutes |
+| `renew_task_claim` | write | agents | `taskId`, `claimId` | renews it; answers the current requirements revision |
+| `release_task` | write | agents | `taskId`, `claimId` | releases it and returns the task to Ready |
+| `create_task` | write | agents, and members whose role may (`task.write`) | `requestId`, `title`, `description`, `acceptanceCriteria` | creates a Backlog task, idempotent by `requestId` for its creator (an agent or a member) |
+| `update_task` | write | agents, and members whose role may (`task.write`) | `taskId`, `version`, the fields, `status` (`BACKLOG` or `READY`) | edits a task; an agent edits only the tasks it created |
+| `report_progress` | write | agents | `taskId`, `claimId`, `revision`, `requestId`, `message` | a progress report on the timeline |
+| `report_blocker` | write | agents | the same | ends the claim, moves the task to Blocked |
+| `request_review` | write | agents | the same | ends the claim, moves the task to Review |
+| `submit_review` | write | agents | `taskId`, `reviewRequestId`, `revision`, `requestId`, `decision` (`APPROVED`, `CHANGES_REQUESTED`), `message` | a peer's decision; changes requested return the task to Ready |
+| `request_run` | start | members whose role may (`run.request`) | `taskId` | checks the task may get a run, as asking for one does (the setup too), and answers what it would ask for (`taskId`, `title`, `revision`) with `confirm: { label: "Ask for a managed run" }`; it creates nothing |
+
+- **Kinds.** The host runs a `read` and answers its result. It runs a `write` directly for agents
+  and members over `/mcp` and for other modules; in its chat it proposes one with a confirm button
+  and runs it when the member presses it. A `start` only proposes: the member asks for the run from
+  the task's runs section, and the run still waits for an approval.
+- **Callers.** No action names a host permission: DevSync's checks stay `can()`'s, in the domain. A
+  member acts with their role. An agent acts as itself, with the host's name: DevSync's row of it is
+  made at its first call, its kind read from `host.agents.list`, so its inbox, claims and timeline
+  point at it, as on DevSync's own endpoint. A managed run (`kind: "run"`) reads the project's state
+  and its tasks only. Every other action refuses it, as an agents-only action refuses a member and
+  `request_run` refuses an agent, each saying who can.
+- **Refusals.** An action answers DevSync's refusals as its result,
+  `{ refused: { code, message } }`, with the codes and plain-English messages of the HTTP API, and
+  agents' writes to a read-only project are refused. It throws only for a fault, which the host
+  reports as "failed".
+- **Guidance.** `/mcp` lists only actions, so the rules an agent needs are in the descriptions of
+  the actions they concern (`ACTION_RULES`): read the project's state and the pending signals at the
+  start of an assignment; claim a task before working on it; renew the claim within 15 minutes;
+  report a blocker instead of waiting; request a review when the work is done; and, when memory
+  tools are listed, recall what is known about the task before working on it and remember what was
+  learned before requesting a review. Each description is at most 1,000 characters.
+- **Size.** A test (`actions.test.ts`) fails when the actions' list (names, descriptions and input
+  JSON schemas, as JSON) grows past its budget, 10,000 characters (P3 reached 9,384). An id's
+  schema is `{ type: "string", format: "uuid" }` only, without the pattern zod would repeat beside
+  it.
+
+The host's Agents dialog (the **Agents** button at the top of the project's page) registers an
+agent, shows its token once and gives these snippets. For Claude Code:
+
+```json
+{
+  "mcpServers": {
+    "opscrew": {
+      "type": "http",
+      "url": "https://app.opscrew.dev/mcp",
+      "headers": { "Authorization": "Bearer ${OPSCREW_AGENT_TOKEN}" }
+    }
+  }
+}
+```
+
+For Codex, in `config.toml`:
+
+```toml
+[mcp_servers.opscrew]
+url = "https://app.opscrew.dev/mcp"
+bearer_token_env_var = "OPSCREW_AGENT_TOKEN"
+```
+
+### DevSync's own endpoint
+
+`POST /m/devsync/mcp`: a stateless Streamable HTTP MCP endpoint with JSON responses, kept until a
+later release while agents move to the host's `/mcp`. Its tools are the same actions, called as the
+agent, under their own names (no `devsync_` prefix). A refusal is the tool's error, with its
+message. Its MCP `instructions` give every rule of Guidance above.
 
 The host registers a project's agents once for every module. An Owner or Admin registers one from
-the host's Agents dialog (the **Agents** button at the top of the project's page), which shows its
-token once with the host's `/mcp` address and the snippets below pointed at it, and rotates or
-revokes it there. DevSync's own tab lists the agents and registers none. DevSync's endpoint still
-accepts their tokens: each request asks `host.agents.verify(token)` first, never cached, so a token
-revoked on the dashboard is refused from the next request. An agent the host verifies for the first
-time gets a DevSync row with no token, so its inbox (which starts then: a member can message it from
-its first connection), claims and timeline point at its id; the row takes the host's name on each
-request.
+the host's Agents dialog, and rotates or revokes it there; DevSync's own tab lists the agents and
+registers none. DevSync's endpoint still accepts their tokens: each request asks
+`host.agents.verify(token)` first, never cached, so a token revoked on the dashboard is refused from
+the next request. An agent the host verifies for the first time gets a DevSync row with no token, so
+its inbox (which starts then: a member can message it from its first connection), claims and
+timeline point at its id; the row takes the host's name on each request.
 
 The agents DevSync registered itself, before the host had any, move to the host with their tokens:
 the hourly `devsync.agents-move` (see Queues) gives each row that still has a token to
@@ -239,44 +317,6 @@ revokes, a revoke on the dashboard after the move leaves the agent:
 - messaged by members and peers, asked for reviews, and sent GitHub signals, all into an inbox it
   can no longer read;
 - holding any task it had claimed until the claim expires, 15 minutes at most.
-
-| Tool | Input | What it does |
-|---|---|---|
-| `get_project_state` | | the project and its 100 most recently updated tasks |
-| `get_pending_signals` | | the agent's oldest unacknowledged signals |
-| `acknowledge_signal` | `id` | acknowledges one |
-| `publish_signal` | `recipientId`, `kind`, `payload.message`, `idempotencyKey`, `replyToId`? | to a peer agent: one follow-up per signal, four replies per chain, 20 new signals a minute |
-| `claim_task` | `taskId`, `claimId` | claims a Ready task (or an expired claim) for 15 minutes |
-| `renew_task_claim` | `taskId`, `claimId` | renews it; answers the current requirements revision |
-| `release_task` | `taskId`, `claimId` | releases it and returns the task to Ready |
-| `create_task` | `requestId`, `title`, `description`, `acceptanceCriteria` | creates a task, idempotent by `requestId` |
-| `update_task` | `taskId`, `version`, the fields, `status` (`BACKLOG` or `READY`) | edits a task the agent created |
-| `report_progress` | `taskId`, `claimId`, `revision`, `requestId`, `message` | a progress report on the timeline |
-| `report_blocker` | the same | ends the claim, moves the task to Blocked |
-| `request_review` | the same | ends the claim, moves the task to Review |
-| `submit_review` | `taskId`, `reviewRequestId`, `revision`, `requestId`, `decision` (`APPROVED`, `CHANGES_REQUESTED`), `message` | a peer's decision; changes requested return the task to Ready |
-
-Agents' writes to a read-only project are refused. For Claude Code:
-
-```json
-{
-  "mcpServers": {
-    "devsync": {
-      "type": "http",
-      "url": "https://app.opscrew.dev/m/devsync/mcp",
-      "headers": { "Authorization": "Bearer ${DEVSYNC_AGENT_TOKEN}" }
-    }
-  }
-}
-```
-
-For Codex, in `config.toml`:
-
-```toml
-[mcp_servers.devsync]
-url = "https://app.opscrew.dev/m/devsync/mcp"
-bearer_token_env_var = "DEVSYNC_AGENT_TOKEN"
-```
 
 ## Queues
 

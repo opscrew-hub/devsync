@@ -420,6 +420,9 @@ describe("agentProjectState", () => {
       acceptanceCriteria: "Done when 100",
     });
     expect(state.tasks[1]?.claim).toBeNull();
+    // A member or a managed run reads the same state: it depends on the project only.
+    expect(await agentProjectState(host, as("developer"))).toEqual(state);
+    expect(await agentProjectState(host, { project })).toEqual(state);
   });
 });
 

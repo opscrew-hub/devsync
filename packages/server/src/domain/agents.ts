@@ -17,11 +17,14 @@ import {
   DevSyncError,
   type DevSyncHost,
   type ProjectContext,
+  type ProjectRef,
 } from "../host";
 import { REFUSAL } from "./common";
 
 /** Seen within this long: "Recently active" (two minutes). */
 const RECENTLY_ACTIVE_MS = 2 * 60 * 1000;
+/** How often an agent calling actions is recorded as seen, so it stays "Recently active". */
+const SEEN_AGAIN_MS = 60 * 1000;
 /** DevSync's own tokens: 32 random bytes, base64url. */
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{43}$/;
 
@@ -167,27 +170,101 @@ async function hostsActor(host: DevSyncHost, ref: AgentRef): Promise<AgentActor>
   if (!project || project.projectId !== ref.projectId || project.workspaceId !== ref.workspaceId) {
     throw forbidden();
   }
+  return seenAgent(host, project, {
+    agentId: ref.agentId,
+    name: ref.name,
+    kind: KIND_OF[ref.kind],
+  });
+}
+
+/**
+ * The agent the host verified, as the actor of `project`: DevSync's row of it is made the first
+ * time (with no token, so the foreign keys hold), and takes the host's name and liveness each time
+ * after.
+ */
+async function seenAgent(
+  host: DevSyncHost,
+  project: ProjectRef,
+  seen: { agentId: string; name: string; kind: AgentKind },
+): Promise<AgentActor> {
   const now = host.clock.now();
   const [row] = await host.db
     .insert(agent)
     .values({
-      id: ref.agentId,
-      workspaceId: ref.workspaceId,
-      projectId: ref.projectId,
-      name: ref.name,
-      kind: KIND_OF[ref.kind],
+      id: seen.agentId,
+      workspaceId: project.workspaceId,
+      projectId: project.projectId,
+      name: seen.name,
+      kind: seen.kind,
       lastSeenAt: now,
       createdAt: now,
     })
     .onConflictDoUpdate({
       target: agent.id,
       // The host verified it, so it is live: a revoke DevSync recorded before the move is undone.
-      set: { name: ref.name, revokedAt: null, lastSeenAt: now },
-      setWhere: and(eq(agent.projectId, ref.projectId), eq(agent.workspaceId, ref.workspaceId)),
+      set: { name: seen.name, revokedAt: null, lastSeenAt: now },
+      setWhere: and(
+        eq(agent.projectId, project.projectId),
+        eq(agent.workspaceId, project.workspaceId),
+      ),
     })
     .returning({ id: agent.id, name: agent.name });
-  if (!row) throw new Error(`DevSync has the host's agent ${ref.agentId} in another project.`);
+  if (!row) throw new Error(`DevSync has the host's agent ${seen.agentId} in another project.`);
   return { kind: "agent", agentId: row.id, name: row.name, project };
+}
+
+/**
+ * The agent calling one of DevSync's actions (`ctx.caller`, which the host built from its token),
+ * as the actor of the action's project. Its kind comes from DevSync's row of it or, the first time
+ * DevSync sees it, from the host's list of the project's agents: one the host doesn't list (revoked
+ * meanwhile) is refused as `unauthenticated`. Records it as seen, as `authenticateAgent` does,
+ * unless DevSync saw it within the last minute under the same name.
+ */
+export async function callerActor(
+  host: DevSyncHost,
+  project: ProjectRef,
+  caller: { agentId: string; name: string },
+): Promise<AgentActor> {
+  const [row] = await host.db
+    .select({
+      kind: agent.kind,
+      name: agent.name,
+      revokedAt: agent.revokedAt,
+      lastSeenAt: agent.lastSeenAt,
+    })
+    .from(agent)
+    .where(
+      and(
+        eq(agent.id, caller.agentId),
+        eq(agent.projectId, project.projectId),
+        eq(agent.workspaceId, project.workspaceId),
+      ),
+    );
+  // Current already (DevSync's own endpoint has just recorded it): nothing to write.
+  const now = host.clock.now().getTime();
+  if (
+    row &&
+    row.name === caller.name &&
+    row.revokedAt === null &&
+    row.lastSeenAt &&
+    now - row.lastSeenAt.getTime() < SEEN_AGAIN_MS
+  ) {
+    return { kind: "agent", agentId: caller.agentId, name: row.name, project };
+  }
+  let kind = row?.kind;
+  if (!kind) {
+    const ref = (await host.agents.list(project.projectId))
+      .map(hostAgent)
+      .find(
+        (a) =>
+          a.agentId === caller.agentId &&
+          a.projectId === project.projectId &&
+          a.workspaceId === project.workspaceId,
+      );
+    if (!ref) throw new DevSyncError("unauthenticated", REFUSAL.unauthenticated);
+    kind = KIND_OF[ref.kind];
+  }
+  return seenAgent(host, project, { agentId: caller.agentId, name: caller.name, kind });
 }
 
 /**

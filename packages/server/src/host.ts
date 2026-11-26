@@ -2,14 +2,15 @@
  * What DevSync needs from its host, OpsCrew's dashboard (docs/host.md). DevSync never imports the
  * host's code: the host's `ModuleHost`, which it builds for every module, satisfies this interface
  * (the contract's wider `string` action, queue and event type parameters accept DevSync's), and it
- * mounts the routes, queues, migrations, removal hooks and export `serverModule` (module.ts) gives
- * it. Tests implement it with `fakeHost()` from `@devsync/server/testing`. The module platform's
- * members and the GitHub calls are arrow properties, as the contract has the platform's: TypeScript
- * checks their parameters strictly (a method's both ways), so module.test.ts catches a copy that
- * widened one.
+ * mounts the routes, queues, migrations, removal hooks, export and actions `serverModule`
+ * (module.ts) gives it. Tests implement it with `fakeHost()` from `@devsync/server/testing`. The
+ * module platform's members, the GitHub calls and an action's `run` are arrow properties, as the
+ * contract has the platform's: TypeScript checks their parameters strictly (a method's both ways),
+ * so module.test.ts catches a copy that widened one.
  */
 import type { Role } from "@devsync/schemas";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
+import type { z } from "zod";
 
 /**
  * The host's database, or a transaction on it: DevSync's tables live in the `devsync` schema of
@@ -330,6 +331,58 @@ export interface DevSyncHost {
       workflow: string;
     }) => Promise<{ request: string; origin: string } | null>;
   };
+}
+
+/**
+ * Who calls an action (the contract's `Caller`): built by the host from a session, an agent's token
+ * or a run's token, never from the input.
+ */
+export type Caller =
+  | { kind: "member"; userId: string; name: string; role: Role }
+  | { kind: "agent"; agentId: string; name: string }
+  | { kind: "run"; runRef: string; module: string };
+
+/** A host permission an action may name (the contract's `ModulePermission`). */
+export type ModulePermission =
+  | "spend.view"
+  | "change.request"
+  | "modules.manage"
+  | "agents.manage"
+  | "memory.instruct";
+
+/** What an action runs with, all from the host (the contract's `ModuleActionContext`). */
+export interface DevSyncActionContext {
+  /** The project, with DevSync on. */
+  project: ProjectRef;
+  caller: Caller;
+  /** Where the call came from. */
+  via: "chat" | "panel" | "mcp" | "module";
+  host: DevSyncHost;
+}
+
+/**
+ * One of DevSync's actions (the contract's `ModuleAction`): the host serves it at `/mcp` as
+ * `devsync_<name>`, to its chat and to other modules, and checks the project and `permission`
+ * first.
+ */
+export interface DevSyncAction<I extends z.ZodType = z.ZodType> {
+  /** `[a-z][a-z0-9_]{0,40}`. */
+  name: string;
+  /** For the model: when to use it and what it answers; at most 1,000 characters. */
+  description: string;
+  /** A zod object, without `projectId`: the host gives the project. */
+  input: I;
+  /** The host permission the caller's role needs; none: every role. */
+  permission?: ModulePermission;
+  /**
+   * `read` reads; `write` changes only DevSync's records (run directly over `/mcp` and by modules,
+   * proposed with a confirm button in the chat); `start` only proposes, starting nothing.
+   */
+  kind: "read" | "start" | "write";
+  run: (
+    ctx: DevSyncActionContext,
+    input: z.output<I>,
+  ) => Promise<{ result: unknown; confirm?: { label: string } }>;
 }
 
 /** The error codes DevSync answers with, and their HTTP statuses: the dashboard's own. */

@@ -2,9 +2,10 @@
  * The MCP endpoint: JSON-RPC requests to the Hono app as coding agents
  * send them (stateless, JSON answers, no `initialize`), with two agents handing a task over.
  */
-import { ErrorAnswer, type Role } from "@devsync/schemas";
+import { ErrorAnswer, type Role, type Task } from "@devsync/schemas";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { actions, MCP_INSTRUCTIONS } from "../actions";
 import { deliverDue } from "../domain/delivery";
 import { pendingSignals, publishSignal } from "../domain/signals";
 import { createTask, getTask, updateTask } from "../domain/tasks";
@@ -26,6 +27,8 @@ afterAll(async () => {
 const URL_BASE = "http://localhost/m/devsync";
 const TOOLS = [
   "get_project_state",
+  "list_tasks",
+  "get_task",
   "get_pending_signals",
   "acknowledge_signal",
   "claim_task",
@@ -38,6 +41,7 @@ const TOOLS = [
   "report_blocker",
   "request_review",
   "submit_review",
+  "request_run",
 ];
 
 interface ToolResult {
@@ -407,6 +411,43 @@ describe("the MCP endpoint", () => {
     // Nothing reached the other project.
     expect(await data(outsider.token, "get_pending_signals", {})).toEqual([]);
     expect((await data(outsider.token, "get_project_state", {})).project.id).toBe(other.projectId);
+  });
+
+  it("serves DevSync's actions as its tools, with the agents' rules as its instructions", async () => {
+    const { host, member, codex, call, tool, data } = await setup();
+    const listing = await call(codex.token, "tools/list", {});
+    const { tools } = (
+      (await listing.json()) as {
+        result: { tools: { name: string; description: string; inputSchema: object }[] };
+      }
+    ).result;
+    expect(tools.map((t) => [t.name, t.description])).toEqual(
+      actions.map((a) => [a.name, a.description]),
+    );
+    for (const listed of tools) expect(listed.inputSchema).toMatchObject({ type: "object" });
+
+    const initialize = await call(codex.token, "initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "test", version: "1.0.0" },
+    });
+    expect(initialize.status).toBe(200);
+    const { result } = (await initialize.json()) as { result: { instructions: string } };
+    expect(result.instructions).toBe(MCP_INSTRUCTIONS);
+
+    // The tools new with the actions answer as the agent, and a members-only start is refused.
+    const task = await createTask(host, member(), {
+      title: "Read me",
+      description: "",
+      acceptanceCriteria: "",
+    });
+    expect((await data(codex.token, "list_tasks", {})).tasks.map((t: Task) => t.id)).toEqual([
+      task.id,
+    ]);
+    expect((await data(codex.token, "get_task", { taskId: task.id })).task.title).toBe("Read me");
+    const run = await tool(codex.token, "request_run", { taskId: task.id });
+    expect(run.isError).toBe(true);
+    expect(run.content[0]?.text).toContain("Only a member can ask for a managed run");
   });
 
   it("refuses an agent's writes to a read-only project, and a tool's bad input", async () => {

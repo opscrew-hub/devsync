@@ -1,7 +1,16 @@
 import { z } from "zod";
 
-/** Every id DevSync takes or answers. */
-export const Id = z.uuid();
+const UUID = z.uuid();
+
+/**
+ * Every id DevSync takes or answers: what zod's `uuid` takes, but a JSON Schema of only
+ * `{ type: "string", format: "uuid" }`, without the long pattern zod adds beside the format, which
+ * every id field of the actions' list would repeat.
+ */
+export const Id = z
+  .string()
+  .refine((value) => UUID.safeParse(value).success, "Invalid UUID")
+  .meta({ format: "uuid" });
 /** Every time DevSync answers: ISO 8601, from `Date.toISOString()`. */
 export const Timestamp = z.iso.datetime();
 

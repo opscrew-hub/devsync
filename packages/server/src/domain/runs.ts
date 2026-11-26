@@ -395,10 +395,13 @@ async function recordEnd(
 
 // --- Members' reads and changes -----------------------------------------------------------------
 
-/** `GET /tasks/:taskId/runs` (read): the task's 50 latest runs, newest first. */
+/**
+ * `GET /tasks/:taskId/runs` (read): the task's 50 latest runs, newest first. It depends on the
+ * project only, so `get_task` (actions.ts) reads the latest for every caller.
+ */
 export async function listRuns(
   host: DevSyncHost,
-  ctx: ProjectContext,
+  ctx: Pick<ProjectContext, "project">,
   taskId: string,
 ): Promise<RunList> {
   const { project } = ctx;
@@ -443,6 +446,29 @@ export async function runSetup(host: DevSyncHost, ctx: ProjectContext): Promise<
 }
 
 /**
+ * What asking for a run checks, creating nothing: a writable project, the member's `run.request`,
+ * the task (Ready, short enough for the run's input, no run that hasn't ended) and the repository's
+ * setup (the workflow; without a key the run pays with AI credits). Answers the task and the
+ * revision a run would take. `requestRun` checks it first; the `request_run` action (actions.ts)
+ * proposes a run with it.
+ */
+export async function checkRunRequest(
+  host: DevSyncHost,
+  ctx: ProjectContext,
+  taskId: string,
+): Promise<{ taskId: string; title: string; revision: number }> {
+  const { project, member } = ctx;
+  requireWritable(project);
+  requireRole(member.role, "run.request");
+  const id = taskIdOf(taskId);
+  // Checked before GitHub is asked.
+  const current = await requestable(host.db, project, id, false);
+  const setup = await runSetup(host, ctx);
+  if (setup.missing.length > 0) throw new DevSyncError("conflict", setup.missing.join(" "));
+  return { taskId: id, title: current.title, revision: current.revision };
+}
+
+/**
  * `POST /tasks/:taskId/runs` (`run.request`): a run of the task's current revision, waiting for
  * approval. Refused unless the task is Ready, fits the run's input and has no run that hasn't
  * ended, and while the repository lacks the workflow (the setup's own words).
@@ -453,13 +479,8 @@ export async function requestRun(
   taskId: string,
 ): Promise<Run> {
   const { project, member } = ctx;
-  requireWritable(project);
-  requireRole(member.role, "run.request");
-  const id = taskIdOf(taskId);
-  // Checked before GitHub is asked, then again with the task's row locked.
-  await requestable(host.db, project, id, false);
-  const setup = await runSetup(host, ctx);
-  if (setup.missing.length > 0) throw new DevSyncError("conflict", setup.missing.join(" "));
+  // Checked first, then again with the task's row locked.
+  const { taskId: id } = await checkRunRequest(host, ctx, taskId);
   const at = host.clock.now();
   const row = await host.db.transaction(async (tx) => {
     const current = await requestable(tx, project, id, true);

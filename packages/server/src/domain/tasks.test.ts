@@ -196,13 +196,57 @@ describe("createTask", () => {
     expect(detail.creator).toEqual({ kind: "agent", agentId: builder.agentId, name: "builder" });
   });
 
-  it("an agent's task needs a requestId; a member's takes none", async () => {
+  it("a member's retry with the same requestId answers the same task, as an agent's does", async () => {
+    const requestId = randomUUID();
+    const first = await createTask(host, as(owner), { ...fields, requestId });
+    expect(await createTask(host, as(owner), { ...fields, requestId })).toEqual(first);
+    expect(await testDb.db.select().from(task)).toHaveLength(1);
+    expect(await events(first.id)).toHaveLength(1);
+    expect(host.enqueued).toHaveLength(1);
+    expect((await getTask(host, as(owner), first.id)).creator).toEqual({
+      kind: "member",
+      userId: owner.userId,
+      name: "Olga",
+    });
+
+    const error = await refusal(
+      createTask(host, as(owner), { ...fields, title: "Something else", requestId }),
+      "conflict",
+    );
+    expect(error.message).toBe(
+      "This request ID was already used for another task. Send a new request ID.",
+    );
+    // The request id is the member's own: another member's, or an agent's, is another task.
+    const builder = await seedAgent(projectA);
+    const theirs = await createTask(host, as(developer), { ...fields, requestId });
+    const agents = await createTask(host, builder, { ...fields, requestId });
+    expect(new Set([first.id, theirs.id, agents.id]).size).toBe(3);
+    // Without one, each create is a task of its own.
+    await createTask(host, as(owner), fields);
+    await createTask(host, as(owner), fields);
+    expect(await testDb.db.select().from(task)).toHaveLength(5);
+  });
+
+  it("refuses a member's second task under the same requestId at the database too", async () => {
+    const requestId = randomUUID();
+    await createTask(host, as(owner), { ...fields, requestId });
+    const row = {
+      workspaceId,
+      projectId: projectA.projectId,
+      ...fields,
+      creatorUserId: owner.userId,
+      createRequestId: requestId,
+    };
+    await expect(testDb.db.insert(task).values(row)).rejects.toThrow();
+    await testDb.db.insert(task).values({ ...row, projectId: projectB.projectId });
+  });
+
+  it("an agent's task needs a requestId; a member's may take one", async () => {
     const builder = await seedAgent(projectA);
     expect((await refusal(createTask(host, builder, fields))).fields).toEqual(["requestId"]);
-    const error = await refusal(
-      createTask(host, as(owner), { ...fields, requestId: randomUUID() }),
-    );
+    const error = await refusal(createTask(host, as(owner), { ...fields, requestId: "r1" }));
     expect(error.code).toBe("invalid");
+    expect(error.fields).toEqual(["requestId"]);
   });
 
   it("refuses writes to a read-only project, an agent's and a member's", async () => {
@@ -377,11 +421,25 @@ describe("listTasks", () => {
     expect(await titles(as(owner, projectB))).toEqual(["Elsewhere"]);
   });
 
-  it("refuses an agent's `me` and an invalid filter", async () => {
+  it("refuses an agent's and a run's `me` and an invalid filter", async () => {
     const builder = await seedAgent(projectA);
-    expect((await refusal(listTasks(host, builder, { assignee: "me" }))).code).toBe("invalid");
+    for (const reader of [builder, { project: projectA }]) {
+      const me = await refusal(listTasks(host, reader, { assignee: "me" }), "invalid");
+      expect(me.message).toBe(
+        "Only a member has tasks assigned to them. Leave out `assignee`, or give a member's user id.",
+      );
+      expect(me.fields).toEqual(["assignee"]);
+    }
     const error = await refusal(listTasks(host, as(owner), { status: "LATER" } as never));
     expect(error.fields).toEqual(["status"]);
+  });
+
+  it("lets a managed run, which has only its project, list the project's tasks", async () => {
+    await createTask(host, as(owner), { ...fields, title: "Mine" });
+    await createTask(host, as(owner, projectB), { ...fields, title: "Elsewhere" });
+    const run = { project: projectA };
+    expect((await listTasks(host, run)).tasks.map((t) => t.title)).toEqual(["Mine"]);
+    expect((await listTasks(host, run, { assignee: "none" })).tasks).toHaveLength(1);
   });
 
   it("shows a claim with its agent's name", async () => {
@@ -530,6 +588,14 @@ describe("getTask", () => {
       expect(error.code).toBe("not-found");
       expect(error.message).toBe("There's no such task in this project.");
     }
+  });
+
+  it("answers a managed run, which has only its project, the same task", async () => {
+    const created = await createTask(host, as(owner), fields);
+    expect(await getTask(host, { project: projectA }, created.id)).toEqual(
+      await getTask(host, as(owner), created.id),
+    );
+    await refusal(getTask(host, { project: projectB }, created.id), "not-found");
   });
 });
 
