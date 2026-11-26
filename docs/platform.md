@@ -140,7 +140,7 @@ time. Then `app.opscrew.dev` pins the reviewed commit.
   redactor that replaces a marker, an `allowRun` that answers a fixed request). The events above,
   through `outbox.record`; `host.redact` on stored agent text; `exportProject`. Type-level tests
   against the contract, as `module.test.ts` does.
-- [ ] **P2, the host's agents** (after P1; `packages/server/src/domain/agents.ts`,
+- [x] **P2, the host's agents** (after P1; `packages/server/src/domain/agents.ts`,
   `packages/server/src/http/**`, `packages/server/src/jobs.ts`, `packages/server/src/db/**`,
   `packages/server/migrations/**`, `packages/schemas/src/agents.ts`, `packages/web/src/Agents*`,
   `docs/host.md`). As above: the move job, `verify` first, the row for a new host agent, the
