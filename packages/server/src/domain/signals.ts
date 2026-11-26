@@ -142,9 +142,10 @@ export async function publishSignal(
 }
 
 /**
- * `publish_signal`: a signal to a peer agent of the project, idempotent by its key. A reply
- * (`replyToId`, a signal in the sender's inbox) gets one follow-up at most, a chain four replies at
- * most, and an agent sends 20 new signals a minute at most.
+ * `publish_signal`: a signal to a peer agent of the project, idempotent by its key, its message
+ * through the host's redactor. A reply (`replyToId`, a signal in the sender's inbox) gets one
+ * follow-up at most, a chain four replies at most, and an agent sends 20 new signals a minute at
+ * most.
  */
 export async function publishAgentSignal(
   host: DevSyncHost,
@@ -152,7 +153,9 @@ export async function publishAgentSignal(
   input: PublishSignalInput,
 ): Promise<InboxSignal> {
   requireWritable(actor.project);
-  const fields = parse(PublishSignalInput, input);
+  const parsed = parse(PublishSignalInput, input);
+  // Redacted before it is stored, and before a retry's is compared with the stored one.
+  const fields = { ...parsed, payload: { message: host.redact(parsed.payload.message) } };
   if (fields.recipientId === actor.agentId) {
     throw new DevSyncError(
       "invalid",

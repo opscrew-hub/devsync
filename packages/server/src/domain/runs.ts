@@ -51,7 +51,7 @@ import {
   taskIdOf,
   taskIn,
 } from "./common";
-import { outbox } from "./outbox";
+import { type EventFacts, outbox } from "./outbox";
 import { writePullRequestLink } from "./tasks";
 
 /** The most characters the `task` input holds: GitHub takes 65,535 for all of a run's inputs. */
@@ -278,10 +278,16 @@ async function recordChange(
   host: DevSyncHost,
   tx: DevSyncDb,
   row: RunRow,
-  change: { event: RunEvent; message: string; actor: { userId: string } | null; detail?: Detail },
+  change: {
+    event: RunEvent;
+    message: string;
+    actor: { userId: string } | null;
+    detail?: Detail;
+    facts?: EventFacts;
+  },
   at: Date,
 ): Promise<void> {
-  await outbox.record(tx, {
+  await outbox.record(host, tx, {
     workspaceId: row.workspaceId,
     projectId: row.projectId,
     actor: change.actor,
@@ -289,6 +295,7 @@ async function recordChange(
     kind: `run.${change.event}`,
     payload: { taskId: row.taskId, runId: row.id, revision: row.revision, message: change.message },
     at,
+    facts: change.facts,
   });
   if (change.event === "started") return;
   await host.audit(tx, change.actor ?? "host", {
@@ -350,6 +357,7 @@ async function recordEnd(
           ? `Managed run succeeded: draft pull request #${pullRequestNumber}`
           : `Managed run failed: ${failureMessage(ending.failure, row.id, result?.provider)}`,
       actor: null,
+      facts: { run: { status: ending.status, failure: ending.failure } },
       detail: {
         status: ending.status,
         failure: ending.failure,

@@ -1,9 +1,9 @@
 /**
  * What DevSync needs from its host, OpsCrew's dashboard (docs/host.md). DevSync never imports the
  * host's code: the host's `ModuleHost`, which it builds for every module, satisfies this interface
- * (the contract's wider `string` action and queue parameters accept DevSync's), and it mounts the
- * routes, queues, migrations and removal hooks `serverModule` (module.ts) gives it. Tests implement
- * it with `fakeHost()` from `@devsync/server/testing`.
+ * (the contract's wider `string` action, queue and event type parameters accept DevSync's), and it
+ * mounts the routes, queues, migrations, removal hooks and export `serverModule` (module.ts) gives
+ * it. Tests implement it with `fakeHost()` from `@devsync/server/testing`.
  */
 import type { Role } from "@devsync/schemas";
 import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
@@ -190,6 +190,76 @@ export interface Finding {
   dismissal: { reason: "false-positive" | "accepted-risk" } | null;
 }
 
+/** What an event carries: names and ids only (the contract's `EventData`). */
+export type EventData = Record<string, string | number | boolean | null>;
+
+/** An event DevSync emits for the modules that consume it (docs/platform.md, Events). */
+export interface DevSyncEvent {
+  workspaceId: string;
+  projectId: string;
+  type: `devsync.${string}`;
+  data: EventData;
+}
+
+/** An agent registered for a project, as a module reads it (the contract's `AgentRef`). */
+export interface AgentRef {
+  agentId: string;
+  projectId: string;
+  workspaceId: string;
+  name: string;
+  kind: "claude" | "codex" | "other";
+  /** The modules it may reach. */
+  modules: string[];
+}
+
+/** One of DevSync's own agents, moved to the host by `agents.adopt` with its id and token hash. */
+export interface AdoptedAgent {
+  agentId: string;
+  /** The workspace DevSync recorded the agent in: its project must be this workspace's. */
+  workspaceId: string;
+  projectId: string;
+  name: string;
+  kind: "claude" | "codex" | "other";
+  tokenHash: string;
+  expiresAt: Date;
+  revokedAt: Date | null;
+  lastSeenAt: Date | null;
+  registeredBy: string | null;
+  createdAt: Date;
+}
+
+/** The project's agents, one identity for every module (the contract's `ModuleAgents`). */
+export interface DevSyncAgents {
+  /**
+   * The agent a bearer token belongs to: null when the token is unknown, expired or revoked, when
+   * the agent may not reach DevSync, or when DevSync is off for its project. Never cached.
+   */
+  verify(token: string): Promise<AgentRef | null>;
+  /** The project's agents that may reach DevSync. */
+  list(projectId: string): Promise<AgentRef[]>;
+  /**
+   * Moves DevSync's own agents to the host once, keeping each id and token hash, so their tokens go
+   * on working. Idempotent. Refuses a row of a project that isn't one of the workspace's with
+   * DevSync on, or a hash that isn't 64 hex characters. Answers a count.
+   */
+  adopt(tx: DevSyncDb, agents: readonly AdoptedAgent[]): Promise<number>;
+}
+
+/** One entry of a `ContextBlock` (the contract's `ContextEntry`). */
+export interface ContextEntry {
+  source: string;
+  kind: "instruction" | "fact" | "event";
+  author: string;
+  trust: "trusted" | "untrusted";
+  text: string;
+}
+
+/** Every other module's context for a subject, with trust set by the host (`ContextBlock`). */
+export interface ContextBlock {
+  instructions: ContextEntry[];
+  facts: ContextEntry[];
+}
+
 export interface DevSyncHost {
   db: DevSyncDb;
   clock: { now(): Date };
@@ -220,6 +290,38 @@ export interface DevSyncHost {
    * for the project or its workspace. Any member may read it.
    */
   finding(projectId: string, fingerprint: string): Promise<Finding | null>;
+  /**
+   * Records an event in `tx`, the transaction that makes the change: each module on for the
+   * project that consumes it gets it once after `tx` commits, and never if it rolls back.
+   */
+  emit(tx: DevSyncDb, event: DevSyncEvent): Promise<void>;
+  /** The project's agents, registered once for every module. */
+  agents: DevSyncAgents;
+  /**
+   * The other modules' context for `subject` in the project, as `caller` may see it: an empty block
+   * when the host refuses the caller or DevSync is off for the project.
+   */
+  context(
+    caller: { projectId: string } & ({ userId: string } | { agentId: string }),
+    input: { subject: string },
+  ): Promise<ContextBlock>;
+  /**
+   * `text` through the server's redactor: each configured secret and credential-shaped value
+   * becomes `[redacted]`, other text comes back unchanged. Never throws, never logs the text.
+   */
+  redact(text: string): string;
+  /** OpsCrew's AI for DevSync's managed runs, on the workspace's credits. */
+  ai: {
+    /**
+     * A signed reference for one run, valid 24 hours, that the run exchanges with its GitHub
+     * Actions OIDC token; `workflow` is DevSync's own. Null for a read-only project or one with
+     * DevSync off.
+     */
+    allowRun(input: { projectId: string; runRef: string; workflow: string }): Promise<{
+      request: string;
+      origin: string;
+    } | null>;
+  };
 }
 
 /** The error codes DevSync answers with, and their HTTP statuses: the dashboard's own. */

@@ -4,15 +4,17 @@
  * `devsync.github` queue. DevSync applies each delivery once per project (`github_delivery`): it
  * keeps the pull request's latest state (an update older than the stored one changes nothing) and
  * sends the project's live agents branch-updated, pull-request-opened and pull-request-merged
- * signals. A `workflow_run` fact (a managed run GitHub completed) goes to the runs
- * (`applyWorkflowRun`), which apply it once by the run's status.
+ * signals; a merge emits `devsync.pr.merged` for each task linked to it. A `workflow_run` fact (a
+ * managed run GitHub completed) goes to the runs (`applyWorkflowRun`), which apply it once by the
+ * run's status.
  */
 import { randomUUID } from "node:crypto";
 import type { PullRequestList } from "@devsync/schemas";
-import { and, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lte, sql } from "drizzle-orm";
 import { z } from "zod";
-import { agent, githubDelivery, pullRequest, signal } from "../db";
+import { agent, githubDelivery, pullRequest, signal, task } from "../db";
 import type { DevSyncDb, DevSyncHost, ProjectContext, ProjectRef } from "../host";
+import { outbox } from "./outbox";
 import { applyWorkflowRun } from "./runs";
 import { toPullRequest } from "./tasks";
 
@@ -64,6 +66,35 @@ export type GithubJob = z.infer<typeof GithubJob>;
 
 type DeliveryFact = Exclude<GithubFact, { kind: "workflow_run" }>;
 
+/** Whether a pull request's delivery is its merge. */
+function isMerge(fact: Extract<GithubFact, { kind: "pull_request" }>): boolean {
+  return fact.action === "closed" && fact.merged;
+}
+
+/** Emits `devsync.pr.merged` in `tx` for each task of the project linked to the pull request. */
+async function emitMerged(
+  host: DevSyncHost,
+  tx: DevSyncDb,
+  project: ProjectRef,
+  number: number,
+): Promise<void> {
+  const { workspaceId, projectId } = project;
+  const linked = await tx
+    .select({ id: task.id })
+    .from(task)
+    .where(
+      and(
+        eq(task.projectId, projectId),
+        eq(task.workspaceId, workspaceId),
+        eq(task.pullRequestNumber, number),
+      ),
+    )
+    .orderBy(asc(task.createdAt), asc(task.id));
+  for (const { id } of linked) {
+    await outbox.emit(host, tx, { workspaceId, projectId, taskId: id, facts: { merged: number } });
+  }
+}
+
 /** The signal a fact sends the project's agents, its kind and wording; null for none. */
 function signalOf(fact: DeliveryFact): { kind: string; payload: Record<string, unknown> } | null {
   if (fact.kind === "push") {
@@ -78,7 +109,7 @@ function signalOf(fact: DeliveryFact): { kind: string; payload: Record<string, u
       },
     };
   }
-  const merged = fact.action === "closed" && fact.merged;
+  const merged = isMerge(fact);
   if (fact.action !== "opened" && !merged) return null;
   return {
     kind: merged ? "git.pr_merged" : "git.pr_opened",
@@ -147,7 +178,10 @@ export async function applyGithubFact(host: DevSyncHost, job: GithubJob): Promis
       .returning({ deliveryId: githubDelivery.deliveryId });
     if (!delivery) return;
 
-    if (fact.kind === "pull_request") await upsertPullRequest(tx, project, fact, now);
+    if (fact.kind === "pull_request") {
+      await upsertPullRequest(tx, project, fact, now);
+      if (isMerge(fact)) await emitMerged(host, tx, project, fact.number);
+    }
 
     const sent = signalOf(fact);
     if (!sent) return;

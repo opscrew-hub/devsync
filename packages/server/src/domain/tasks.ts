@@ -2,8 +2,9 @@
  * Tasks: create, read, edit, move, assign, comment and link a pull request, for a project's members
  * (a `ProjectContext`) and its agents (an `AgentActor`). The rules: the lifecycle, the version
  * check, a revision per requirements change, a claimed task's status changed only by its claim, an
- * agent's `requestId` idempotency, and an outbox event per change recorded in its transaction.
- * Every query filters by the project.
+ * agent's `requestId` idempotency, an agent's requirements through the host's redactor, and an
+ * outbox event per change recorded (with its host events) in its transaction. Every query filters
+ * by the project.
  */
 import {
   AgentTaskInput,
@@ -80,6 +81,21 @@ export type AgentUpdateFields = z.infer<typeof AgentUpdateFields>;
 
 function isAgent(actor: TaskActor): actor is AgentActor {
   return "kind" in actor && actor.kind === "agent";
+}
+
+/** A task's requirements, or some of them. */
+type Requirements = { title?: string; description?: string; acceptanceCriteria?: string };
+
+/** An agent's requirements, each through the host's redactor before it is stored or compared. */
+function redactRequirements<T extends Requirements>(host: DevSyncHost, fields: T): T {
+  return {
+    ...fields,
+    ...(fields.title === undefined ? {} : { title: host.redact(fields.title) }),
+    ...(fields.description === undefined ? {} : { description: host.redact(fields.description) }),
+    ...(fields.acceptanceCriteria === undefined
+      ? {}
+      : { acceptanceCriteria: host.redact(fields.acceptanceCriteria) }),
+  };
 }
 
 // --- Answers ------------------------------------------------------------------------------------
@@ -417,7 +433,8 @@ export async function createTask(
   const parsed: TaskInput & { requestId: string | null } = agentActor
     ? parse(AgentTaskInput, input)
     : { requestId: null, ...parse(TaskInput, input) };
-  const { requestId, finding: from, ...fields } = parsed;
+  const { requestId, finding: from, ...given } = parsed;
+  const fields = agentActor ? redactRequirements(host, given) : given;
   const finding = from ? await hostFinding(host, project, from.fingerprint) : null;
   const at = host.clock.now();
   const creator = actorIds(actor);
@@ -489,7 +506,7 @@ export async function createTask(
       authorAgentId: row.creatorAgentId,
       createdAt: at,
     });
-    await outbox.record(tx, {
+    await outbox.record(host, tx, {
       workspaceId: project.workspaceId,
       projectId: project.projectId,
       actor: creator,
@@ -502,6 +519,7 @@ export async function createTask(
         message: `Task created: ${row.title}`,
       },
       at,
+      facts: { status: { from: null, to: row.status } },
     });
     return { task: toTask(row, null), created: true };
   });
@@ -555,7 +573,7 @@ export async function updateTask(
   const { project } = actor;
   const agentActor = isAgent(actor) ? actor : null;
   const update: TaskUpdate = agentActor
-    ? parse(AgentUpdateFields, input)
+    ? redactRequirements(host, parse(AgentUpdateFields, input))
     : parse(TaskUpdate, input);
   const { version, status, assigneeUserId } = update;
   const id = taskIdOf(taskId);
@@ -644,7 +662,9 @@ export async function updateTask(
     }
     const event = editEvent(current, saved, revised);
     if (event) {
-      await outbox.record(tx, {
+      // A move off Claimed ends the claim, live (a cancel) or expired, without a review.
+      const released = current.claimAgentId && !saved.claimAgentId ? current.claimAgentId : null;
+      await outbox.record(host, tx, {
         workspaceId: project.workspaceId,
         projectId: project.projectId,
         actor: author,
@@ -657,6 +677,10 @@ export async function updateTask(
           message: `${event.label}: ${saved.title}`,
         },
         at,
+        facts: {
+          status: { from: current.status, to: saved.status },
+          ...(released ? { released } : {}),
+        },
       });
     }
     return { task: await loadTask(tx, project, id), recorded: event !== null };
@@ -743,8 +767,8 @@ export async function linkPullRequest(
 
 /**
  * Links the task to pull request `number` (or unlinks it) in `tx`, the task's row locked and read
- * as `current`: its version bumped, and the change audited. A member's link and a finished run's
- * draft pull request both go through it.
+ * as `current`: its version bumped, the change audited, and a link emitted (`devsync.pr.linked`).
+ * A member's link and a finished run's draft pull request both go through it.
  */
 export async function writePullRequestLink(
   host: DevSyncHost,
@@ -769,4 +793,8 @@ export async function writePullRequestLink(
     action: "devsync.task.pull_request_linked",
     detail: { taskId, previousNumber: current.pullRequestNumber, number },
   });
+  if (number !== null) {
+    const { workspaceId, projectId } = project;
+    await outbox.emit(host, tx, { workspaceId, projectId, taskId, facts: { linked: number } });
+  }
 }

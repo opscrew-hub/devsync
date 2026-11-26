@@ -67,6 +67,11 @@ DevSync uses (`host.ts` has the exact types). In short:
 | `enqueue(queue, payload, options?)` | sends a job to a DevSync queue after the current transaction commits. |
 | `github` | DevSync's workflow in the project's repository, through the host's GitHub App: `setup`, `dispatch`, `artifact`, `deleteArtifact` (see Managed runs). |
 | `finding(projectId, fingerprint)` | one of the project's open security findings, redacted, or null (see Security findings). |
+| `emit(tx, event)` | records one of DevSync's events in `tx`, sent to the modules that consume it once `tx` commits, never if it rolls back (see Events). |
+| `agents` | the project's agents, registered once for every module: `verify(token)`, `list(projectId)`, `adopt(tx, agents)`. |
+| `context(caller, { subject })` | the other modules' context for a subject, as the caller may see it, with trust set by the host. |
+| `redact(text)` | the text through the server's redactor; every text DevSync stores from an agent passes it first (see Events). |
+| `ai.allowRun({ projectId, runRef, workflow })` | a signed reference for one managed run on the workspace's AI credits, or null for a read-only project or one with DevSync off. |
 
 ### Request contexts
 
@@ -269,6 +274,23 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
   dispatch once more, ending it `FAILED` (`no-result`) without a result (while GitHub doesn't
   answer, it tries again at each sweep until a day after the dispatch).
 
+## Events
+
+DevSync emits its events with `host.emit` in the transaction that makes the change, for whichever
+modules consume them; it names none of them. The events and their data are the table in
+[platform.md](platform.md) (Events): `devsync.task.created`, `updated`, `moved`, `done`, `claimed`
+and `released`, `devsync.review.requested`, `approved` and `changes_requested`,
+`devsync.pr.linked` and `merged`, and `devsync.run.finished`. Their data is names and ids only,
+never a title, a description or a message. A change with a timeline event emits through
+`outbox.record`, which maps it once; a claim, a release, a pull request linked or merged emit at
+the change, through the same mapping. `released` comes whenever a claim ends other than by a review
+request: a release, a blocker, a member's move or cancel, or another claim taking over an expired
+one. `merged` comes for each task linked to the pull request.
+
+Every text DevSync stores from an agent passes `host.redact` first: a report's or a review's
+message, a signal's message, and the requirements of a task an agent creates or edits. Members'
+text is kept as they wrote it.
+
 ## Migrations and removal
 
 - `migrations` (`{ folder, schema: "devsync" }`): the host applies them after its own, with the
@@ -276,6 +298,12 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
 - `removeProject(db, projectId)`, `removeWorkspace(db, workspaceId)`: delete every DevSync row of
   it, its runs too, in the host's removal transaction. `removeMember(db, workspaceId, userId)`:
   unassigns them; the runs they asked for or decided are kept, and name them "Former member".
+
+## Export
+
+`exportProject(tx, projectId)` answers DevSync's rows of the project for its export, read through
+the host's read-only `tx` only: its tasks with their revisions and comments, its runs, its pull
+requests, its timeline (the outbox's events) and its agents, never a token hash or expiry.
 
 ## Pages
 
