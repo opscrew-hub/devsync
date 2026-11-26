@@ -30,7 +30,9 @@ their findings fixed.
   and answered generically.
 - **The module platform** ([platform.md](platform.md)): DevSync's events through the host, agents'
   text redacted before it is stored, the project's export, and managed runs on the workspace's AI
-  credits when it has no key, each with its own `/mcp` token.
+  credits when it has no key, each with its own `/mcp` token; tasks' paths (overlaps flagged),
+  dependencies, labels and branch, at most 3 claims per agent, agents' reported usage, questions on
+  a task (a waited one blocks it until answered), and a briefing for the agent that takes a task.
 - **Queues**: `devsync.outbox` and `devsync.github` (pull requests' latest state, signals to agents,
   once per delivery).
 - **Pages**: the project tab (tasks by status, the task panel with its revisions, comments,

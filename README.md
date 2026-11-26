@@ -21,9 +21,12 @@ and their developers plan the work in DevSync, their coding agents do it, and Op
   another, on a developer's computer) from the project's **Agents** button, once for every module,
   and gives it its token. The agent connects to the dashboard's MCP address,
   `https://app.opscrew.dev/mcp`, where DevSync's tools are listed with every module's; it reads
-  the project's tasks and its inbox, claims a Ready task, reports progress or a blocker and asks
-  for review; a peer agent approves or requests changes, and a person marks the task done.
-  Messages reach agents exactly once, even across disconnections.
+  the project's tasks and its inbox, reads a task's briefing, claims a Ready task (at most 3 at
+  once, and none that still waits for another), asks a question instead of guessing, reports
+  progress or a blocker and asks for review; a peer agent approves or requests changes, and a
+  person marks the task done. Messages reach agents exactly once, even across disconnections.
+- **What a task may touch.** A task can name the paths it may change (two open tasks with
+  overlapping paths are flagged), the tasks it waits for, labels and its branch.
 - **Pull requests.** A task links to one of the repository's pull requests and shows its state as
   GitHub reports it; agents hear about pushes and pull requests opened or merged.
 - **Across projects.** A workspace page lists the open tasks of every project with DevSync on,

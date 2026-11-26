@@ -27,7 +27,7 @@ or a question's text. A consumer that wants the text reads it through DevSync's 
 | `devsync.task.claimed` / `devsync.task.released` | an agent claims it, or the claim ends without a review | `taskId`, `agentId` |
 | `devsync.review.requested` | an agent asks for a review | `taskId`, `agentId` |
 | `devsync.review.approved` / `devsync.review.changes_requested` | a review's decision | `taskId`, `reviewRequestId` |
-| `devsync.question.asked` / `devsync.question.answered` | a question on a task (P4) | `taskId`, `questionId` |
+| `devsync.question.asked` / `devsync.question.answered` | a question on a task (P6) | `taskId`, `questionId` |
 | `devsync.pr.linked` / `devsync.pr.merged` | a pull request is linked to a task, or merged | `taskId`, `number` |
 | `devsync.run.finished` | a managed run ends | `taskId`, `runId`, `status`, `failure` |
 
@@ -90,7 +90,7 @@ DevSync's records, `start` for asking for a managed run.
 - **Size.** A test fails when the actions' list (names, descriptions and input schemas, as JSON)
   grows past its budget, set at the size P3 reaches.
 
-### The task-side ideas (P4)
+### The task-side ideas (P4 and P6)
 
 - **Task fields.** `owns`: the paths a task may change (at most 50, each at most 400 characters);
   two open tasks whose paths overlap are flagged on both. `dependsOn`: the project's tasks it waits
@@ -153,7 +153,7 @@ time. Then `app.opscrew.dev` pins the reviewed commit.
   `packages/server/src/actions.ts`, `packages/web/src/TaskPanel*`, `docs/host.md`,
   `docs/requirements.md`). The Task fields, the limit per agent and Usage of "The task-side
   ideas", above.
-- [ ] **P6, questions and the briefing** (after P4; the same files). Questions and the briefing of
+- [x] **P6, questions and the briefing** (after P4; the same files). Questions and the briefing of
   "The task-side ideas", above, with the two question events of the Events table.
 - [x] **P5, managed runs on credits and the run's token** (after P1, beside P2 to P4;
   `packages/schemas/src/workflow.ts`, `packages/schemas/src/runs.ts` and their tests,
