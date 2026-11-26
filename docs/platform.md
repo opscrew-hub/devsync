@@ -148,10 +148,13 @@ time. Then `app.opscrew.dev` pins the reviewed commit.
 - [x] **P3, the actions** (after P2; `packages/server/src/actions.ts` (new),
   `packages/server/src/http/mcp.ts`, `module.ts`, `packages/schemas/src/mcp.ts`, `docs/host.md`).
   As above, with a test per caller kind and the size budget.
-- [ ] **P4, the task-side ideas** (after P3; `packages/schemas/src/**`,
+- [ ] **P4, the task fields, the claim rules and usage** (after P3; `packages/schemas/src/**`,
   `packages/server/src/domain/**`, `packages/server/src/db/**`, `packages/server/migrations/**`,
   `packages/server/src/actions.ts`, `packages/web/src/TaskPanel*`, `docs/host.md`,
-  `docs/requirements.md`).
+  `docs/requirements.md`). The Task fields, the limit per agent and Usage of "The task-side
+  ideas", above.
+- [ ] **P6, questions and the briefing** (after P4; the same files). Questions and the briefing of
+  "The task-side ideas", above, with the two question events of the Events table.
 - [x] **P5, managed runs on credits and the run's token** (after P1, beside P2 to P4;
   `packages/schemas/src/workflow.ts`, `packages/schemas/src/runs.ts` and their tests,
   `packages/server/src/domain/runs.ts`, `packages/web/src/Runs*`, `docs/managed-runs.md`,
