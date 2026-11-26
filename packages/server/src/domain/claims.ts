@@ -1,13 +1,15 @@
 /**
  * Task claims (docs/host.md, MCP for coding agents). An agent claims a Ready task (or one whose
  * claim expired) under a claim id of its own for 15 minutes, renews it while it works, and releases
- * it to Ready. Each change is one conditional UPDATE, so two agents never hold the same task.
+ * it to Ready. Each change is one conditional UPDATE, so two agents never hold the same task; a
+ * claim and a release emit their host events (`outbox.emit`) in its transaction.
  */
 import { TaskClaimInput, type TaskStatus } from "@devsync/schemas";
 import { and, eq, gt, lte, ne, or, sql } from "drizzle-orm";
 import { task } from "../db";
 import { type AgentActor, DevSyncError, type DevSyncHost } from "../host";
 import { parse, REFUSAL, requireWritable } from "./common";
+import { outbox } from "./outbox";
 
 /** How long a claim lasts from its claim or renewal. */
 const CLAIM_LEASE_MS = 15 * 60 * 1000;
@@ -69,31 +71,51 @@ export async function claimTask(
   requireWritable(actor.project);
   const fields = parse(TaskClaimInput, input);
   const now = host.clock.now();
-  const [lease] = await host.db
-    .update(task)
-    .set({
-      status: "CLAIMED",
-      claimAgentId: actor.agentId,
-      claimId: fields.claimId,
-      claimExpiresAt: new Date(now.getTime() + CLAIM_LEASE_MS),
-      version: sql`${task.version} + 1`,
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(task.id, fields.taskId),
-        eq(task.projectId, actor.project.projectId),
-        or(
-          eq(task.status, "READY"),
-          and(
-            eq(task.status, "CLAIMED"),
-            ne(task.claimId, fields.claimId),
-            lte(task.claimExpiresAt, now),
+  const lease = await host.db.transaction(async (tx) => {
+    // Read first, locked, for the events: the status it leaves and an expired claim it ends.
+    const [before] = await tx
+      .select({ status: task.status, claimAgentId: task.claimAgentId })
+      .from(task)
+      .where(and(eq(task.id, fields.taskId), eq(task.projectId, actor.project.projectId)))
+      .for("update");
+    const [claimed] = await tx
+      .update(task)
+      .set({
+        status: "CLAIMED",
+        claimAgentId: actor.agentId,
+        claimId: fields.claimId,
+        claimExpiresAt: new Date(now.getTime() + CLAIM_LEASE_MS),
+        version: sql`${task.version} + 1`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(task.id, fields.taskId),
+          eq(task.projectId, actor.project.projectId),
+          or(
+            eq(task.status, "READY"),
+            and(
+              eq(task.status, "CLAIMED"),
+              ne(task.claimId, fields.claimId),
+              lte(task.claimExpiresAt, now),
+            ),
           ),
         ),
-      ),
-    )
-    .returning(leaseColumns);
+      )
+      .returning(leaseColumns);
+    if (claimed && before) {
+      await outbox.emit(host, tx, {
+        ...scopeOf(actor),
+        taskId: claimed.id,
+        facts: {
+          status: { from: before.status, to: "CLAIMED" },
+          claimed: actor.agentId,
+          ...(before.claimAgentId ? { released: before.claimAgentId } : {}),
+        },
+      });
+    }
+    return claimed;
+  });
   if (lease) return toLease(lease);
 
   const [held] = await host.db
@@ -141,18 +163,30 @@ export async function releaseTask(
   requireWritable(actor.project);
   const fields = parse(TaskClaimInput, input);
   const now = host.clock.now();
-  const [released] = await host.db
-    .update(task)
-    .set({
-      status: "READY",
-      claimAgentId: null,
-      claimId: null,
-      claimExpiresAt: null,
-      version: sql`${task.version} + 1`,
-      updatedAt: now,
-    })
-    .where(heldBy(actor, fields, now))
-    .returning({ id: task.id, status: task.status });
-  if (!released) throw new DevSyncError("conflict", REFUSAL.claimNotActive);
-  return released;
+  return host.db.transaction(async (tx) => {
+    const [row] = await tx
+      .update(task)
+      .set({
+        status: "READY",
+        claimAgentId: null,
+        claimId: null,
+        claimExpiresAt: null,
+        version: sql`${task.version} + 1`,
+        updatedAt: now,
+      })
+      .where(heldBy(actor, fields, now))
+      .returning({ id: task.id, status: task.status });
+    if (!row) throw new DevSyncError("conflict", REFUSAL.claimNotActive);
+    await outbox.emit(host, tx, {
+      ...scopeOf(actor),
+      taskId: row.id,
+      facts: { status: { from: "CLAIMED", to: row.status }, released: actor.agentId },
+    });
+    return row;
+  });
+}
+
+/** The agent's project's ids, which its events name. */
+function scopeOf(actor: AgentActor) {
+  return { workspaceId: actor.project.workspaceId, projectId: actor.project.projectId };
 }

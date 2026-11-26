@@ -733,6 +733,41 @@ describe("updateTask", () => {
     expect(event).toMatchObject({ kind: "task.updated", actorAgentId: builder.agentId });
   });
 
+  it("passes an agent's requirements through the host's redactor before storing them, never a member's", async () => {
+    const builder = await seedAgent(projectA, "builder");
+    const secret = fakeToken();
+    const leaky = {
+      title: `Rotate ${secret}`,
+      description: `The key is ${secret}.`,
+      acceptanceCriteria: secret,
+    };
+    const requestId = randomUUID();
+    const created = await createTask(host, builder, { ...leaky, requestId });
+    const redacted = {
+      title: "Rotate [redacted]",
+      description: "The key is [redacted].",
+      acceptanceCriteria: "[redacted]",
+    };
+    expect(await getTask(host, as(owner), created.id)).toMatchObject({
+      ...redacted,
+      revisions: [{ number: 1, ...redacted }],
+      timeline: [{ kind: "task.created", message: "Task created: Rotate [redacted]" }],
+    });
+    // A retry is compared with what was stored, redacted the same way.
+    expect((await createTask(host, builder, { ...leaky, requestId })).id).toBe(created.id);
+
+    const other = fakeToken();
+    await updateTask(host, builder, created.id, { version: 1, description: `Now ${other}` });
+    const updated = await getTask(host, as(owner), created.id);
+    expect(updated.description).toBe("Now [redacted]");
+    expect(updated.revisions[0]).toMatchObject({ number: 2, description: "Now [redacted]" });
+
+    const members = await createTask(host, as(owner), { ...leaky });
+    expect(await getTask(host, as(owner), members.id)).toMatchObject(leaky);
+    await updateTask(host, as(owner), members.id, { version: 1, description: `Now ${other}` });
+    expect((await getTask(host, as(owner), members.id)).description).toBe(`Now ${other}`);
+  });
+
   it("refuses another project's task, and an agent of another project", async () => {
     const created = await createTask(host, as(owner), fields);
     const error = await refusal(

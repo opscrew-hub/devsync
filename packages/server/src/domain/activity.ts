@@ -2,9 +2,9 @@
  * Agents' reports on their claims and peers' review decisions (docs/host.md, MCP for coding
  * agents). Each is an outbox event of the task: on its timeline, and delivered to the project's
  * other agents. A report or decision is idempotent by its `requestId` (the same id for another
- * report is refused). A blocker ends the claim and moves the task to Blocked, a review request to
- * Review; a peer's "changes requested" returns it to Ready, and an approval leaves completion to a
- * member.
+ * report is refused), and its message passes the host's redactor before it is stored. A blocker
+ * ends the claim and moves the task to Blocked, a review request to Review; a peer's "changes
+ * requested" returns it to Ready, and an approval leaves completion to a member.
  */
 import { ReviewDecisionInput, TaskActivityInput } from "@devsync/schemas";
 import { and, desc, eq, sql } from "drizzle-orm";
@@ -82,7 +82,9 @@ async function report(
   input: TaskActivityInput,
 ): Promise<ActivityReceipt> {
   requireWritable(actor.project);
-  const { taskId, claimId, revision, requestId, message } = parse(TaskActivityInput, input);
+  const { taskId, claimId, revision, requestId, ...given } = parse(TaskActivityInput, input);
+  // Redacted before it is stored, and before a retry's is compared with the stored one.
+  const message = host.redact(given.message);
   const now = host.clock.now();
   return inAgentTransaction(host, actor, async (tx) => {
     const existing = await recorded(tx, actor, requestId);
@@ -114,12 +116,15 @@ async function report(
       );
     }
 
+    // A blocker or a review request ends the claim and moves the task.
+    const ended = kind !== "implementation.progress";
+    const to = kind === "task.blocked" ? "BLOCKED" : "REVIEW";
     let taskVersion: number | undefined;
-    if (kind !== "implementation.progress") {
+    if (ended) {
       const [updated] = await tx
         .update(task)
         .set({
-          status: kind === "task.blocked" ? "BLOCKED" : "REVIEW",
+          status: to,
           claimAgentId: null,
           claimId: null,
           claimExpiresAt: null,
@@ -130,7 +135,7 @@ async function report(
         .returning({ version: task.version });
       taskVersion = updated?.version;
     }
-    const event = await outbox.record(tx, {
+    const event = await outbox.record(host, tx, {
       workspaceId: actor.project.workspaceId,
       projectId: actor.project.projectId,
       actor: { agentId: actor.agentId },
@@ -139,6 +144,12 @@ async function report(
       payload: { taskId, revision, message, ...(taskVersion === undefined ? {} : { taskVersion }) },
       requestId,
       at: now,
+      facts: ended
+        ? {
+            status: { from: current.status, to },
+            ...(kind === "task.blocked" ? { released: actor.agentId } : {}),
+          }
+        : {},
     });
     return { receipt: { id: event.id, taskId, kind }, created: true };
   });
@@ -181,10 +192,12 @@ export async function submitReview(
   input: ReviewDecisionInput,
 ): Promise<ActivityReceipt> {
   requireWritable(actor.project);
-  const { taskId, reviewRequestId, revision, requestId, decision, message } = parse(
+  const { taskId, reviewRequestId, revision, requestId, decision, ...given } = parse(
     ReviewDecisionInput,
     input,
   );
+  // Redacted before it is stored, and before a retry's is compared with the stored one.
+  const message = host.redact(given.message);
   const kind: ReviewKind = decision === "APPROVED" ? "review.approved" : "review.changes_requested";
   const now = host.clock.now();
   return inAgentTransaction(host, actor, async (tx) => {
@@ -254,7 +267,7 @@ export async function submitReview(
         .set({ status: "READY", version: sql`${task.version} + 1`, updatedAt: now })
         .where(and(eq(task.id, taskId), eq(task.projectId, actor.project.projectId)));
     }
-    const event = await outbox.record(tx, {
+    const event = await outbox.record(host, tx, {
       workspaceId: actor.project.workspaceId,
       projectId: actor.project.projectId,
       actor: { agentId: actor.agentId },
@@ -264,6 +277,7 @@ export async function submitReview(
       requestId,
       reviewRequestId,
       at: now,
+      facts: decision === "CHANGES_REQUESTED" ? { status: { from: "REVIEW", to: "READY" } } : {},
     });
     return { receipt: { id: event.id, taskId, kind }, created: true };
   });

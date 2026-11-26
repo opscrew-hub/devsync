@@ -3,7 +3,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { outboxEvent, task } from "../db";
 import type { AgentActor, ProjectRef } from "../host";
 import { refusal, setClock } from "../test/helpers";
-import { createTestDb, FAKE_NOW, type FakeHost, fakeHost, type TestDb } from "../testing";
+import {
+  createTestDb,
+  FAKE_NOW,
+  type FakeHost,
+  fakeHost,
+  fakeToken,
+  type TestDb,
+} from "../testing";
 import { reportBlocker, reportProgress, requestReview, submitReview } from "./activity";
 import { authenticateAgent, registerAgent } from "./agents";
 import { claimTask } from "./claims";
@@ -319,5 +326,54 @@ describe("submitReview", () => {
     );
     await moveTask(taskId, "BACKLOG");
     await refusal(submitReview(host, claude, input), "conflict");
+  });
+});
+
+describe("an agent's messages", () => {
+  it("pass the host's redactor before they are stored, and a retry is compared redacted", async () => {
+    const { host, codex, claude, taskId, tick } = await setup();
+    const claim = { taskId, claimId: crypto.randomUUID() };
+    tick();
+    await claimTask(host, codex, claim);
+    const secret = fakeToken();
+    const progress = {
+      ...claim,
+      revision: 2,
+      requestId: crypto.randomUUID(),
+      message: `Used ${secret} to sign in.`,
+    };
+    tick();
+    const report = await reportProgress(host, codex, progress);
+    expect(await reportProgress(host, codex, progress)).toEqual(report);
+    tick();
+    const request = await requestReview(host, codex, {
+      ...progress,
+      requestId: crypto.randomUUID(),
+      message: secret,
+    });
+    tick();
+    const decision = {
+      taskId,
+      reviewRequestId: request.id,
+      revision: 2,
+      requestId: crypto.randomUUID(),
+      decision: "APPROVED" as const,
+      message: `Checked with ${secret}.`,
+    };
+    const approved = await submitReview(host, claude, decision);
+    expect(await submitReview(host, claude, decision)).toEqual(approved);
+
+    const messages = (
+      await testDb.db
+        .select()
+        .from(outboxEvent)
+        .where(eq(outboxEvent.taskId, taskId))
+        .orderBy(asc(outboxEvent.createdAt))
+    ).map((e) => (e.payload as { message: string }).message);
+    expect(messages).toEqual([
+      "Used [redacted] to sign in.",
+      "[redacted]",
+      "Checked with [redacted].",
+    ]);
   });
 });

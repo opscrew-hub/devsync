@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { signal, task } from "../db";
 import type { AgentActor, ProjectContext, ProjectRef } from "../host";
 import { refusal, setClock } from "../test/helpers";
-import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "../testing";
+import { createTestDb, FAKE_NOW, fakeHost, fakeToken, type TestDb } from "../testing";
 import { authenticateAgent, registerAgent, revokeAgent, rotateAgent } from "./agents";
 import { deliverDue } from "./delivery";
 import { outbox } from "./outbox";
@@ -244,6 +244,33 @@ describe("publishAgentSignal", () => {
     expect(error.fields).toEqual(["payload.message"]);
   });
 
+  it("passes its message through the host's redactor before storing it, never a member's", async () => {
+    const { host, as, codex, claude } = await setup();
+    const secret = fakeToken();
+    const input = {
+      recipientId: codex.id,
+      kind: "clarification.requested" as const,
+      payload: { message: `Is ${secret} the staging key?` },
+      idempotencyKey: crypto.randomUUID(),
+    };
+    const sent = await publishAgentSignal(host, claude.actor, input);
+    expect(sent.payload).toEqual({ message: "Is [redacted] the staging key?" });
+    // A retry is compared with what was stored, redacted the same way.
+    expect(await publishAgentSignal(host, claude.actor, input)).toEqual(sent);
+
+    setClock(host, Date.parse(FAKE_NOW) + 1000);
+    await publishSignal(host, as("owner"), codex.id, {
+      kind: "clarification.answered",
+      message: `Yes, ${secret}.`,
+      idempotencyKey: crypto.randomUUID(),
+    });
+    const inbox = (await pendingSignals(host, codex.actor)).map((s) => s.payload);
+    expect(inbox).toEqual([
+      { message: "Is [redacted] the staging key?" },
+      { message: `Yes, ${secret}.` },
+    ]);
+  });
+
   it("sends at most 20 new signals a minute; a retry of one sent still answers it", async () => {
     const { host, codex, claude } = await setup();
     const start = Date.parse(FAKE_NOW);
@@ -283,7 +310,7 @@ describe("publishAgentSignal", () => {
     const { workspaceId, projectId } = codex.actor.project;
     await testDb.db.transaction(async (tx) => {
       for (let i = 0; i < 20; i++) {
-        await outbox.record(tx, {
+        await outbox.record(host, tx, {
           workspaceId,
           projectId,
           actor: { agentId: codex.id },

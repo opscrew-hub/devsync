@@ -23,7 +23,8 @@ const RECENTLY_ACTIVE_MS = 2 * 60 * 1000;
 /** 32 random bytes, base64url. */
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{43}$/;
 
-function hashToken(token: string): string {
+/** What DevSync (and the host) keeps of a token: its SHA-256, as 64 hex characters. */
+export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 

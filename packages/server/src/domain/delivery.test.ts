@@ -58,7 +58,7 @@ async function setup() {
   const actor = async (agent: { token: string }) => authenticateAgent(host, agent.token);
   const record = (actorOf: OutboxActor, kind: string, message: string, at: number) =>
     testDb.db.transaction((tx) =>
-      outbox.record(tx, {
+      outbox.record(host, tx, {
         workspaceId: project.workspaceId,
         projectId: project.projectId,
         actor: actorOf,

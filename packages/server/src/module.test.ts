@@ -4,11 +4,19 @@ import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { z } from "zod";
+import { hashToken } from "./domain/agents";
 import type { GithubJob as GithubJobSchema } from "./domain/pull-requests";
 import { createTask } from "./domain/tasks";
 import type {
+  AdoptedAgent,
+  AgentRef,
+  ContextBlock,
+  ContextEntry,
+  DevSyncAgents,
+  DevSyncEvent,
   DevSyncGithub,
   DevSyncHost,
+  EventData,
   Finding,
   GithubFailure,
   GithubJob,
@@ -18,7 +26,14 @@ import type {
   ProjectRef,
 } from "./host";
 import { serverModule } from "./module";
-import { createTestDb, fakeHost, type TestDb } from "./testing";
+import {
+  createTestDb,
+  FAKE_NOW,
+  type FakeHostAgent,
+  fakeHost,
+  fakeToken,
+  type TestDb,
+} from "./testing";
 
 // The host's contract (control plane, specs/002-modules/contracts/modules.md), copied: DevSync
 // never imports the host, so these prove that what the host gives fits what DevSync takes, and
@@ -60,6 +75,69 @@ namespace Contract {
     ): Promise<void>;
     github: ModuleGithub;
     finding(projectId: string, fingerprint: string): Promise<ModuleFinding | null>;
+    ai: {
+      allowRun(input: { projectId: string; runRef: string; workflow: string }): Promise<{
+        request: string;
+        origin: string;
+      } | null>;
+    };
+    emit: (
+      tx: ModuleDb,
+      event: { workspaceId: string; projectId: string; type: string; data: EventData },
+    ) => Promise<void>;
+    agents: ModuleAgents;
+    context: (
+      caller: { projectId: string } & ({ userId: string } | { agentId: string }),
+      input: { subject: string },
+    ) => Promise<ContextBlock>;
+    redact: (text: string) => string;
+  }
+  export type EventData = Record<string, string | number | boolean | null>;
+  export interface AgentRef {
+    agentId: string;
+    projectId: string;
+    workspaceId: string;
+    name: string;
+    kind: "claude" | "codex" | "other";
+    modules: string[];
+  }
+  export interface ModuleAgents {
+    verify: (token: string) => Promise<AgentRef | null>;
+    list: (projectId: string) => Promise<AgentRef[]>;
+    adopt: (
+      tx: ModuleDb,
+      agents: readonly {
+        agentId: string;
+        workspaceId: string;
+        projectId: string;
+        name: string;
+        kind: "claude" | "codex" | "other";
+        tokenHash: string;
+        expiresAt: Date;
+        revokedAt: Date | null;
+        lastSeenAt: Date | null;
+        registeredBy: string | null;
+        createdAt: Date;
+      }[],
+    ) => Promise<number>;
+  }
+  export interface ContextItem {
+    kind: "instruction" | "fact" | "event";
+    text: string;
+    source: string;
+    authorUserId?: string;
+    at?: string;
+  }
+  export interface ContextBlock {
+    instructions: ContextEntry[];
+    facts: ContextEntry[];
+  }
+  export interface ContextEntry {
+    source: string;
+    kind: ContextItem["kind"];
+    author: string;
+    trust: "trusted" | "untrusted";
+    text: string;
   }
   export interface ModuleFinding {
     fingerprint: string;
@@ -157,6 +235,7 @@ namespace Contract {
     removeProject(tx: ModuleDb, projectId: string): Promise<void>;
     removeWorkspace(tx: ModuleDb, workspaceId: string): Promise<void>;
     removeMember(tx: ModuleDb, workspaceId: string, userId: string): Promise<void>;
+    exportProject?: (tx: ModuleDb, projectId: string) => Promise<unknown>;
   }
 }
 
@@ -168,11 +247,53 @@ function some<T>(): T {
   return null as unknown as T;
 }
 
+/** The function `F` taking nothing as its parameters: what no strictly checked `F` takes. */
+type TakingLess<F> = F extends (...args: never[]) => infer R
+  ? (first: never, ...rest: never[]) => R
+  : never;
+
 describe("the contract's types (checked by the typecheck)", () => {
   it("a host's ModuleHost is a DevSyncHost, and serverModule is a ServerModule", () => {
     assignable<DevSyncHost>(some<Contract.ModuleHost>());
     assignable<Contract.ServerModule>(serverModule);
     assignable<Member>(some<Contract.Member>());
+    expect(true).toBe(true);
+  });
+
+  it("checks the parameters of the host's functions strictly, so a copy widening one fails", () => {
+    // Arrow properties, as the contract has them: a method's parameters are checked both ways, so
+    // a copy that widened one (`redact(text: string | null)`) would still take the host's. A
+    // strict member refuses a function that takes less than it says.
+    type Agents = DevSyncHost["agents"];
+    type Ai = DevSyncHost["ai"];
+    type Github = DevSyncGithub;
+    // @ts-expect-error: takes less
+    assignable<DevSyncHost["emit"]>(some<TakingLess<DevSyncHost["emit"]>>());
+    // @ts-expect-error: takes less
+    assignable<DevSyncHost["context"]>(some<TakingLess<DevSyncHost["context"]>>());
+    // @ts-expect-error: takes less
+    assignable<DevSyncHost["redact"]>(some<TakingLess<DevSyncHost["redact"]>>());
+    // @ts-expect-error: takes less
+    assignable<Agents["verify"]>(some<TakingLess<Agents["verify"]>>());
+    // @ts-expect-error: takes less
+    assignable<Agents["list"]>(some<TakingLess<Agents["list"]>>());
+    // @ts-expect-error: takes less
+    assignable<Agents["adopt"]>(some<TakingLess<Agents["adopt"]>>());
+    // @ts-expect-error: takes less
+    assignable<Ai["allowRun"]>(some<TakingLess<Ai["allowRun"]>>());
+    // @ts-expect-error: takes less
+    assignable<Github["setup"]>(some<TakingLess<Github["setup"]>>());
+    // @ts-expect-error: takes less
+    assignable<Github["dispatch"]>(some<TakingLess<Github["dispatch"]>>());
+    // @ts-expect-error: takes less
+    assignable<Github["artifact"]>(some<TakingLess<Github["artifact"]>>());
+    // @ts-expect-error: takes less
+    assignable<Github["deleteArtifact"]>(some<TakingLess<Github["deleteArtifact"]>>());
+    // The check itself: a method's widened parameter still takes the host's; an arrow's doesn't.
+    type Widened = { redact(text: string | null): string };
+    assignable<Widened>(some<Contract.ModuleHost>());
+    // @ts-expect-error: the host's `redact` takes a string only
+    assignable<{ redact: (text: string | null) => string }>(some<Contract.ModuleHost>());
     expect(true).toBe(true);
   });
 
@@ -186,6 +307,29 @@ describe("the contract's types (checked by the typecheck)", () => {
     // Every fact the host sends is one the devsync.github queue's schema can take.
     assignable<z.input<typeof GithubJobSchema>>(some<Contract.ModuleGithubJob>());
     assignable<GithubJob>(some<z.output<typeof GithubJobSchema>>());
+    expect(true).toBe(true);
+  });
+
+  it("DevSync's copies of the module platform's types are the contract's, both ways", () => {
+    assignable<EventData>(some<Contract.EventData>());
+    assignable<Contract.EventData>(some<EventData>());
+    // Every event DevSync emits is one the host's `emit` takes.
+    assignable<Parameters<Contract.ModuleHost["emit"]>[1]>(some<DevSyncEvent>());
+    assignable<AgentRef>(some<Contract.AgentRef>());
+    assignable<Contract.AgentRef>(some<AgentRef>());
+    assignable<DevSyncAgents>(some<Contract.ModuleAgents>());
+    assignable<Contract.ModuleAgents>(some<DevSyncAgents>());
+    type ContractAdopted = Parameters<Contract.ModuleAgents["adopt"]>[1][number];
+    assignable<AdoptedAgent>(some<ContractAdopted>());
+    assignable<ContractAdopted>(some<AdoptedAgent>());
+    assignable<ContextBlock>(some<Contract.ContextBlock>());
+    assignable<Contract.ContextBlock>(some<ContextBlock>());
+    assignable<ContextEntry>(some<Contract.ContextEntry>());
+    assignable<Contract.ContextEntry>(some<ContextEntry>());
+    assignable<DevSyncHost["ai"]>(some<Contract.ModuleHost["ai"]>());
+    assignable<Contract.ModuleHost["ai"]>(some<DevSyncHost["ai"]>());
+    assignable<DevSyncHost["context"]>(some<Contract.ModuleHost["context"]>());
+    assignable<Contract.ModuleHost["context"]>(some<DevSyncHost["context"]>());
     expect(true).toBe(true);
   });
 
@@ -264,6 +408,7 @@ describe("serverModule", () => {
       serverModule.removeProject,
       serverModule.removeWorkspace,
       serverModule.removeMember,
+      serverModule.exportProject,
     ]) {
       expect(typeof hook).toBe("function");
     }
@@ -311,5 +456,149 @@ describe("serverModule", () => {
     const answered = await app.request(`${base}/members`);
     expect(answered.status).toBe(200);
     expect(MemberList.parse(await answered.json()).members).toEqual(members);
+  });
+});
+
+describe("fakeHost's module platform members", () => {
+  const project: ProjectRef = {
+    workspaceId: crypto.randomUUID(),
+    projectId: crypto.randomUUID(),
+    fullName: "acme/app",
+    readOnly: false,
+  };
+  const agentOf = (token: string, fields: Partial<FakeHostAgent> = {}): FakeHostAgent => ({
+    agentId: crypto.randomUUID(),
+    projectId: project.projectId,
+    workspaceId: project.workspaceId,
+    name: "Codex",
+    kind: "codex",
+    modules: ["devsync"],
+    tokenHash: hashToken(token),
+    ...fields,
+  });
+
+  it("verifies an agent by its token's hash while it may reach DevSync, and lists the project's", async () => {
+    const token = fakeToken();
+    const elsewhere = fakeToken();
+    const expired = fakeToken();
+    const live = agentOf(token);
+    const host = fakeHost(testDb.db, {
+      projects: [project],
+      agents: [
+        live,
+        agentOf(elsewhere, { modules: ["other"] }),
+        agentOf(expired, { expiresAt: new Date(FAKE_NOW) }),
+      ],
+    });
+    const { tokenHash: _hash, ...ref } = live;
+    expect(await host.agents.verify(token)).toEqual(ref);
+    expect(await host.agents.verify(fakeToken())).toBeNull();
+    expect(await host.agents.verify(elsewhere)).toBeNull();
+    expect(await host.agents.verify(expired)).toBeNull();
+    expect((await host.agents.list(project.projectId)).map((a) => a.name)).toEqual([
+      "Codex",
+      "Codex",
+    ]);
+    host.directory.projects = [];
+    expect(await host.agents.verify(token)).toBeNull();
+  });
+
+  it("adopts DevSync's agents once, keeping their tokens working, and refuses what the host refuses", async () => {
+    const host = fakeHost(testDb.db, { projects: [project] });
+    const token = fakeToken();
+    const row = {
+      agentId: crypto.randomUUID(),
+      workspaceId: project.workspaceId,
+      projectId: project.projectId,
+      name: "Claude",
+      kind: "claude" as const,
+      tokenHash: hashToken(token),
+      expiresAt: new Date(Date.parse(FAKE_NOW) + 60_000),
+      revokedAt: null,
+      lastSeenAt: null,
+      registeredBy: null,
+      createdAt: new Date(FAKE_NOW),
+    };
+    await testDb.db.transaction(async (tx) => {
+      expect(await host.agents.adopt(tx, [row])).toBe(1);
+      expect(await host.agents.adopt(tx, [row])).toBe(1);
+      expect(host.agents.adopted.map((call) => call.tx)).toEqual([tx, tx]);
+    });
+    expect(host.agents.adopted.map((call) => call.agents)).toEqual([[row], [row]]);
+    expect(await host.agents.list(project.projectId)).toHaveLength(1);
+    expect(await host.agents.verify(token)).toMatchObject({
+      agentId: row.agentId,
+      modules: ["devsync"],
+    });
+    await expect(host.agents.adopt(host.db, [{ ...row, tokenHash: "not a hash" }])).rejects.toThrow(
+      "64 hex",
+    );
+    await expect(
+      host.agents.adopt(host.db, [{ ...row, workspaceId: crypto.randomUUID() }]),
+    ).rejects.toThrow("workspace");
+    expect(host.agents.adopted).toHaveLength(2);
+  });
+
+  it("records each event with its transaction, and answers the context a test sets", async () => {
+    const host = fakeHost(testDb.db, { projects: [project] });
+    const event = {
+      workspaceId: project.workspaceId,
+      projectId: project.projectId,
+      type: "devsync.task.done" as const,
+      data: { taskId: crypto.randomUUID() },
+    };
+    await testDb.db.transaction((tx) => host.emit(tx, event));
+    expect(host.emitted).toEqual([{ tx: expect.anything(), event }]);
+    expect(host.emitted[0]?.tx).not.toBe(host.db);
+
+    const caller = { projectId: project.projectId, userId: crypto.randomUUID() };
+    expect(await host.context(caller, { subject: "Ship checkout" })).toEqual({
+      instructions: [],
+      facts: [],
+    });
+    const entry = {
+      source: "memory 1",
+      kind: "fact" as const,
+      author: "Owner",
+      trust: "trusted" as const,
+      text: "Checkout runs on the card provider's sandbox.",
+    };
+    host.contextBlock = { instructions: [], facts: [entry] };
+    expect(await host.context(caller, { subject: "Ship checkout" })).toEqual({
+      instructions: [],
+      facts: [entry],
+    });
+    expect(host.contextAsked).toEqual([
+      { caller, subject: "Ship checkout" },
+      { caller, subject: "Ship checkout" },
+    ]);
+  });
+
+  it("redacts each fakeToken() value, and leaves other text as it is", () => {
+    const host = fakeHost(testDb.db);
+    const token = fakeToken();
+    expect(host.redact(`Bearer ${token}, again ${token}.`)).toBe(
+      "Bearer [redacted], again [redacted].",
+    );
+    const hash = hashToken(token);
+    const id = crypto.randomUUID();
+    expect(host.redact(`Task ${id}, hash ${hash}.`)).toBe(`Task ${id}, hash ${hash}.`);
+  });
+
+  it("allows a run of DevSync's workflow for a writable project with DevSync on, and records each ask", async () => {
+    const frozen = { ...project, projectId: crypto.randomUUID(), readOnly: true };
+    const host = fakeHost(testDb.db, { projects: [project, frozen] });
+    const ask = (projectId: string, workflow = "devsync.yml") =>
+      host.ai.allowRun({ projectId, runRef: "run 1", workflow });
+    expect(await ask(project.projectId)).toEqual(host.ai.run);
+    expect(await ask(frozen.projectId)).toBeNull();
+    expect(await ask(crypto.randomUUID())).toBeNull();
+    expect(await ask(project.projectId, "other.yml")).toBeNull();
+    expect(host.ai.asked).toHaveLength(4);
+    expect(host.ai.asked[0]).toEqual({
+      projectId: project.projectId,
+      runRef: "run 1",
+      workflow: "devsync.yml",
+    });
   });
 });
