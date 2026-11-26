@@ -1187,6 +1187,9 @@ export async function updateTask(
         facts: {
           status: { from: current.status, to: saved.status },
           ...(released ? { released } : {}),
+          ...(saved.assigneeUserId !== current.assigneeUserId
+            ? { assigned: saved.assigneeUserId }
+            : {}),
         },
       });
     }
@@ -1239,6 +1242,16 @@ export async function commentOnTask(
       })
       .returning();
     if (!saved) throw new Error("The comment wasn't saved.");
+    await host.audit(
+      tx,
+      { userId: member.userId },
+      {
+        workspaceId: project.workspaceId,
+        projectId: project.projectId,
+        action: "devsync.task.comment_added",
+        detail: { taskId: id, commentId: saved.id },
+      },
+    );
     return saved;
   });
   return {
@@ -1322,6 +1335,13 @@ export async function writePullRequestLink(
   });
   if (number !== null) {
     const { workspaceId, projectId } = project;
-    await outbox.emit(host, tx, { workspaceId, projectId, taskId, facts: { linked: number } });
+    const by = actor === "host" ? null : actor;
+    await outbox.emit(host, tx, {
+      workspaceId,
+      projectId,
+      taskId,
+      actor: by,
+      facts: { linked: number },
+    });
   }
 }

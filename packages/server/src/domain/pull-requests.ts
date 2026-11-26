@@ -91,7 +91,8 @@ async function emitMerged(
     )
     .orderBy(asc(task.createdAt), asc(task.id));
   for (const { id } of linked) {
-    await outbox.emit(host, tx, { workspaceId, projectId, taskId: id, facts: { merged: number } });
+    const merged = { workspaceId, projectId, taskId: id, actor: null, facts: { merged: number } };
+    await outbox.emit(host, tx, merged);
   }
 }
 

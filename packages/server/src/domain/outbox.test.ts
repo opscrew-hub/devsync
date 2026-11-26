@@ -19,7 +19,7 @@ import { outbox } from "./outbox";
 import { applyGithubFact } from "./pull-requests";
 import { answerQuestion, askAgentQuestion } from "./questions";
 import { approveRun, requestRun } from "./runs";
-import { createTask, linkPullRequest, updateTask } from "./tasks";
+import { commentOnTask, createTask, linkPullRequest, updateTask } from "./tasks";
 
 const at = new Date("2026-02-03T04:05:06.000Z");
 const MINUTE = 60 * 1000;
@@ -516,5 +516,126 @@ describe("DevSync's host events (docs/platform.md, Events)", () => {
         { taskId: created.id, runId: asked.id, status: "FAILED", failure: "cancelled" },
       ],
     ]);
+  });
+});
+
+describe("DevSync's audit entries (docs/host.md, Audit)", () => {
+  /** The audit entries since the last call, as `[actor, action, detail]`, each checked. */
+  function auditReader(host: FakeHost, project: ProjectRef) {
+    let read = 0;
+    return () => {
+      const fresh = host.audits.slice(read);
+      read = host.audits.length;
+      for (const { entry } of fresh) {
+        expect(entry.workspaceId).toBe(project.workspaceId);
+        expect(entry.projectId).toBe(project.projectId);
+        for (const value of Object.values(entry.detail)) {
+          expect(value === null || ["string", "number"].includes(typeof value)).toBe(true);
+          for (const text of TEXTS) expect(String(value)).not.toContain(text);
+        }
+      }
+      return fresh.map(({ actor, entry }) => [actor, entry.action, entry.detail]);
+    };
+  }
+
+  it("record each change, a member's by user id and an agent's by the host with its id", async () => {
+    const { host, project, owner, ctx, codex, claude } = await setup();
+    const audited = auditReader(host, project);
+    const member = { userId: owner.userId };
+    const created = await createTask(host, ctx, requirements);
+    const taskId = created.id;
+    expect(audited()).toEqual([[member, "devsync.task.created", { taskId, status: "BACKLOG" }]]);
+
+    // One edit changing the requirements, the assignee and the status: an entry for each.
+    const edited = await updateTask(host, ctx, taskId, {
+      version: created.version,
+      title: "Ship card checkout",
+      assigneeUserId: owner.userId,
+      status: "READY",
+    });
+    expect(audited()).toEqual([
+      [member, "devsync.task.requirements_changed", { taskId, revision: 2 }],
+      [member, "devsync.task.moved", { taskId, from: "BACKLOG", to: "READY" }],
+      [member, "devsync.task.assigned", { taskId, assigneeUserId: owner.userId }],
+    ]);
+    // A change to its fields only is no entry.
+    await updateTask(host, ctx, taskId, { version: edited.version, labels: ["payments"] });
+    expect(audited()).toEqual([]);
+
+    const comment = await commentOnTask(host, ctx, taskId, { body: "Looks right." });
+    expect(audited()).toEqual([
+      [member, "devsync.task.comment_added", { taskId, commentId: comment.id }],
+    ]);
+
+    const agent = codex.agentId;
+    const lease = await claimTask(host, codex, { taskId, claimId: randomUUID() });
+    expect(audited()).toEqual([
+      ["host", "devsync.task.moved", { taskId, from: "READY", to: "CLAIMED", agentId: agent }],
+      ["host", "devsync.task.claimed", { taskId, agentId: agent }],
+    ]);
+    const asked = await askAgentQuestion(host, codex, {
+      taskId,
+      requestId: randomUUID(),
+      text: "Visa or both?",
+    });
+    expect(audited()).toEqual([
+      ["host", "devsync.question.asked", { taskId, questionId: asked.id, agentId: agent }],
+    ]);
+    await answerQuestion(host, ctx, asked.id, { answer: "Both." });
+    expect(audited()).toEqual([
+      [member, "devsync.question.answered", { taskId, questionId: asked.id }],
+    ]);
+    await releaseTask(host, codex, { taskId, claimId: lease.claimId });
+    expect(audited()).toEqual([
+      ["host", "devsync.task.released", { taskId, agentId: agent }],
+      ["host", "devsync.task.moved", { taskId, from: "CLAIMED", to: "READY", agentId: agent }],
+    ]);
+
+    // An agent's report moving the task, a blocker ending its claim, and its own task.
+    const again = await claimTask(host, claude, { taskId, claimId: randomUUID() });
+    audited();
+    await reportBlocker(host, claude, {
+      taskId,
+      claimId: again.claimId,
+      revision: 2,
+      requestId: randomUUID(),
+      message: "Stuck on the card form.",
+    });
+    const blocked = claude.agentId;
+    expect(audited()).toEqual([
+      ["host", "devsync.task.released", { taskId, agentId: blocked }],
+      ["host", "devsync.task.moved", { taskId, from: "CLAIMED", to: "BLOCKED", agentId: blocked }],
+    ]);
+    const own = await createTask(host, codex, { ...requirements, requestId: randomUUID() });
+    expect(audited()).toEqual([
+      ["host", "devsync.task.created", { taskId: own.id, status: "BACKLOG", agentId: agent }],
+    ]);
+  });
+
+  it("record a member's cancel of a claimed task, not the claim it ends, which isn't theirs", async () => {
+    const { host, project, owner, ctx, codex } = await setup();
+    const created = await createTask(host, ctx, requirements);
+    await updateTask(host, ctx, created.id, { version: created.version, status: "READY" });
+    const lease = await claimTask(host, codex, { taskId: created.id, claimId: randomUUID() });
+    const audited = auditReader(host, project);
+    audited();
+    await updateTask(host, ctx, created.id, { version: lease.version, status: "CANCELLED" });
+    expect(audited()).toEqual([
+      [
+        { userId: owner.userId },
+        "devsync.task.moved",
+        { taskId: created.id, from: "CLAIMED", to: "CANCELLED" },
+      ],
+    ]);
+  });
+
+  it("are written in the change's own transaction, so a change whose entry fails is rolled back", async () => {
+    const { host, project, ctx } = await setup();
+    host.audit = async () => {
+      throw new Error("the host refused the entry");
+    };
+    await expect(createTask(host, ctx, requirements)).rejects.toThrow("the host refused the entry");
+    const saved = await testDb.db.select().from(task).where(eq(task.projectId, project.projectId));
+    expect(saved).toEqual([]);
   });
 });

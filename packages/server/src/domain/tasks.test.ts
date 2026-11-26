@@ -962,6 +962,7 @@ describe("linkPullRequest", () => {
   it("links a pull request seen on the project, audited, and unlinks it", async () => {
     await seedPullRequest(projectA, 7);
     const created = await createTask(host, as(owner), fields);
+    host.audits.length = 0; // its creation's entry: outbox.test.ts
     const linked = await linkPullRequest(host, as(developer), created.id, { number: 7 });
     expect(linked).toMatchObject({ pullRequestNumber: 7, version: 2 });
     expect(host.audits).toEqual([
@@ -991,6 +992,7 @@ describe("linkPullRequest", () => {
   it("refuses a pull request not seen on this project, and another project's task", async () => {
     await seedPullRequest(projectB, 7);
     const created = await createTask(host, as(owner), fields);
+    host.audits.length = 0; // its creation's entry: outbox.test.ts
     const error = await refusal(linkPullRequest(host, as(owner), created.id, { number: 7 }));
     expect(error.code).toBe("not-found");
     expect(error.message).toBe(

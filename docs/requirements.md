@@ -243,7 +243,10 @@ briefing as an agent, a member and a managed run with a long context.
   concurrency on task edits and every requirements change kept as a revision. A Done or Cancelled
   task's requirements MUST NOT change, a member's edit and an agent's alike.
 - **R-3**: DevSync MUST write its audit entries through the host's audit log (kind `project`,
-  actions prefixed `devsync.`), with names and ids only.
+  actions prefixed `devsync.`), with names and ids only, in the transaction of the change: a task
+  created, its requirements changed, moved, assigned or commented on, a question asked or answered,
+  an agent's own claim starting or ending, a pull request linked, and a managed run's changes
+  ([host.md](host.md), Audit).
 - **R-4**: DevSync's MCP endpoint MUST authenticate agents by bearer token (hash stored, 24-hour
   expiry, rotation, revocation) and expose DevSync's current tools with their current behaviour.
 - **R-5**: DevSync's outbox MUST be drained by a worker queue started after each commit and on a

@@ -61,7 +61,7 @@ DevSync uses (`host.ts` has the exact types). In short:
 | `db` | its PostgreSQL database (or the current transaction). DevSync's tables are in the `devsync` schema of the same database, so DevSync's transactions are the host's, and the host's audit entry commits with the change. They run at the database's default isolation, READ COMMITTED, which the dependency check relies on: after waiting for the project's dependency lock, it reads the dependencies committed meanwhile. DevSync uses Drizzle's query builder only (never `db.query`), and `execute` for one transaction-level advisory lock (the dependency check, see `TaskFields`). |
 | `clock` | `now()`: every timestamp DevSync writes comes from it. |
 | `log` | `error(message)`: never given a token. |
-| `audit(tx, actor, entry)` | appends to the host's audit log in `tx`. Actions start with `devsync.`; details hold names, ids and figures only. |
+| `audit(tx, actor, entry)` | appends to the host's audit log in `tx`. Actions start with `devsync.`; details hold names, ids and figures only (see Audit). |
 | `members(workspaceId)` | the workspace's members with their names and roles. |
 | `project(projectId)` | the connected project with DevSync on for it and its workspace, or null: checked on every MCP request. |
 | `enqueue(queue, payload, options?)` | sends a job to a DevSync queue after the current transaction commits. |
@@ -518,6 +518,34 @@ creates or edits, its paths, labels and branch (checked again after the redactor
 turned into `[redacted]` is no branch name, and is refused by its field), the model a report's
 usage names, and a managed run's changed paths and models from its `result.json`. Members' text is
 kept as they wrote it.
+
+## Audit
+
+DevSync writes its entries in the host's audit log with `host.audit(tx, actor, entry)`, in the
+transaction that makes the change, so an entry commits with its change and a change rolled back
+leaves none. A member's change is the member's (`{ userId }`); an agent's and a queue's are the
+host's (`"host"`), an agent's with its `agentId` in the detail. A detail holds names, ids and
+figures only, never a title, a description, a message, a comment's body or a question's text. The
+entries of a task's changes come from the same mapping as its events (`outbox.record` and
+`outbox.emit`), so wherever a task moves, its move is audited.
+
+| Action | When | Detail |
+|---|---|---|
+| `devsync.task.created` | a task is created | `taskId`, `status` |
+| `devsync.task.requirements_changed` | its requirements change (a new revision) | `taskId`, `revision` |
+| `devsync.task.moved` | its status changes, whoever moves it | `taskId`, `from`, `to` |
+| `devsync.task.assigned` | its assignee changes | `taskId`, `assigneeUserId` (null: unassigned) |
+| `devsync.task.comment_added` | a member comments on it | `taskId`, `commentId` |
+| `devsync.question.asked`, `devsync.question.answered` | a question on it is asked or answered | `taskId`, `questionId` |
+| `devsync.task.claimed`, `devsync.task.released` | an agent's own claim starts, or ends other than by a review request (a release, a blocker, a question asked with `wait`) | `taskId` |
+| `devsync.task.pull_request_linked` | a pull request is linked or unlinked (see Managed runs for a run's) | `taskId`, `previousNumber`, `number` |
+| `devsync.run.requested`, `approved`, `rejected`, `cancelled`, `finished` | a managed run changes (see Managed runs) | `runId`, `taskId`, `revision`, and the run's figures |
+
+An edit changing several of these (its requirements, assignee and status at once) writes an entry
+for each. A claim another's change ends (a member's cancel, another agent taking over an expired
+claim) is in that change's own entry: the move, or the new claim. A change to a task's other
+fields only (its paths, labels, branch or the tasks it waits for) writes none, as it keeps no
+revision and records no event.
 
 ## Migrations and removal
 

@@ -177,6 +177,7 @@ export async function claimTask(
       await outbox.emit(host, tx, {
         ...scopeOf(actor),
         taskId: claimed.id,
+        actor: { agentId: actor.agentId },
         facts: {
           status: { from: before.status, to: "CLAIMED" },
           claimed: actor.agentId,
@@ -253,6 +254,7 @@ export async function releaseTask(
     await outbox.emit(host, tx, {
       ...scopeOf(actor),
       taskId: row.id,
+      actor: { agentId: actor.agentId },
       facts: { status: { from: "CLAIMED", to: row.status }, released: actor.agentId },
     });
     return row;
