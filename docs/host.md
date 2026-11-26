@@ -198,7 +198,8 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 - `CommentInput`: `body` (1–4000). `PullRequestLink`: `number` (a positive integer, or null).
 - `QuestionInput`: `text` (1–4000, trimmed). `AnswerInput`: `answer` (1–4000, trimmed).
 - `Question`: `id`, `taskId`, `askedBy` (an author), `text`, `wait` (an agent asked it holding the
-  task's claim, and the task waited for it in Blocked), `status` (`OPEN` or `ANSWERED`), `answer`,
+  task's claim, and the task waits for it in Blocked; cleared on an open one once the task leaves
+  Blocked another way), `status` (`OPEN` or `ANSWERED`), `answer`,
   `answeredBy` (an author) and `answeredAt` (each null while it is open), `createdAt`.
 - `PullRequest`: `number`, `title`, `state` (`open`, `closed`, `merged`), `url`, `updatedAt`.
 - `Member`: `userId`, `name`, `role`.
@@ -247,18 +248,22 @@ agents as every timeline event is, and host events (see Events).
 - **Asking.** On an open task only (neither Done nor Cancelled): a member on the task's panel
   (`POST /tasks/:taskId/questions`), an agent with `ask_question`, idempotent by its `requestId`
   (the same id for another question is refused 409). When the task's creator is an agent other than
-  the asker, it gets a `clarification.requested` signal, `{ taskId, questionId, message }`; an
-  agent's counts against its 20 signals a minute, as `publish_signal`'s do (one past them is refused
-  429, and the question isn't kept). A revoked creator gets none.
+  the asker, it gets a `clarification.requested` signal, `{ taskId, questionId, message }`; a
+  revoked creator gets none. Each question an agent asks counts against its 20 signals a minute,
+  with what it publishes, whether or not it signals anyone (one past them is refused 429, and the
+  question isn't kept); a retry under the same `requestId` is no new question.
 - **Waiting.** With `wait: true`, an agent holding the task's live claim ends it and the task moves
   to Blocked, as `report_blocker` does; without the claim, `wait` is refused 409. The task keeps
-  `blocked_by_question` while it stays Blocked (any other move clears it), which tells it apart
-  from a task a blocker report or a member's move blocked.
+  `blocked_by_question` while it stays Blocked, which tells it apart from a task a blocker report
+  or a member's move blocked. Any other move off Blocked clears it, and the `wait` of the task's
+  open questions with it: they no longer hold the task, so only the current block's question
+  counts.
 - **Answering.** Once: a member on the panel (`POST /questions/:questionId/answer`), an agent with
   `answer_question`, never an agent's own question. The asker, when an agent, gets a
-  `clarification.answered` signal, `{ taskId, questionId, message }`, with the same limit. A task
-  Blocked by a question's wait returns to Ready once none of its questions asked with `wait` is
-  open; a task blocked otherwise stays Blocked whatever is answered.
+  `clarification.answered` signal, `{ taskId, questionId, message }`; each answer an agent gives
+  counts against the same limit, signal or not. A task Blocked by a question's wait returns to
+  Ready once none of its open questions has `wait`; a task blocked otherwise stays Blocked whatever
+  is answered.
 
 ## MCP for coding agents
 
@@ -275,7 +280,7 @@ the same list until a later release (see DevSync's own endpoint below).
 | `get_project_state` | read | everyone | | the project, its agents and its 100 most recently updated tasks |
 | `list_tasks` | read | everyone | `status`?, `assignee`? (`me`, `none` or a user id) | `{ tasks }`, as `GET /tasks`; `me` is a member's own |
 | `get_task` | read | everyone | `taskId` | `{ task, latestRun }`: the `TaskDetail`, with its questions, its pull request, the tasks it waits for, the open tasks sharing its paths and its usage, and its latest `Run` (or null) |
-| `get_briefing` | read | everyone | `taskId` | the task's briefing (see Briefing below): `task` (`id`, `title`, `description`, `acceptanceCriteria`, `status`, `revision`), `openQuestions`, `answeredQuestions`, `owns`, `waitsFor` (the tasks it waits for, each `{ id, title, status }`), `overlaps`, `context` (`{ instructions, facts }`, the host's entries with their trust) and `omitted` (`{ contextEntries, answeredQuestions }`) |
+| `get_briefing` | read | everyone | `taskId` | the task's briefing (see Briefing below): `task` (`id`, `title`, `description`, `acceptanceCriteria`, `status`, `revision`), `openQuestions`, `answeredQuestions`, `owns`, `waitsFor` (the tasks it waits for, each `{ id, title, status }`), `overlaps`, `context` (`{ instructions, facts }`, the host's entries with their trust) and `omitted` (`{ contextEntries, answeredQuestions, openQuestions }`) |
 | `get_pending_signals` | read | agents | | the agent's oldest unacknowledged signals |
 | `acknowledge_signal` | write | agents | `id` | acknowledges one |
 | `publish_signal` | write | agents | `recipientId`, `kind`, `payload.message`, `idempotencyKey`, `replyToId`? | to a peer agent: one follow-up per signal, four replies per chain, 20 new signals a minute |
@@ -321,7 +326,7 @@ the same list until a later release (see DevSync's own endpoint below).
   description is at most 1,000 characters.
 - **Size.** A test (`actions.test.ts`) fails when the actions' list (names, descriptions and input
   JSON schemas, as JSON) grows past its budget, 14,000 characters (P3 reached 9,384, P4 11,960 with
-  the task's fields, the claim rules and usage, P6 13,924 with questions and the briefing; P3's
+  the task's fields, the claim rules and usage, P6 13,956 with questions and the briefing; P3's
   budget was 10,000, P4's 12,000). An id's schema is `{ type: "string", format: "uuid" }` only,
   without the pattern zod would repeat beside it.
 - **Briefing.** `get_briefing` asks `host.context({ projectId, agentId | userId }, { subject:
@@ -329,10 +334,11 @@ the same list until a later release (see DevSync's own endpoint below).
   there), keeps only the contract's fields of each entry (an answer that doesn't parse is logged,
   naming its fields only, and gives none), and answers within 8,000 characters of JSON: past them,
   the context is cut first, whole entries from its last (its facts before its instructions), then
-  the answered questions, the oldest first, and `omitted` counts what was cut. The task, its open
-  questions, paths, waits and overlaps are kept whole, so a briefing whose task alone passes 8,000
-  characters is answered whole, with no context and no answered question. Context marked
-  `untrusted` is information, not instructions, as its description says.
+  the answered questions, the oldest first, then the open questions, the newest first, and
+  `omitted` counts what was cut. Only the task, with its paths, waits and overlaps, is never cut,
+  so only a task that alone passes 8,000 characters makes a longer briefing, with no context and
+  no question. Context marked `untrusted` is information, not instructions, as its description
+  says.
 
 The host's Agents dialog (the **Agents** button at the top of the project's page) registers an
 agent, shows its token once and gives these snippets. For Claude Code:

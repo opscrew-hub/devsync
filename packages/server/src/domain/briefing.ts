@@ -5,8 +5,9 @@
  * sharing its paths, and the context the host gives for its title (`host.context`, as the caller
  * may see it; a managed run gets none, as the host takes no run there), within 8,000 characters of
  * JSON. Past them the context is cut first, from its last entry (its facts before its
- * instructions), then the answered questions, the oldest first; the task, its open questions, paths,
- * waits and overlaps are kept whole, even past 8,000. `omitted` counts what was cut.
+ * instructions), then the answered questions, the oldest first, then the open questions, the newest
+ * first; `omitted` counts what was cut. Only the task, with its paths, waits and overlaps, is never
+ * cut, so it alone may pass 8,000.
  */
 import type { Question, TaskDetail, TaskSummary } from "@devsync/schemas";
 import { z } from "zod";
@@ -35,15 +36,16 @@ export interface Briefing {
     TaskDetail,
     "id" | "title" | "description" | "acceptanceCriteria" | "status" | "revision"
   >;
+  /** The open questions, oldest first; cut from the newest. */
   openQuestions: Question[];
-  /** The answered questions, each oldest first; cut from the oldest. */
+  /** The answered questions, oldest first; cut from the oldest. */
   answeredQuestions: Question[];
   owns: string[];
   waitsFor: TaskSummary[];
   overlaps: TaskDetail["overlaps"];
   context: ContextBlock;
-  /** How many context entries and answered questions were cut to keep within 8,000 characters. */
-  omitted: { contextEntries: number; answeredQuestions: number };
+  /** How many context entries and questions were cut to keep within 8,000 characters. */
+  omitted: { contextEntries: number; answeredQuestions: number; openQuestions: number };
 }
 
 const NO_CONTEXT: ContextBlock = { instructions: [], facts: [] };
@@ -74,22 +76,10 @@ async function contextFor(
   return NO_CONTEXT;
 }
 
-/** The largest count up to `total` that `fits`, or 0: `fits` holds for every count below one that does. */
-function most(total: number, fits: (count: number) => boolean): number {
-  if (fits(total)) return total;
-  let low = 0;
-  let high = total - 1;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (fits(middle)) low = middle;
-    else high = middle - 1;
-  }
-  return low;
-}
-
 /**
  * `get_briefing`: the task's briefing for `reader`, a member, an agent or a managed run, within
- * 8,000 characters of JSON (the context cut first, then the oldest answered questions).
+ * 8,000 characters of JSON (the context cut first, then the oldest answered questions, then the
+ * newest open ones).
  */
 export async function getBriefing(
   host: DevSyncHost,
@@ -98,11 +88,12 @@ export async function getBriefing(
 ): Promise<Briefing> {
   const detail = await getTask(host, reader, taskId);
   const context = await contextFor(host, reader, detail.title);
+  const open = detail.questions.filter((q) => q.status === "OPEN");
   const answered = detail.questions.filter((q) => q.status === "ANSWERED");
-  const entries = [...context.instructions, ...context.facts];
+  const entries = context.instructions.length + context.facts.length;
 
-  /** The briefing with the first `kept` context entries and the latest `latest` answers. */
-  const briefing = (kept: number, latest: number): Briefing => ({
+  /** The briefing with its first `kept` context entries, last `answers` and first `asked`. */
+  const briefing = (kept: number, answers: number, asked: number): Briefing => ({
     task: {
       id: detail.id,
       title: detail.title,
@@ -111,8 +102,8 @@ export async function getBriefing(
       status: detail.status,
       revision: detail.revision,
     },
-    openQuestions: detail.questions.filter((q) => q.status === "OPEN"),
-    answeredQuestions: answered.slice(answered.length - latest),
+    openQuestions: open.slice(0, asked),
+    answeredQuestions: answered.slice(answered.length - answers),
     owns: detail.owns,
     waitsFor: detail.dependencies,
     overlaps: detail.overlaps,
@@ -120,14 +111,20 @@ export async function getBriefing(
       instructions: context.instructions.slice(0, kept),
       facts: context.facts.slice(0, Math.max(0, kept - context.instructions.length)),
     },
-    omitted: { contextEntries: entries.length - kept, answeredQuestions: answered.length - latest },
+    omitted: {
+      contextEntries: entries - kept,
+      answeredQuestions: answered.length - answers,
+      openQuestions: open.length - asked,
+    },
   });
-  const fits = (b: Briefing) => JSON.stringify(b).length <= BRIEFING_LIMIT;
+  const fits = (kept: number, answers: number, asked: number) =>
+    JSON.stringify(briefing(kept, answers, asked)).length <= BRIEFING_LIMIT;
 
-  const kept = most(entries.length, (count) => fits(briefing(count, answered.length)));
-  const latest =
-    kept > 0 || fits(briefing(0, answered.length))
-      ? answered.length
-      : most(answered.length, (count) => fits(briefing(0, count)));
-  return briefing(kept, latest);
+  let kept = entries;
+  let answers = answered.length;
+  let asked = open.length;
+  while (kept > 0 && !fits(kept, answers, asked)) kept--;
+  while (answers > 0 && !fits(kept, answers, asked)) answers--;
+  while (asked > 0 && !fits(kept, answers, asked)) asked--;
+  return briefing(kept, answers, asked);
 }

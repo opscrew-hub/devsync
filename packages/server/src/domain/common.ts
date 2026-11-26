@@ -13,9 +13,9 @@ import {
   type Role,
   SignalKind,
 } from "@devsync/schemas";
-import { and, count, eq, gte, inArray, or, type SQL, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, type SQL, sql } from "drizzle-orm";
 import type { z } from "zod";
-import { agent, signal, task } from "../db";
+import { agent, question, signal, task } from "../db";
 import {
   type AgentActor,
   type DevSyncDb,
@@ -189,36 +189,56 @@ export function authorOf(
 const SIGNALS_PER_MINUTE = 20;
 
 /**
- * Refuses an agent that sent 20 signals in the last minute, the most it may, in `tx` holding its
- * row. Only what the agent sent itself counts: the kinds publish_signal allows, with its payload
- * `{ message }` or a question's (`questionId`, from `ask_question` and `answer_question`). The
- * outbox's deliveries of the agent's reports (a review request's too) carry their task and no
- * question, and don't count.
+ * Refuses an agent that sent 20 signals, questions and answers in the last minute, the most it
+ * may, in `tx` holding its row: what it published (the kinds publish_signal allows, with its payload
+ * `{ message }`), and each question it asked and answer it gave, whether or not it signalled anyone.
+ * The signals a question or an answer sends, and the outbox's deliveries of the agent's reports (a
+ * review request's too), carry their task and don't count again.
  */
 export async function requireSignalRate(
   tx: DevSyncDb,
   actor: AgentActor,
   now: Date,
 ): Promise<void> {
-  const [recent] = await tx
+  const { projectId } = actor.project;
+  const since = new Date(now.getTime() - 60_000);
+  const [published] = await tx
     .select({ sent: count() })
     .from(signal)
     .where(
       and(
-        eq(signal.projectId, actor.project.projectId),
+        eq(signal.projectId, projectId),
         eq(signal.senderAgentId, actor.agentId),
         inArray(signal.kind, SignalKind.options),
-        or(
-          sql`${signal.payload} -> 'taskId' is null`,
-          sql`${signal.payload} -> 'questionId' is not null`,
-        ),
-        gte(signal.createdAt, new Date(now.getTime() - 60_000)),
+        sql`${signal.payload} -> 'taskId' is null`,
+        gte(signal.createdAt, since),
       ),
     );
-  if ((recent?.sent ?? 0) >= SIGNALS_PER_MINUTE) {
+  const [asked] = await tx
+    .select({ sent: count() })
+    .from(question)
+    .where(
+      and(
+        eq(question.projectId, projectId),
+        eq(question.askerAgentId, actor.agentId),
+        gte(question.createdAt, since),
+      ),
+    );
+  const [answered] = await tx
+    .select({ sent: count() })
+    .from(question)
+    .where(
+      and(
+        eq(question.projectId, projectId),
+        eq(question.answererAgentId, actor.agentId),
+        gte(question.answeredAt, since),
+      ),
+    );
+  const sent = (published?.sent ?? 0) + (asked?.sent ?? 0) + (answered?.sent ?? 0);
+  if (sent >= SIGNALS_PER_MINUTE) {
     throw new DevSyncError(
       "rate-limited",
-      `You sent ${SIGNALS_PER_MINUTE} signals in the last minute, the most an agent may. Wait a minute and try again.`,
+      `You sent ${SIGNALS_PER_MINUTE} signals, questions and answers in the last minute, the most an agent may. Wait a minute and try again.`,
     );
   }
 }

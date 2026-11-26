@@ -391,7 +391,7 @@ describe("the task panel", () => {
     expect(within(none.panel).queryByRole("region", { name: "Usage" })).toBeNull();
   });
 
-  it("shows the questions, open first, each with who asked and the answer", async () => {
+  it("shows the questions as the server orders them, each with who asked and the answer", async () => {
     const answered: Question = {
       id: id(40),
       taskId: detail.id,
@@ -414,7 +414,7 @@ describe("the task panel", () => {
       answeredBy: null,
       answeredAt: null,
     };
-    const { panel } = await withQuestions(detail, [answered, waiting]);
+    const { panel } = await withQuestions(detail, [waiting, answered]);
     const section = within(panel).getByRole("region", { name: "Questions" });
     const items = within(within(section).getByRole("list", { name: "Questions" })).getAllByRole(
       "listitem",

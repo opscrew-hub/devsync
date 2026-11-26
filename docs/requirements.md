@@ -217,14 +217,14 @@ briefing as an agent, a member and a managed run with a long context.
 3. **Given** an open question, **When** a member answers it on the panel, or a peer agent with
    `answer_question`, **Then** it is answered once, with who answered and when; the asker, when an
    agent, receives a `clarification.answered` signal; an agent can't answer its own question.
-4. **Given** a task a question's `wait` moved to Blocked, **When** every question asked on it with
-   `wait` is answered, **Then** it returns to Ready; a task blocked by a blocker report or a
-   member's move stays Blocked.
+4. **Given** a task a question's `wait` moved to Blocked, **When** that question is answered,
+   **Then** the task returns to Ready; once a member moves the task on instead, the question no
+   longer holds it, and a task blocked by a blocker report or a member's move stays Blocked.
 5. **Given** a task, **When** a member, an agent or a managed run reads its briefing, **Then** it
    has the task, its open and answered questions, its paths, the tasks it waits for with their
    statuses, its overlaps and the host's context for its title (none for a run), within 8,000
-   characters of JSON: the context cut first, then the oldest answered questions, the task kept
-   whole.
+   characters of JSON: the context cut first, then the oldest answered questions, then the newest
+   open ones, only the task kept whole.
 
 ---
 
@@ -275,11 +275,12 @@ briefing as an agent, a member and a managed run with a long context.
 - **R-14**: A question MUST be asked only on an open task, answered once and never by the agent
   that asked it, and an agent's text and answer MUST pass the host's redactor. Only the agent
   holding the task's live claim MAY make it wait; the task MUST return to Ready only when a
-  question's wait blocked it and none of its questions asked with `wait` is open. An agent's
-  question and answer signals MUST count against its 20 signals a minute.
-- **R-15**: A briefing MUST NOT pass 8,000 characters of JSON unless its task, open questions,
-  paths, waits and overlaps alone do, cutting the context first and then the oldest answered
-  questions, and saying how many of each it cut. It MUST ask the host's context as the caller (a
+  question's wait blocked it and none of its open questions still has `wait`, which a move off
+  Blocked clears. Each question and answer of an agent MUST count against its 20 signals a minute,
+  whether or not it signals anyone.
+- **R-15**: A briefing MUST NOT pass 8,000 characters of JSON unless its task, with its paths,
+  waits and overlaps, alone does, cutting the context first, then the oldest answered questions,
+  then the newest open ones, and saying how many of each it cut. It MUST ask the host's context as the caller (a
   member or an agent), never for a managed run, and pass on only the contract's fields of a context
   that parses.
 
@@ -291,7 +292,7 @@ table has `workspace_id` and `project_id` (except where noted), and every query 
 
 | Table | Columns (beyond `id` uuid pk, `workspace_id`, `project_id`, `created_at`) | Keys and indexes |
 |---|---|---|
-| `task` | `title`, `description`, `acceptance_criteria`, `status` (BACKLOG, READY, CLAIMED, IN_PROGRESS, BLOCKED, REVIEW, DONE, CANCELLED), `revision` int, `version` int, `creator_user_id` uuid?, `creator_agent_id` uuid?, `create_request_id` uuid?, `assignee_user_id` uuid?, `claim_agent_id` uuid?, `claim_id` uuid?, `claim_expires_at`?, `pull_request_number` int?, `finding_fingerprint`?, `finding_rule`?, `finding_file`? (the security finding it was made from, as the host gave it), `owns` text[] and `labels` text[] (empty by default), `branch`?, `blocked_by_question` bool (a question's `wait` moved it to Blocked; cleared when it leaves Blocked), `updated_at` | (`project_id`, `status`); (`project_id`, `assignee_user_id`); unique (`project_id`, `creator_agent_id`, `create_request_id`) |
+| `task` | `title`, `description`, `acceptance_criteria`, `status` (BACKLOG, READY, CLAIMED, IN_PROGRESS, BLOCKED, REVIEW, DONE, CANCELLED), `revision` int, `version` int, `creator_user_id` uuid?, `creator_agent_id` uuid?, `create_request_id` uuid?, `assignee_user_id` uuid?, `claim_agent_id` uuid?, `claim_id` uuid?, `claim_expires_at`?, `pull_request_number` int?, `finding_fingerprint`?, `finding_rule`?, `finding_file`? (the security finding it was made from, as the host gave it), `owns` text[] and `labels` text[] (empty by default), `branch`?, `blocked_by_question` bool (a question's `wait` moved it to Blocked; cleared, with its open questions' `wait`, when it leaves Blocked), `updated_at` | (`project_id`, `status`); (`project_id`, `assignee_user_id`); unique (`project_id`, `creator_agent_id`, `create_request_id`) |
 | `task_dependency` | (no `id` or `created_at`) `task_id` → task cascade, `depends_on_task_id` → task cascade (a task it waits for, of the same project), `position` int (its order, from 0) | pk (`task_id`, `depends_on_task_id`); (`depends_on_task_id`) |
 | `question` | `task_id` → task cascade, `asker_user_id`?, `asker_agent_id`?, `request_id` uuid? (an agent's), `text`, `wait` bool, `answer`?, `answerer_user_id`?, `answerer_agent_id`?, `answered_at`? | (`task_id`, `created_at`); unique (`project_id`, `asker_agent_id`, `request_id`) |
 | `task_revision` | `task_id` → task cascade, `number`, `title`, `description`, `acceptance_criteria`, `author_user_id`?, `author_agent_id`? | pk (`task_id`, `number`) |

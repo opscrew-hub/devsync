@@ -14,7 +14,8 @@ export type AnswerInput = z.infer<typeof AnswerInput>;
 
 /**
  * A question on a task, from an agent or a member: open until it is answered, once. `wait`: an
- * agent asked it holding the task's claim, and the task waited for it in Blocked.
+ * agent asked it holding the task's claim, and the task waits for it in Blocked; an open one's is
+ * cleared once the task leaves Blocked another way, so it no longer holds the task.
  */
 export const Question = z.object({
   id: Id,

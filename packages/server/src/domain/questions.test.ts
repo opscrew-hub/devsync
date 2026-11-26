@@ -139,7 +139,6 @@ describe("an agent's question", () => {
       "conflict",
     );
     expect(reused.fields).toEqual(["requestId"]);
-    await refusal(askAgentQuestion(s.host, s.claude, { ...input, wait: true }), "conflict");
 
     expect(await s.inbox(s.codex)).toEqual([
       [
@@ -228,33 +227,44 @@ describe("an agent's question", () => {
     expect(await askAgentQuestion(s.host, s.claude, { ...input, wait: true })).toEqual(asked);
   });
 
-  it("counts its signal against the agent's 20 a minute, with what it published", async () => {
+  it("counts each of the agent's questions and answers against its 20 a minute, signal or not", async () => {
     const s = await setup();
-    for (let i = 0; i < 19; i++) {
-      await publishAgentSignal(s.host, s.claude, {
-        recipientId: s.codex.agentId,
-        kind: "clarification.requested",
-        payload: { message: `Question ${i}` },
-        idempotencyKey: crypto.randomUUID(),
-      });
-    }
-    const ask = (taskId: string) =>
-      askAgentQuestion(s.host, s.claude, { taskId, requestId: crypto.randomUUID(), text: "Why?" });
-    await ask(s.codexTask.id);
-    // The 21st signal is refused, and the question that would send it isn't saved.
-    await refusal(ask(s.codexTask.id), "rate-limited");
-    await refusal(
+    const publish = () =>
       publishAgentSignal(s.host, s.claude, {
         recipientId: s.codex.agentId,
         kind: "clarification.requested",
-        payload: { message: "One more" },
+        payload: { message: "Which one?" },
         idempotencyKey: crypto.randomUUID(),
-      }),
+      });
+    for (let i = 0; i < 17; i++) await publish();
+    const ask = (taskId: string, requestId = crypto.randomUUID()) =>
+      askAgentQuestion(s.host, s.claude, { taskId, requestId, text: "Why?" });
+    // On a member's task: no signal, and still one of the 20.
+    const unsignalled = crypto.randomUUID();
+    await ask(s.memberTask.id, unsignalled);
+    // An answer to a member's question: no signal either.
+    const theirs = await askQuestion(s.host, s.member(), s.memberTask.id, { text: "Which cart?" });
+    await answerAgentQuestion(s.host, s.claude, { questionId: theirs.id, answer: "Small." });
+    // Its signal to Codex counts once, with the question.
+    await ask(s.codexTask.id);
+
+    await refusal(ask(s.memberTask.id), "rate-limited");
+    await refusal(publish(), "rate-limited");
+    const another = await askQuestion(s.host, s.member(), s.memberTask.id, { text: "Colour?" });
+    await refusal(
+      answerAgentQuestion(s.host, s.claude, { questionId: another.id, answer: "Blue." }),
       "rate-limited",
     );
+    // A retry is no new question, and nothing refused was kept.
+    expect((await ask(s.memberTask.id, unsignalled)).text).toBe("Why?");
     expect((await getTask(s.host, s.member(), s.codexTask.id)).questions).toHaveLength(1);
-    // A question that signals no one isn't held back.
-    await ask(s.memberTask.id);
+    const onMembers = (await getTask(s.host, s.member(), s.memberTask.id)).questions;
+    // Asked at the same instant: compared in any order.
+    expect(onMembers.map((q) => `${q.text} ${q.status}`).sort()).toEqual([
+      "Colour? OPEN",
+      "Which cart? ANSWERED",
+      "Why? OPEN",
+    ]);
   });
 });
 
@@ -364,16 +374,17 @@ describe("an answer", () => {
     await refusal(answerQuestion(s.host, s.member(), asked.id, { answer: " " }), "invalid");
   });
 
-  it("returns a task its waiting questions blocked to Ready once they are all answered", async () => {
+  it("returns a task its waiting question blocked to Ready, one a member moved past not counting", async () => {
     const s = await setup();
     // A first wait, then a member moves the task back to Ready without answering it.
     const first = await s.claim(s.claude, s.memberTask.id);
-    const earlier = await askAgentQuestion(s.host, s.claude, {
+    const earlierAsk = {
       taskId: first.taskId,
       requestId: crypto.randomUUID(),
       text: "Which cart?",
       wait: true,
-    });
+    };
+    const earlier = await askAgentQuestion(s.host, s.claude, earlierAsk);
     const blocked = await readTask(first.taskId);
     await updateTask(s.host, s.member(), first.taskId, {
       version: blocked.version,
@@ -383,8 +394,17 @@ describe("an answer", () => {
       status: "READY",
       blockedByQuestion: false,
     });
+    // The member moved past it: it is still open, and the task no longer waits for it.
+    expect((await getTask(s.host, s.member(), first.taskId)).questions).toMatchObject([
+      { id: earlier.id, status: "OPEN", wait: false },
+    ]);
+    // Its retry still answers it, its wait cleared.
+    expect(await askAgentQuestion(s.host, s.claude, earlierAsk)).toMatchObject({
+      id: earlier.id,
+      wait: false,
+    });
 
-    // A second wait blocks it again: answering it leaves the first one waiting.
+    // A second wait blocks it again: answering that one returns it to Ready.
     await s.claim(s.codex, first.taskId);
     const later = await askAgentQuestion(s.host, s.codex, {
       taskId: first.taskId,
@@ -392,23 +412,22 @@ describe("an answer", () => {
       text: "Which colour?",
       wait: true,
     });
-    await answerQuestion(s.host, s.member(), later.id, { answer: "Blue." });
-    expect((await readTask(first.taskId)).status).toBe("BLOCKED");
-
     const version = (await readTask(first.taskId)).version;
     s.tick();
-    await answerAgentQuestion(s.host, s.codex, { questionId: earlier.id, answer: "Small." });
+    await answerQuestion(s.host, s.member(), later.id, { answer: "Blue." });
     expect(await readTask(first.taskId)).toMatchObject({
       status: "READY",
       blockedByQuestion: false,
       version: version + 1,
     });
-    // Claimable again.
+    // Claimable again; answering the first changes nothing more.
     await s.claim(s.claude, first.taskId);
+    await answerAgentQuestion(s.host, s.codex, { questionId: earlier.id, answer: "Small." });
+    expect((await readTask(first.taskId)).status).toBe("CLAIMED");
     const detail = await getTask(s.host, s.member(), first.taskId);
-    expect(detail.questions.map((q) => [q.text, q.status])).toEqual([
-      ["Which cart?", "ANSWERED"],
-      ["Which colour?", "ANSWERED"],
+    expect(detail.questions.map((q) => [q.text, q.status, q.wait])).toEqual([
+      ["Which cart?", "ANSWERED", false],
+      ["Which colour?", "ANSWERED", true],
     ]);
   });
 

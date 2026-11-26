@@ -109,9 +109,9 @@ export const task = devsyncSchema.table(
     labels: text("labels").array().notNull().default(sql`'{}'::text[]`),
     branch: text("branch"),
     /**
-     * Set when a question asked with `wait` moved it to Blocked, cleared when it leaves Blocked: a
-     * task Blocked so returns to Ready once its questions asked with `wait` are answered, one
-     * blocked by a blocker report or a member's move doesn't.
+     * Set when a question asked with `wait` moved it to Blocked; cleared, with the `wait` of its open
+     * questions, when it leaves Blocked another way. A task Blocked so returns to Ready once none
+     * of its open questions has `wait`; one blocked by a blocker report or a member's move doesn't.
      */
     blockedByQuestion: boolean("blocked_by_question").notNull().default(false),
     createdAt: createdAt(),
@@ -181,7 +181,8 @@ export const taskComment = devsyncSchema.table(
 /**
  * A question on a task, from an agent or a member, open until it is answered, once. An agent's
  * `request_id` makes its retry ask nothing more; `wait`: the agent asked it holding the task's
- * claim, which ended, and the task moved to Blocked.
+ * claim, which ended, and the task moved to Blocked (cleared while it is open once the task leaves
+ * Blocked another way).
  */
 export const question = devsyncSchema.table(
   "question",

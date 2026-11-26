@@ -89,7 +89,12 @@ import {
   taskIn,
 } from "./common";
 import { type OutboxActor, outbox } from "./outbox";
-import { questionAgentIds, selectQuestions, toQuestion } from "./questions";
+import {
+  questionAgentIds,
+  releaseWaitingQuestions,
+  selectQuestions,
+  toQuestion,
+} from "./questions";
 
 /** Who acts on a task: a member on a project route, or an agent through MCP. */
 export type TaskActor = ProjectContext | AgentActor;
@@ -1032,6 +1037,10 @@ export async function updateTask(
       .returning();
     if (!saved) throw new DevSyncError("conflict", TASK_CHANGED);
     if (dependencies) await writeDependencies(tx, project, id, dependencies);
+    // Moved off a question's block: its open questions no longer hold it.
+    if (current.blockedByQuestion && saved.status !== current.status) {
+      await releaseWaitingQuestions(tx, project, id);
+    }
 
     const author = actorIds(actor);
     if (revised) {

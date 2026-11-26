@@ -102,7 +102,7 @@ describe("a task's briefing", () => {
         },
       ],
       context: { instructions: [instruction], facts: [fact] },
-      omitted: { contextEntries: 0, answeredQuestions: 0 },
+      omitted: { contextEntries: 0, answeredQuestions: 0, openQuestions: 0 },
     });
     expect(s.host.contextAsked).toEqual([
       {
@@ -138,7 +138,7 @@ describe("a task's briefing", () => {
     expect(JSON.stringify(first).length).toBeLessThanOrEqual(BRIEFING_LIMIT);
     expect(first.context).toEqual({ instructions: [instructions[0]], facts: [] });
     expect(first.answeredQuestions).toEqual(answered);
-    expect(first.omitted).toEqual({ contextEntries: 3, answeredQuestions: 0 });
+    expect(first.omitted).toEqual({ contextEntries: 3, answeredQuestions: 0, openQuestions: 0 });
 
     // Four more answers: past 8,000 without any context, so the oldest answers go, as few as fit.
     for (const n of [4, 5, 6, 7]) answered.push(await s.ask(`Question ${n}?`, "b".repeat(1000)));
@@ -148,14 +148,33 @@ describe("a task's briefing", () => {
     expect(second.context).toEqual({ instructions: [], facts: [] });
     expect(cut).toBeGreaterThan(0);
     expect(second.answeredQuestions).toEqual(answered.slice(cut));
-    expect(second.omitted.contextEntries).toBe(4);
+    expect(second.omitted).toMatchObject({ contextEntries: 4, openQuestions: 0 });
     const oneMore = { ...second, answeredQuestions: answered.slice(cut - 1) };
     expect(JSON.stringify(oneMore).length).toBeGreaterThan(BRIEFING_LIMIT);
   });
 
-  it("keeps the task whole, its open questions too, past 8,000 characters", async () => {
+  it("cuts the newest open questions last, once nothing else is left to cut", async () => {
+    const s = await setup();
+    const open = [];
+    for (const n of [1, 2, 3, 4, 5, 6]) open.push(await s.ask(`${n}`.repeat(1000)));
+    await s.ask("Which currency?", "Euros.");
+    s.host.contextBlock = {
+      instructions: [entry("instruction", "Test it.", "trusted")],
+      facts: [],
+    };
+    const briefing = await getBriefing(s.host, s.codex.actor, s.task.id);
+    const cut = briefing.omitted.openQuestions;
+    expect(JSON.stringify(briefing).length).toBeLessThanOrEqual(BRIEFING_LIMIT);
+    expect(briefing.omitted).toMatchObject({ contextEntries: 1, answeredQuestions: 1 });
+    expect(cut).toBeGreaterThan(0);
+    expect(briefing.openQuestions).toEqual(open.slice(0, open.length - cut));
+    const oneMore = { ...briefing, openQuestions: open.slice(0, open.length - cut + 1) };
+    expect(JSON.stringify(oneMore).length).toBeGreaterThan(BRIEFING_LIMIT);
+  });
+
+  it("keeps only the task whole past 8,000 characters", async () => {
     const s = await setup({ description: "d".repeat(5000), acceptanceCriteria: "c".repeat(4000) });
-    const open = await s.ask("Which card network first?");
+    await s.ask("Which card network first?");
     await s.ask("Which currency?", "Euros.");
     s.host.contextBlock = {
       instructions: [entry("instruction", "Test it.", "trusted")],
@@ -164,10 +183,10 @@ describe("a task's briefing", () => {
     const briefing = await getBriefing(s.host, s.codex.actor, s.task.id);
     expect(briefing.task.description).toBe("d".repeat(5000));
     expect(briefing.task.acceptanceCriteria).toBe("c".repeat(4000));
-    expect(briefing.openQuestions).toEqual([open]);
+    expect(briefing.openQuestions).toEqual([]);
     expect(briefing.answeredQuestions).toEqual([]);
     expect(briefing.context).toEqual({ instructions: [], facts: [] });
-    expect(briefing.omitted).toEqual({ contextEntries: 1, answeredQuestions: 1 });
+    expect(briefing.omitted).toEqual({ contextEntries: 1, answeredQuestions: 1, openQuestions: 1 });
   });
 
   it("gives no context the host's answer doesn't parse, and logs where without its text", async () => {

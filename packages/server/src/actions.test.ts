@@ -27,7 +27,7 @@ afterAll(async () => {
 
 /**
  * The most characters the actions' list (names as the host lists them, descriptions and input
- * JSON schemas, as JSON) may take: the size P6 reached (13,924: P4's 11,960 with questions and
+ * JSON schemas, as JSON) may take: the size P6 reached (13,956: P4's 11,960 with questions and
  * the briefing; P3's was 9,384), rounded up to the next 1,000. Raise it only with a reason: every
  * agent reads the whole list.
  */

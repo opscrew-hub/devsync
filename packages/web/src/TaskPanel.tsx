@@ -228,9 +228,10 @@ function EditRequirements({ task, onDone }: { task: TaskDetail; onDone: () => vo
 const CLOSED: readonly TaskStatus[] = ["DONE", "CANCELLED"];
 
 /**
- * The task's questions, the open ones first, each with who asked it and its answer. An open one has
- * its answer form, and an open task the form to ask another, both locked for a role without
- * `task.write` and on a read-only or disconnected project.
+ * The task's questions, as the server orders them (the open ones first), each with who asked it
+ * and its answer. An open one has its answer form, and an open task the form to ask another, both
+ * locked for a role without `task.write` and on a read-only or disconnected project. "The task
+ * waits for its answer" shows only on a question still holding the task in Blocked.
  */
 function Questions({ task }: { task: TaskDetail }) {
   const { ui, may } = useDevSync();
@@ -239,10 +240,6 @@ function Questions({ task }: { task: TaskDetail }) {
   const ask = useChange(QuestionInput, (api, body) =>
     api.send("POST", `/tasks/${task.id}/questions`, body, Question),
   );
-  const questions = [
-    ...task.questions.filter((q) => q.status === "OPEN"),
-    ...task.questions.filter((q) => q.status === "ANSWERED"),
-  ];
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -256,9 +253,9 @@ function Questions({ task }: { task: TaskDetail }) {
         <ui.Icon name="chat-circle-text" className="i-sm" />
         Questions
       </h4>
-      {questions.length === 0 && <p className="sub">No questions yet.</p>}
+      {task.questions.length === 0 && <p className="sub">No questions yet.</p>}
       <ul className="feed" aria-label="Questions">
-        {questions.map((question) => (
+        {task.questions.map((question) => (
           <QuestionItem key={question.id} question={question} write={write} />
         ))}
       </ul>

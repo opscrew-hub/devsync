@@ -1,15 +1,16 @@
 /**
  * Questions on a task (docs/host.md, Questions). An agent asks with `ask_question`, idempotent by
  * its `requestId`, and a member on the task's panel; the task's creator, when it is another agent,
- * gets a `clarification.requested` signal (counted against an asking agent's 20 signals a minute,
- * as publish_signal's). With `wait`, the agent holding the task's claim ends it and the task moves
- * to Blocked, as a blocker does. A member answers on the panel and an agent with `answer_question`,
- * once, never its own question; the asker, when it is an agent, gets `clarification.answered`. A
- * task a question's `wait` blocked (`blocked_by_question`, cleared when it leaves Blocked otherwise)
- * returns to Ready once none of its questions asked with `wait` is open; one blocked by a blocker
- * report or a member's move stays Blocked. Asking and answering are timeline events of the task
- * (`question.asked`, `question.answered`) with their host events; an agent's text passes the host's
- * redactor before it is stored. Every query filters by the project.
+ * gets a `clarification.requested` signal. With `wait`, the agent holding the task's claim ends it
+ * and the task moves to Blocked, as a blocker does. A member answers on the panel and an agent with
+ * `answer_question`, once, never its own question; the asker, when it is an agent, gets
+ * `clarification.answered`. A task a question's `wait` blocked (`blocked_by_question`) returns to
+ * Ready once none of its open questions has `wait`; when it leaves Blocked another way, the flag and
+ * its open questions' `wait` are cleared, so only the current block's question counts, and a task
+ * blocked by a blocker report or a member's move stays Blocked. Each question and answer of an
+ * agent counts against its 20 signals a minute, signal or not. Asking and answering are timeline
+ * events of the task (`question.asked`, `question.answered`) with their host events; an agent's
+ * text passes the host's redactor before it is stored. Every query filters by the project.
  */
 import { randomUUID } from "node:crypto";
 import {
@@ -120,6 +121,28 @@ async function namedQuestion(host: DevSyncHost, project: ProjectRef, row: Questi
 // --- Writes -------------------------------------------------------------------------------------
 
 /**
+ * Clears `wait` on the task's open questions in `tx`: the task left the Blocked their wait put it
+ * in (`updateTask`), so they no longer hold it.
+ */
+export async function releaseWaitingQuestions(
+  tx: DevSyncDb,
+  project: ProjectRef,
+  taskId: string,
+): Promise<void> {
+  await tx
+    .update(question)
+    .set({ wait: false })
+    .where(
+      and(
+        eq(question.taskId, taskId),
+        eq(question.projectId, project.projectId),
+        eq(question.wait, true),
+        isNull(question.answeredAt),
+      ),
+    );
+}
+
+/**
  * The task's row in the project, locked for the rest of `tx` (`no key update`, as an edit locks
  * it, so a dependency written on it meanwhile doesn't wait).
  */
@@ -140,7 +163,7 @@ async function lockTask(tx: DevSyncDb, actor: QuestionActor, taskId: string): Pr
 
 /**
  * Signals agent `recipientId` about the question in `tx`, from `sender`, with `message`: nothing
- * when its row is gone or revoked. An agent's signal counts against its 20 a minute.
+ * when its row is gone or revoked.
  */
 async function signalAbout(
   tx: DevSyncDb,
@@ -157,7 +180,6 @@ async function signalAbout(
     .from(agent)
     .where(and(eq(agent.id, recipientId), eq(agent.projectId, projectId)));
   if (!recipient || recipient.revokedAt) return;
-  if (isAgent(sender)) await requireSignalRate(tx, sender, now);
   await tx.insert(signal).values({
     workspaceId,
     projectId,
@@ -209,12 +231,14 @@ async function ask(host: DevSyncHost, actor: QuestionActor, asked: Asked): Promi
               ),
             )
         : [];
+      // The same task and text: its `wait` may have been cleared since, as the task moved on.
       if (existing) {
-        if (existing.taskId !== taskId || existing.text !== text || existing.wait !== wait) {
+        if (existing.taskId !== taskId || existing.text !== text) {
           throw new DevSyncError("conflict", REQUEST_REUSED, ["requestId"]);
         }
         return { row: existing, created: false };
       }
+      await requireSignalRate(tx, actor, now);
     }
 
     const current = await lockTask(tx, actor, taskId);
@@ -373,6 +397,7 @@ async function answer(
       }
       return { row, created: false };
     }
+    if (isAgent(actor)) await requireSignalRate(tx, actor, now);
 
     const [saved] = await tx
       .update(question)
