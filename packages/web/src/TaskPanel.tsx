@@ -1,8 +1,11 @@
 import {
+  AnswerInput,
   Comment,
   CommentInput,
   LIMITS,
   PullRequestLink,
+  Question,
+  QuestionInput,
   STATUS_LABEL,
   Task,
   type TaskDetail,
@@ -31,8 +34,8 @@ import { useChange, useMembers, usePullRequests, useTask, useTasks } from "./que
 import { type Repository, Runs } from "./Runs";
 
 /**
- * The open task: its requirements, its paths, the tasks it waits for, its labels and branch, its
- * status, assignee, pull request, managed runs, usage, revisions, comments and timeline.
+ * The open task: its requirements, its questions, its paths, the tasks it waits for, its labels and
+ * branch, its status, assignee, pull request, managed runs, usage, revisions, comments and timeline.
  */
 export function TaskPanel({
   taskId,
@@ -176,6 +179,7 @@ function TaskBody({ task, repository }: { task: TaskDetail; repository?: Reposit
         </div>
       )}
 
+      <Questions task={task} />
       <TaskScope task={task} />
       <Moves
         task={task}
@@ -222,6 +226,130 @@ function EditRequirements({ task, onDone }: { task: TaskDetail; onDone: () => vo
 
 /** A task that is no longer open: it holds no claim back and shares no paths. */
 const CLOSED: readonly TaskStatus[] = ["DONE", "CANCELLED"];
+
+/**
+ * The task's questions, as the server orders them (the open ones first), each with who asked it
+ * and its answer. An open one has its answer form, and an open task the form to ask another, both
+ * locked for a role without `task.write` and on a read-only or disconnected project. "The task
+ * waits for its answer" shows only on a question still holding the task in Blocked.
+ */
+function Questions({ task }: { task: TaskDetail }) {
+  const { ui, may } = useDevSync();
+  const heading = useId();
+  const write = may("task.write");
+  const ask = useChange(QuestionInput, (api, body) =>
+    api.send("POST", `/tasks/${task.id}/questions`, body, Question),
+  );
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    ask.mutate({ text: new FormData(form).get("text") }, { onSuccess: () => form.reset() });
+  }
+
+  return (
+    <section className={styles.stack} aria-labelledby={heading}>
+      <h4 className={`cream ${styles.inline}`} id={heading}>
+        <ui.Icon name="chat-circle-text" className="i-sm" />
+        Questions
+      </h4>
+      {task.questions.length === 0 && <p className="sub">No questions yet.</p>}
+      <ul className="feed" aria-label="Questions">
+        {task.questions.map((question) => (
+          <QuestionItem key={question.id} question={question} write={write} />
+        ))}
+      </ul>
+      {CLOSED.includes(task.status) ? (
+        <p className="sub">{`A ${STATUS_LABEL[task.status]} task takes no more questions.`}</p>
+      ) : (
+        <form className={styles.form} onSubmit={submit} aria-label="Ask a question">
+          <Field label="Question">
+            <textarea
+              className="field"
+              name="text"
+              rows={3}
+              required
+              maxLength={LIMITS.question}
+              disabled={!write}
+            />
+          </Field>
+          <Problem error={ask.error} />
+          <div className={styles.actions}>
+            <button
+              className="btn btn-sm btn-primary"
+              type="submit"
+              disabled={!write || ask.isPending}
+            >
+              Ask the question
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
+  );
+}
+
+/** One question: who asked it and when, its text, and its answer or the form to answer it. */
+function QuestionItem({ question, write }: { question: Question; write: boolean }) {
+  const { ui } = useDevSync();
+  const post = useChange(AnswerInput, (api, body) =>
+    api.send("POST", `/questions/${question.id}/answer`, body, Question),
+  );
+  const open = question.status === "OPEN";
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    post.mutate({ answer: new FormData(form).get("answer") }, { onSuccess: () => form.reset() });
+  }
+
+  return (
+    <li>
+      <ui.Icon name={question.askedBy.kind === "agent" ? "robot" : "chat-circle-text"} />
+      <div className={styles.stack}>
+        <p className="sub">
+          {authorName(question.askedBy)}, {formatTime(question.createdAt)}{" "}
+          <span className="chip">
+            {open ? (question.wait ? "Open: the task waits for its answer" : "Open") : "Answered"}
+          </span>
+        </p>
+        <p className={styles.prose}>{question.text}</p>
+        {open ? (
+          <form className={styles.form} onSubmit={submit} aria-label="Answer the question">
+            <Field label="Answer">
+              <textarea
+                className="field"
+                name="answer"
+                rows={2}
+                required
+                maxLength={LIMITS.question}
+                disabled={!write}
+              />
+            </Field>
+            <Problem error={post.error} />
+            <div className={styles.actions}>
+              <button
+                className="btn btn-sm btn-primary"
+                type="submit"
+                disabled={!write || post.isPending}
+              >
+                Post the answer
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <p className="sub">
+              Answered by {authorName(question.answeredBy)}
+              {question.answeredAt && `, ${formatTime(question.answeredAt)}`}
+            </p>
+            <p className={styles.prose}>{question.answer}</p>
+          </>
+        )}
+      </div>
+    </li>
+  );
+}
 
 /** `"A"`, `"A" and "B"`, `"A", "B" and "C"`. */
 function titles(tasks: readonly TaskSummary[]): string {
@@ -687,6 +815,8 @@ const EVENT: Record<string, string> = {
   "review.requested": "Review requested",
   "review.approved": "Review approved",
   "review.changes_requested": "Changes requested",
+  "question.asked": "Question asked",
+  "question.answered": "Question answered",
 };
 
 function eventLabel(kind: string): string {

@@ -9,6 +9,7 @@ import { reportProgress } from "./activity";
 import { claimTask } from "./claims";
 import { exportProject } from "./export";
 import { applyGithubFact } from "./pull-requests";
+import { answerQuestion, askAgentQuestion } from "./questions";
 import { requestRun } from "./runs";
 import { commentOnTask, createTask, linkPullRequest, updateTask } from "./tasks";
 
@@ -82,6 +83,12 @@ async function setup() {
       usage: { inputTokens: 10, costUsd: 0.01 },
     });
     await commentOnTask(host, ctx, created.id, { body: `About ${title}` });
+    const question = await askAgentQuestion(host, builder.actor, {
+      taskId: created.id,
+      requestId: crypto.randomUUID(),
+      text: `Which ${title}?`,
+    });
+    await answerQuestion(host, ctx, question.id, { answer: "The first." });
     await applyGithubFact(host, {
       workspaceId,
       projectId: on.projectId,
@@ -143,6 +150,10 @@ describe("exportProject", () => {
       [2, "Revised"],
     ]);
     expect(data.tasks[1]?.comments.map((c) => c.body)).toEqual(["About Ship checkout"]);
+    expect(data.tasks[1]?.questions.map((q) => [q.text, q.answer])).toEqual([
+      ["Which Ship checkout?", "The first."],
+    ]);
+    expect(data.tasks[0]?.questions).toEqual([]);
     expect(data.runs.map((r) => [r.id, r.taskId, r.status])).toEqual([
       [shopRows.runId, shopRows.taskId, "REQUESTED"],
     ]);
@@ -155,6 +166,8 @@ describe("exportProject", () => {
       "requirements.changed",
       "task.updated",
       "implementation.progress",
+      "question.asked",
+      "question.answered",
       "run.requested",
     ]);
     expect(data.timeline.find((e) => e.kind === "implementation.progress")?.usage).toEqual({

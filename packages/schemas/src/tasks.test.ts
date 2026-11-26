@@ -293,6 +293,20 @@ describe("the answers", () => {
         },
       ],
       comments: [{ id: randomUUID(), author: member, body: "Looks good", createdAt: now }],
+      questions: [
+        {
+          id: randomUUID(),
+          taskId: randomUUID(),
+          askedBy: agent,
+          text: "Which port?",
+          wait: false,
+          status: "ANSWERED",
+          answer: "8080",
+          answeredBy: member,
+          createdAt: now,
+          answeredAt: now,
+        },
+      ],
       timeline: [
         {
           id: randomUUID(),
@@ -334,6 +348,7 @@ describe("the answers", () => {
     };
     expect(TaskDetail.safeParse(detail).success).toBe(true);
     expect(TaskDetail.safeParse({ ...detail, usage: { agents: null } }).success).toBe(false);
+    expect(TaskDetail.safeParse({ ...detail, questions: undefined }).success).toBe(false);
     expect(
       TaskDetail.safeParse({
         ...detail,

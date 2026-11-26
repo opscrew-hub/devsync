@@ -6,6 +6,7 @@ import {
   FindingAnswer,
   MemberList,
   PullRequestList,
+  Question,
   type Role,
   Run,
   RunList,
@@ -485,6 +486,79 @@ describe("project routes", () => {
     expect(host.errors[1]).toContain("The events are unavailable.");
     expect(host.errors[1]).not.toContain("Secret title");
     expect((await as("owner")("GET", "/tasks")).body).toEqual({ tasks: [] });
+  });
+});
+
+describe("project question routes", () => {
+  it("ask a question on a task and answer it, with any role, shown on the task", async () => {
+    const s = setup();
+    const task = await createTask(s.host, s.ctx("owner"), newTask);
+    const asked = await s.as("developer")("POST", `/tasks/${task.id}/questions`, {
+      text: "  Which columns?  ",
+    });
+    expect(asked.status).toBe(201);
+    expect(asked.headers.get("cache-control")).toBe("no-store");
+    const question = Question.parse(asked.body);
+    expect(question).toMatchObject({
+      taskId: task.id,
+      text: "Which columns?",
+      status: "OPEN",
+      askedBy: { kind: "member", name: "The developer" },
+    });
+
+    const answered = await s.as("approver")("POST", `/questions/${question.id}/answer`, {
+      answer: "All of them.",
+    });
+    expect(answered.status).toBe(200);
+    expect(Question.parse(answered.body)).toMatchObject({
+      id: question.id,
+      status: "ANSWERED",
+      answer: "All of them.",
+      answeredBy: { kind: "member", name: "The approver" },
+    });
+    const detail = TaskDetail.parse((await s.as("owner")("GET", `/tasks/${task.id}`)).body);
+    expect(detail.questions).toEqual([Question.parse(answered.body)]);
+
+    // Once only.
+    const again = await s.as("owner")("POST", `/questions/${question.id}/answer`, {
+      answer: "Only the totals.",
+    });
+    refusal(again, 409, "conflict");
+  });
+
+  it("refuse a bad body, a closed task, another project's question and a read-only project", async () => {
+    const s = setup();
+    const task = await createTask(s.host, s.ctx("owner"), newTask);
+    const owner = s.as("owner");
+    const bad = await owner("POST", `/tasks/${task.id}/questions`, { text: "", wait: true });
+    expect(refusal(bad, 422, "invalid").fields?.sort()).toEqual(["text", "wait"]);
+    const asked = Question.parse(
+      (await owner("POST", `/tasks/${task.id}/questions`, { text: "Which columns?" })).body,
+    );
+    refusal(await owner("POST", `/questions/${asked.id}/answer`, { answer: "" }), 422, "invalid");
+
+    const elsewhere = s.as("owner", s.other);
+    refusal(
+      await elsewhere("POST", `/tasks/${task.id}/questions`, { text: "Hi?" }),
+      404,
+      "not-found",
+    );
+    refusal(
+      await elsewhere("POST", `/questions/${asked.id}/answer`, { answer: "No." }),
+      404,
+      "not-found",
+    );
+    refusal(await owner("POST", "/questions/q1/answer", { answer: "No." }), 404, "not-found");
+
+    await updateTask(s.host, s.ctx("owner"), task.id, { version: 1, status: "CANCELLED" });
+    refusal(await owner("POST", `/tasks/${task.id}/questions`, { text: "Hi?" }), 409, "conflict");
+
+    const frozen = s.as("owner", { ...s.project, readOnly: true });
+    refusal(
+      await frozen("POST", `/questions/${asked.id}/answer`, { answer: "No." }),
+      403,
+      "forbidden",
+    );
   });
 });
 

@@ -9,6 +9,7 @@ import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
   bigint,
+  boolean,
   index,
   integer,
   jsonb,
@@ -107,6 +108,12 @@ export const task = devsyncSchema.table(
     owns: text("owns").array().notNull().default(sql`'{}'::text[]`),
     labels: text("labels").array().notNull().default(sql`'{}'::text[]`),
     branch: text("branch"),
+    /**
+     * Set when a question asked with `wait` moved it to Blocked; cleared, with the `wait` of its open
+     * questions, when it leaves Blocked another way. A task Blocked so returns to Ready once none
+     * of its open questions has `wait`; one blocked by a blocker report or a member's move doesn't.
+     */
+    blockedByQuestion: boolean("blocked_by_question").notNull().default(false),
     createdAt: createdAt(),
     updatedAt: tstz("updated_at").notNull().defaultNow(),
   },
@@ -169,6 +176,34 @@ export const taskComment = devsyncSchema.table(
     createdAt: createdAt(),
   },
   (t) => [index().on(t.taskId, t.createdAt)],
+);
+
+/**
+ * A question on a task, from an agent or a member, open until it is answered, once. An agent's
+ * `request_id` makes its retry ask nothing more; `wait`: the agent asked it holding the task's
+ * claim, which ended, and the task moved to Blocked (cleared while it is open once the task leaves
+ * Blocked another way).
+ */
+export const question = devsyncSchema.table(
+  "question",
+  {
+    id: id(),
+    ...scope(),
+    taskId: uuid("task_id")
+      .notNull()
+      .references(() => task.id, { onDelete: "cascade" }),
+    askerUserId: uuid("asker_user_id"),
+    askerAgentId: uuid("asker_agent_id"),
+    requestId: uuid("request_id"),
+    text: text("text").notNull(),
+    wait: boolean("wait").notNull().default(false),
+    answer: text("answer"),
+    answererUserId: uuid("answerer_user_id"),
+    answererAgentId: uuid("answerer_agent_id"),
+    answeredAt: tstz("answered_at"),
+    createdAt: createdAt(),
+  },
+  (t) => [index().on(t.taskId, t.createdAt), unique().on(t.projectId, t.askerAgentId, t.requestId)],
 );
 
 /**
@@ -341,6 +376,7 @@ export const run = devsyncSchema.table(
 
 export type TaskRow = typeof task.$inferSelect;
 export type TaskDependencyRow = typeof taskDependency.$inferSelect;
+export type QuestionRow = typeof question.$inferSelect;
 export type AgentRow = typeof agent.$inferSelect;
 export type SignalRow = typeof signal.$inferSelect;
 export type OutboxEventRow = typeof outboxEvent.$inferSelect;

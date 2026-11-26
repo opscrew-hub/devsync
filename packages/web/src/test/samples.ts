@@ -89,7 +89,7 @@ export const pullRequests: PullRequest[] = [
 ];
 
 export const ana = { kind: "member", userId: ME, name: "Ana Lima" } as const;
-const builder = { kind: "agent", agentId: BUILDER, name: "Builder" } as const;
+export const builder = { kind: "agent", agentId: BUILDER, name: "Builder" } as const;
 
 export const detail: TaskDetail = {
   ...(tasks[0] as Task),
@@ -117,6 +117,7 @@ export const detail: TaskDetail = {
     },
   ],
   comments: [{ id: id(20), author: ana, body: "Use the shop's colours.", createdAt: at }],
+  questions: [],
   timeline: [
     {
       id: id(21),

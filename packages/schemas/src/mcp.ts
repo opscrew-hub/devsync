@@ -2,13 +2,14 @@
 import { z } from "zod";
 import { MessageText, SignalKind } from "./agents";
 import { Counter, Id } from "./common";
+import { AnswerInput, QuestionInput } from "./questions";
 import { AgentUsage, TaskInput, TaskListQuery, TaskUpdate } from "./tasks";
 
 /** `get_project_state` and `get_pending_signals`. */
 export const NoInput = z.strictObject({});
 export type NoInput = z.infer<typeof NoInput>;
 
-/** `get_task` and `request_run`: one of the project's tasks. */
+/** `get_task`, `get_briefing` and `request_run`: one of the project's tasks. */
 export const TaskRef = z.strictObject({ taskId: Id });
 export type TaskRef = z.infer<typeof TaskRef>;
 
@@ -66,11 +67,31 @@ export const ReviewDecisionInput = z.strictObject({
 });
 export type ReviewDecisionInput = z.infer<typeof ReviewDecisionInput>;
 
+/**
+ * `ask_question`: a question on an open task, idempotent by `requestId`; with `wait`, the agent
+ * holding the task's claim makes the task wait for the answer.
+ */
+export const AskQuestionInput = z.strictObject({
+  taskId: Id,
+  requestId: Id,
+  text: QuestionInput.shape.text,
+  wait: z.boolean().optional(),
+});
+export type AskQuestionInput = z.infer<typeof AskQuestionInput>;
+
+/** `answer_question`: an answer to an open question, once. */
+export const AnswerQuestionInput = z.strictObject({
+  questionId: Id,
+  answer: AnswerInput.shape.answer,
+});
+export type AnswerQuestionInput = z.infer<typeof AnswerQuestionInput>;
+
 /** Each action's input, by the action's name; `list_tasks` takes `GET /tasks`' query. */
 export const MCP_TOOL_INPUTS = {
   get_project_state: NoInput,
   list_tasks: TaskListQuery,
   get_task: TaskRef,
+  get_briefing: TaskRef,
   get_pending_signals: NoInput,
   acknowledge_signal: AcknowledgeSignalInput,
   publish_signal: PublishSignalInput,
@@ -81,6 +102,8 @@ export const MCP_TOOL_INPUTS = {
   update_task: AgentTaskUpdate,
   report_progress: TaskReportInput,
   report_blocker: TaskActivityInput,
+  ask_question: AskQuestionInput,
+  answer_question: AnswerQuestionInput,
   request_review: TaskReportInput,
   submit_review: ReviewDecisionInput,
   request_run: TaskRef,

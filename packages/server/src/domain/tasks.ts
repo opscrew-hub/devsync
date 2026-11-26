@@ -75,27 +75,32 @@ import {
   type WorkspaceContext,
 } from "../host";
 import {
+  authorOf,
   hostFinding,
   lockAgentRow,
-  memberAuthor,
+  type Names,
   namesOf,
   noSuchTask,
   parse,
+  REMOVED_AGENT,
   requireRole,
   requireWritable,
   taskIdOf,
   taskIn,
 } from "./common";
 import { type OutboxActor, outbox } from "./outbox";
+import {
+  questionAgentIds,
+  releaseWaitingQuestions,
+  selectQuestions,
+  toQuestion,
+} from "./questions";
 
 /** Who acts on a task: a member on a project route, or an agent through MCP. */
 export type TaskActor = ProjectContext | AgentActor;
 
 /** Who reads a project's tasks: a member, an agent, or a managed run (its project only). */
 export type TaskReader = TaskActor | Pick<TaskActor, "project">;
-
-/** The name shown for an agent whose row is gone. */
-const REMOVED_AGENT = "Removed agent";
 
 const TASK_CHANGED = "This task changed. Reload it and try again.";
 /** How many of a task's latest events its timeline shows. */
@@ -208,18 +213,6 @@ export function toPullRequest(row: PullRequestRow): PullRequest {
     url: row.url,
     updatedAt: row.sourceUpdatedAt.toISOString(),
   };
-}
-
-/** Members' names by user id, agents' by agent id. */
-interface Names {
-  members: Map<string, string>;
-  agents: Map<string, string>;
-}
-
-function authorOf(names: Names, userId: string | null, agentId: string | null): Author | null {
-  if (userId) return memberAuthor(names.members, userId);
-  if (agentId) return { kind: "agent", agentId, name: names.agents.get(agentId) ?? REMOVED_AGENT };
-  return null;
 }
 
 function requiredAuthor(names: Names, userId: string | null, agentId: string | null): Author {
@@ -537,8 +530,9 @@ async function usageOf(
 
 /**
  * `GET /tasks/:taskId` and `get_task`: the task with its requirements, creator, revisions and
- * comments (newest first), its timeline (its latest outbox events, oldest first), its linked
- * pull request, the tasks it waits for, the open tasks whose paths overlap its own, and its usage.
+ * comments (newest first), its questions (the open ones first), its timeline (its latest outbox
+ * events, oldest first), its linked pull request, the tasks it waits for, the open tasks whose
+ * paths overlap its own, and its usage.
  * It depends on the project only, so every reader reads the same.
  */
 export async function getTask(
@@ -550,7 +544,7 @@ export async function getTask(
   const [found] = await selectTasks(host.db, taskIn(project, taskIdOf(taskId)));
   if (!found) throw noSuchTask();
   const row = found.task;
-  const [revisions, comments, events, pull, members, dependencies, overlaps, usage] =
+  const [revisions, comments, events, pull, members, dependencies, overlaps, usage, questions] =
     await Promise.all([
       host.db
         .select()
@@ -583,6 +577,7 @@ export async function getTask(
       dependenciesOf(host.db, project, row.id),
       overlapsOf(host.db, project, row),
       usageOf(host.db, project, row.id),
+      selectQuestions(host.db, project, row.id),
     ]);
 
   const agentIds = new Set<string>();
@@ -590,6 +585,7 @@ export async function getTask(
     row.creatorAgentId,
     ...revisions.map((r) => r.authorAgentId),
     ...events.map((e) => e.actorAgentId),
+    ...questions.flatMap(questionAgentIds),
   ]) {
     if (id) agentIds.add(id);
   }
@@ -628,6 +624,7 @@ export async function getTask(
         createdAt: c.createdAt.toISOString(),
       }),
     ),
+    questions: questions.map((q) => toQuestion(q, names)),
     timeline: events.reverse().map((e): TimelineEvent => {
       const payload = (e.payload ?? {}) as Record<string, unknown>;
       return {
@@ -1030,6 +1027,8 @@ export async function updateTask(
         ...(status && status !== "CLAIMED"
           ? { claimAgentId: null, claimId: null, claimExpiresAt: null }
           : {}),
+        // A task leaving Blocked is no longer Blocked by a question's wait.
+        ...(status && status !== current.status ? { blockedByQuestion: false } : {}),
         version: current.version + 1,
         revision: revised ? current.revision + 1 : current.revision,
         updatedAt: at,
@@ -1038,6 +1037,10 @@ export async function updateTask(
       .returning();
     if (!saved) throw new DevSyncError("conflict", TASK_CHANGED);
     if (dependencies) await writeDependencies(tx, project, id, dependencies);
+    // Moved off a question's block: its open questions no longer hold it.
+    if (current.blockedByQuestion && saved.status !== current.status) {
+      await releaseWaitingQuestions(tx, project, id);
+    }
 
     const author = actorIds(actor);
     if (revised) {

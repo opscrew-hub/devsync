@@ -36,7 +36,10 @@ export interface EventFacts {
   run?: { status: RunRow["status"]; failure: RunFailure | null };
 }
 
-/** An event to record: a task's change has the payload `{ taskId, revision, version, message }`. */
+/**
+ * An event to record: a task's change has the payload `{ taskId, revision, version, message }`, a
+ * question's `{ taskId, questionId, message }`.
+ */
 export interface OutboxRecord {
   workspaceId: string;
   projectId: string;
@@ -118,6 +121,10 @@ function hostEvents(change: Change): HostEvent[] {
       add(`devsync.${change.kind}`, {
         reviewRequestId: required(change, change.reviewRequestId, "review request"),
       });
+      break;
+    case "question.asked":
+    case "question.answered":
+      add(`devsync.${change.kind}`, { questionId: payloadId(change, "questionId") });
       break;
     case "run.finished":
       add("devsync.run.finished", {

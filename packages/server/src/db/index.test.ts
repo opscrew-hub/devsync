@@ -9,6 +9,7 @@ import {
   migrations,
   outboxEvent,
   pullRequest,
+  question,
   run,
   signal,
   task,
@@ -47,7 +48,7 @@ describe("the devsync schema's migration", () => {
 
   it("applies twice, each migration journaled once in devsync.__drizzle_migrations", async () => {
     await testDb.migrate();
-    expect(await testDb.db.select().from(journal)).toHaveLength(7);
+    expect(await testDb.db.select().from(journal)).toHaveLength(8);
     const tables = await testDb.db
       .select({ name: catalog.tableName })
       .from(catalog)
@@ -59,6 +60,7 @@ describe("the devsync schema's migration", () => {
       "github_delivery",
       "outbox_event",
       "pull_request",
+      "question",
       "run",
       "signal",
       "task",
@@ -101,7 +103,7 @@ describe("the devsync schema's migration", () => {
     if (!t) throw new Error("no task");
     expect(t).toMatchObject({ status: "BACKLOG", revision: 1, version: 1, claimId: null });
     // A task's paths and labels are empty, and it has no branch, until they are set.
-    expect(t).toMatchObject({ owns: [], labels: [], branch: null });
+    expect(t).toMatchObject({ owns: [], labels: [], branch: null, blockedByQuestion: false });
     const [u] = await db
       .insert(task)
       .values({
@@ -143,6 +145,15 @@ describe("the devsync schema's migration", () => {
     await db
       .insert(taskComment)
       .values({ ...scope, taskId: t.id, authorUserId: userId, body: "Hi" });
+    // A question is open, and asked without waiting, until said otherwise; an agent's request id
+    // asks it once.
+    const asked = { ...scope, taskId: t.id, askerAgentId: a.id, requestId: crypto.randomUUID() };
+    const [q] = await db
+      .insert(question)
+      .values({ ...asked, text: "Which port?" })
+      .returning();
+    expect(q).toMatchObject({ wait: false, answer: null, answeredAt: null, askerUserId: null });
+    await expect(db.insert(question).values({ ...asked, text: "Again?" })).rejects.toThrow();
 
     const [s] = await db
       .insert(signal)
@@ -194,7 +205,7 @@ describe("the devsync schema's migration", () => {
 
     // A task's rows go with it.
     await db.delete(task).where(sql`${task.id} = ${t.id}`);
-    for (const table of [taskRevision, taskComment, outboxEvent, run, taskDependency]) {
+    for (const table of [taskRevision, taskComment, outboxEvent, run, taskDependency, question]) {
       expect(await db.select().from(table)).toEqual([]);
     }
     // An agent's signals go with it.

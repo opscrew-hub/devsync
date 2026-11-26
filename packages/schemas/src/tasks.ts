@@ -9,6 +9,7 @@ import {
   Timestamp,
 } from "./common";
 import { TaskStatus } from "./lifecycle";
+import { Question } from "./questions";
 
 const title = z.string().trim().min(1).max(LIMITS.title);
 const description = z.string().trim().max(LIMITS.description);
@@ -264,8 +265,9 @@ export type TimelineEvent = z.infer<typeof TimelineEvent>;
  * `GET /tasks/:taskId`: revisions and comments newest first, the timeline oldest first. Beyond the
  * `Task`: the tasks it waits for (`dependencies`, in its `dependsOn` order: one not Done or
  * Cancelled keeps it from being claimed); while it is open, the other open tasks whose paths
- * overlap its own, each with the paths they share (`overlaps`); and the usage its agents reported
- * beside its managed runs', kept apart (`usage`, each null when there is none).
+ * overlap its own, each with the paths they share (`overlaps`); the usage its agents reported
+ * beside its managed runs', kept apart (`usage`, each null when there is none); and its questions,
+ * the open ones first, each group oldest first (`questions`).
  */
 export const TaskDetail = Task.extend({
   description: z.string(),
@@ -273,6 +275,7 @@ export const TaskDetail = Task.extend({
   creator: Author,
   revisions: z.array(Revision),
   comments: z.array(Comment),
+  questions: z.array(Question),
   timeline: z.array(TimelineEvent),
   pullRequest: PullRequest.nullable(),
   dependencies: z.array(TaskSummary),

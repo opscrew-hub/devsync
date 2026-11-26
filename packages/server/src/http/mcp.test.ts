@@ -29,6 +29,7 @@ const TOOLS = [
   "get_project_state",
   "list_tasks",
   "get_task",
+  "get_briefing",
   "get_pending_signals",
   "acknowledge_signal",
   "claim_task",
@@ -39,6 +40,8 @@ const TOOLS = [
   "update_task",
   "report_progress",
   "report_blocker",
+  "ask_question",
+  "answer_question",
   "request_review",
   "submit_review",
   "request_run",
@@ -445,6 +448,15 @@ describe("the MCP endpoint", () => {
       task.id,
     ]);
     expect((await data(codex.token, "get_task", { taskId: task.id })).task.title).toBe("Read me");
+    expect((await data(codex.token, "get_briefing", { taskId: task.id })).task.title).toBe(
+      "Read me",
+    );
+    const asked = await data(codex.token, "ask_question", {
+      taskId: task.id,
+      requestId: crypto.randomUUID(),
+      text: "Read what?",
+    });
+    expect(asked).toMatchObject({ status: "OPEN", askedBy: { agentId: codex.id } });
     const run = await tool(codex.token, "request_run", { taskId: task.id });
     expect(run.isError).toBe(true);
     expect(run.content[0]?.text).toContain("Only a member can ask for a managed run");
