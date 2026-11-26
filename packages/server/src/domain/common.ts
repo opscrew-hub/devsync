@@ -293,12 +293,12 @@ export async function requireSignalRate(
 }
 
 /**
- * Counts a task the agent creates or edits against its 20 a minute, in `tx`, the change's: its row
- * locked, refused past them (`requireSignalRate`), and the change's time kept on its row with those
- * of the last minute only, so the row holds 20 at most. A change that rolls back counts nothing.
+ * Counts a task the agent creates or edits against its 20 a minute, in `tx`, the change's, holding
+ * the agent's row (`lockAgentRow`): refused past them (`requireSignalRate`), and the change's time
+ * kept on its row with those of the last minute only, so the row holds 20 at most. A change that
+ * rolls back counts nothing.
  */
 export async function countTaskWrite(tx: DevSyncDb, actor: AgentActor, now: Date): Promise<void> {
-  await lockAgentRow(tx, actor);
   await requireSignalRate(tx, actor, now);
   const recent = await recentTaskWrites(tx, actor, now.getTime() - RATE_WINDOW_MS);
   await tx

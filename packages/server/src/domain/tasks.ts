@@ -938,7 +938,8 @@ export async function createTask(
         return { task: toTask(existing), created: false };
       }
     }
-    // An agent's new task counts against its 20 a minute; its retry above doesn't.
+    // An agent's new task counts against its 20 a minute, its row locked above (an agent's task
+    // always has a request id); its retry above doesn't count.
     if (agentActor) await countTaskWrite(tx, agentActor, at);
     // One open task per finding (R-10); two creates at the same instant may both pass, accepted.
     const linked = finding ? await linkedTask(tx, project, finding) : null;
@@ -1074,7 +1075,10 @@ export async function updateTask(
 
   const result = await host.db.transaction(async (tx) => {
     // An agent's edit counts against its 20 a minute, its row locked before the task's.
-    if (agentActor) await countTaskWrite(tx, agentActor, at);
+    if (agentActor) {
+      await lockAgentRow(tx, agentActor);
+      await countTaskWrite(tx, agentActor, at);
+    }
     // `no key update`, not `update`: a dependency on this task written meanwhile under
     // `lockDependencies` locks it `key share`, and mustn't wait for this edit.
     const [current] = await tx.select().from(task).where(taskIn(project, id)).for("no key update");
