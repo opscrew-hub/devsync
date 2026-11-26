@@ -30,7 +30,7 @@ afterAll(async () => {
  * The most characters the actions' list (names as the host lists them, descriptions and input
  * JSON schemas, as JSON) may take: the size P7 reached (14,096: P6's 13,956 with a managed run's
  * own-task rule in the project-wide reads; P4's was 11,960, P3's 9,384), rounded up to the next
- * 1,000. P8 reaches 14,382 with `list_tasks`' pages and the bounded task's lists, within it. Raise
+ * 1,000. P8 reaches 14,479 with `list_tasks`' pages and the bounded task's lists, within it. Raise
  * it only with a reason: every agent reads the whole list.
  */
 const ACTIONS_BUDGET = 15_000;

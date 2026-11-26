@@ -160,8 +160,11 @@ Both `GET /tasks` (and `list_tasks`) answer a page of tasks, most recently updat
 id): `limit` tasks, 1 to 100, and 100 without it, and `nextCursor`, an opaque string to pass as
 `cursor` for the next page, or null on the last. A page is read after the previous page's last task
 (its `updatedAt` and id), so a task appears at most once while the pages are read, and a task
-changed meanwhile moves to the first page. A cursor DevSync didn't give is refused 422 (`cursor`),
-and so is a `limit` outside 1 to 100. The pages read more with "Show more tasks". 100 is the size
+updated meanwhile moves to the first page: read from the first page again to see it (`list_tasks`'
+description says so). A cursor DevSync didn't give is refused 422 (`cursor`),
+and so is a `limit` outside 1 to 100. The pages read more with "Show more tasks"; while there are
+more, the task panel's waits-for picker and the workspace page's project filter say they list what
+is loaded so far. 100 is the size
 `get_project_state` and an agent's inbox already answer.
 
 ### Bounds
@@ -384,7 +387,7 @@ the same list until a later release (see DevSync's own endpoint below).
 - **Size.** A test (`actions.test.ts`) fails when the actions' list (names, descriptions and input
   JSON schemas, as JSON) grows past its budget, 15,000 characters (P3 reached 9,384, P4 11,960 with
   the task's fields, the claim rules and usage, P6 13,956 with questions and the briefing, P7 14,096
-  with a managed run's own-task rule in `get_project_state` and `list_tasks`, P8 14,382 with
+  with a managed run's own-task rule in `get_project_state` and `list_tasks`, P8 14,479 with
   `list_tasks`' pages and the task's bounded lists; P3's budget was
   10,000, P4's 12,000, P6's 14,000). An id's schema is `{ type: "string", format: "uuid" }` only,
   without the pattern zod would repeat beside it.

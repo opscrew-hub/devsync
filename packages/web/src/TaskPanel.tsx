@@ -501,7 +501,9 @@ function lines(text: FormDataEntryValue | null, key = (line: string) => line): s
  */
 function EditScope({ task, onDone }: { task: TaskDetail; onDone: () => void }) {
   const form = useFormSave(task);
-  const listed = useTasks().tasks;
+  // The tasks the list has loaded so far: older ones come with its "Show more tasks".
+  const loaded = useTasks();
+  const listed = loaded.tasks;
   const [waitsFor, setWaitsFor] = useState<string[]>(task.dependsOn);
   const choices: TaskSummary[] = [
     ...listed.filter(
@@ -554,6 +556,11 @@ function EditScope({ task, onDone }: { task: TaskDetail; onDone: () => void }) {
           ))}
         </select>
       </Field>
+      {loaded.hasNextPage && (
+        <p className="sub">
+          These are the tasks loaded so far: "Show more tasks" loads older ones.
+        </p>
+      )}
       <Field label="Labels, one per line">
         <textarea className="field" name="labels" rows={2} defaultValue={task.labels.join("\n")} />
       </Field>

@@ -234,7 +234,7 @@ export const actions: readonly DevSyncAction<any>[] = [
   action(
     "list_tasks",
     "read",
-    `List the project's tasks, most recently updated first, by \`status\` and by \`assignee\`: \`none\`, a member's user id, or \`me\` for the member asking. A page holds \`limit\` tasks, 100 at most and by default; pass its \`nextCursor\` as \`cursor\` for the next. ${RUN_READS}`,
+    `List the project's tasks, most recently updated first, by \`status\` and by \`assignee\`: \`none\`, a member's user id, or \`me\` for the member asking. A page holds \`limit\` tasks, 100 at most and by default; pass its \`nextCursor\` as \`cursor\` for the next. A task updated while you page moves to the first page: read from the first page again to see it. ${RUN_READS}`,
     async (ctx, query) => listTasks(ctx.host, await reader(ctx), query),
   ),
   action(

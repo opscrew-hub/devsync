@@ -80,6 +80,12 @@ export function WorkspacePage({ taskHref }: WorkspacePageProps) {
           Assigned to me
         </label>
       </div>
+      {(open.hasNextPage || tasks.hasNextPage) && (
+        <p className="sub">
+          The projects to filter by are those of the tasks loaded so far: "Show more tasks" loads
+          more.
+        </p>
+      )}
       <Problem error={tasks.error} />
       {tasks.isSuccess && list.length === 0 && (
         <EmptyState icon="check-circle" title={filtered ? "No tasks match" : "No open tasks"}>

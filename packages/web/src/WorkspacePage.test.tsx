@@ -87,11 +87,15 @@ describe("WorkspacePage", () => {
     });
     await screen.findByRole("link", { name: /Add the sign-up form/ });
     expect(screen.getByText("1+")).toBeTruthy();
+    const note =
+      'The projects to filter by are those of the tasks loaded so far: "Show more tasks" loads more.';
+    expect(screen.getByText(note)).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Show more tasks" }));
     expect(await screen.findByRole("link", { name: /Write the first post/ })).toBeTruthy();
     expect(screen.getByText("2")).toBeTruthy();
     expect(sent.map((s) => s.path)).toContain("/tasks?cursor=next");
     expect(screen.queryByRole("button", { name: "Show more tasks" })).toBeNull();
+    expect(screen.queryByText(note)).toBeNull();
   });
 
   it("says when nothing matches", async () => {

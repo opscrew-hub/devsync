@@ -271,6 +271,19 @@ describe("the task panel", () => {
     expect(within(plain.panel).getByText("No paths given.")).toBeTruthy();
   });
 
+  it("says the tasks it may wait for are those loaded so far, while there are more", async () => {
+    const note = 'These are the tasks loaded so far: "Show more tasks" loads older ones.';
+    const more = await open(detail, { "GET /tasks": { body: { tasks, nextCursor: "page-2" } } });
+    await userEvent.click(within(more.panel).getByRole("button", { name: "Edit the fields" }));
+    const form = within(more.panel).getByRole("form", { name: "Edit the fields" });
+    expect(await within(form).findByText(note)).toBeTruthy();
+    cleanup();
+    const all = await open(detail);
+    await userEvent.click(within(all.panel).getByRole("button", { name: "Edit the fields" }));
+    await within(all.panel).findByRole("option", { name: "Send the welcome email (Ready)" });
+    expect(within(all.panel).queryByText(note)).toBeNull();
+  });
+
   it("edits the fields: paths one per line, the tasks it waits for, labels and branch", async () => {
     const { panel, sent } = await open(detail, {
       [`PATCH /tasks/${detail.id}`]: { body: tasks[0] },
