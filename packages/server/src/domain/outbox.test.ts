@@ -17,6 +17,7 @@ import { reportBlocker, reportProgress, requestReview, submitReview } from "./ac
 import { claimTask, releaseTask } from "./claims";
 import { outbox } from "./outbox";
 import { applyGithubFact } from "./pull-requests";
+import { answerQuestion, askAgentQuestion } from "./questions";
 import { approveRun, requestRun } from "./runs";
 import { createTask, linkPullRequest, updateTask } from "./tasks";
 
@@ -44,6 +45,8 @@ const DATA_KEYS: Record<string, string[]> = {
   "devsync.review.requested": ["taskId", "agentId"],
   "devsync.review.approved": ["taskId", "reviewRequestId"],
   "devsync.review.changes_requested": ["taskId", "reviewRequestId"],
+  "devsync.question.asked": ["taskId", "questionId"],
+  "devsync.question.answered": ["taskId", "questionId"],
   "devsync.pr.linked": ["taskId", "number"],
   "devsync.pr.merged": ["taskId", "number"],
   "devsync.run.finished": ["taskId", "runId", "status", "failure"],
@@ -60,6 +63,8 @@ const TEXTS = [
   "Ready for review.",
   "Rename the handler.",
   "Looks right.",
+  "Visa or both?",
+  "Both.",
 ];
 
 /**
@@ -323,6 +328,41 @@ describe("DevSync's host events (docs/platform.md, Events)", () => {
     expect(emitted()).toEqual([
       ["devsync.task.moved", { taskId, from: "REVIEW", to: "DONE" }],
       ["devsync.task.done", { taskId }],
+    ]);
+  });
+
+  it("tell a question asked and answered, and the moves of one the task waited for", async () => {
+    const { host, ctx, codex, emitted } = await setup();
+    const created = await createTask(host, ctx, requirements);
+    const taskId = created.id;
+    await updateTask(host, ctx, taskId, { version: created.version, status: "READY" });
+    const claim = { taskId, claimId: randomUUID() };
+    await claimTask(host, codex, claim);
+    emitted();
+
+    const ask = { taskId, requestId: randomUUID(), text: "Visa or both?" };
+    const plain = await askAgentQuestion(host, codex, ask);
+    expect(emitted()).toEqual([["devsync.question.asked", { taskId, questionId: plain.id }]]);
+    const waited = await askAgentQuestion(host, codex, {
+      ...ask,
+      requestId: randomUUID(),
+      wait: true,
+    });
+    expect(emitted()).toEqual([
+      ["devsync.question.asked", { taskId, questionId: waited.id }],
+      ["devsync.task.released", { taskId, agentId: codex.agentId }],
+      ["devsync.task.moved", { taskId, from: "CLAIMED", to: "BLOCKED" }],
+    ]);
+    // A retry emits nothing more.
+    await askAgentQuestion(host, codex, { ...ask, requestId: ask.requestId });
+    expect(emitted()).toEqual([]);
+
+    await answerQuestion(host, ctx, plain.id, { answer: "Both." });
+    expect(emitted()).toEqual([["devsync.question.answered", { taskId, questionId: plain.id }]]);
+    await answerQuestion(host, ctx, waited.id, { answer: "Both." });
+    expect(emitted()).toEqual([
+      ["devsync.question.answered", { taskId, questionId: waited.id }],
+      ["devsync.task.moved", { taskId, from: "BLOCKED", to: "READY" }],
     ]);
   });
 

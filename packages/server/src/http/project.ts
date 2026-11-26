@@ -9,6 +9,7 @@ import {
   AgentList,
   AgentMessage,
   AgentMessageReceipt,
+  AnswerInput,
   Comment,
   CommentInput,
   FindingAnswer,
@@ -16,6 +17,8 @@ import {
   MemberList,
   PullRequestLink,
   PullRequestList,
+  Question,
+  QuestionInput,
   Run,
   RunList,
   RunSetup,
@@ -31,6 +34,7 @@ import { listAgents } from "../domain/agents";
 import { requireRole } from "../domain/common";
 import { findingTask } from "../domain/findings";
 import { listPullRequests } from "../domain/pull-requests";
+import { answerQuestion, askQuestion } from "../domain/questions";
 import { approveRun, cancelRun, listRuns, rejectRun, requestRun, runSetup } from "../domain/runs";
 import { publishSignal } from "../domain/signals";
 import {
@@ -83,6 +87,17 @@ export function projectRoutes(host: DevSyncHost): Hono<ProjectEnv> {
     const input = await readBody(c, PullRequestLink);
     const task = await linkPullRequest(host, c.get("module"), c.req.param("taskId"), input);
     return answer(c, Task, task);
+  });
+
+  app.post("/tasks/:taskId/questions", write, async (c) => {
+    const input = await readBody(c, QuestionInput);
+    const question = await askQuestion(host, c.get("module"), c.req.param("taskId"), input);
+    return answer(c, Question, question, 201);
+  });
+  app.post("/questions/:questionId/answer", write, async (c) => {
+    const input = await readBody(c, AnswerInput);
+    const question = await answerQuestion(host, c.get("module"), c.req.param("questionId"), input);
+    return answer(c, Question, question);
   });
 
   app.get("/tasks/:taskId/runs", async (c) =>

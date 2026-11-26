@@ -1,10 +1,20 @@
-import type { PullRequest, TaskDetail } from "@devsync/schemas";
+import type { PullRequest, Question, TaskDetail } from "@devsync/schemas";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProjectTab } from "./ProjectTab";
-import { id, ME, type Reply, renderWith } from "./test/render";
-import { agent, detail, members, pullRequests, setupComplete, tasks } from "./test/samples";
+import { button, id, ME, type Reply, renderWith } from "./test/render";
+import {
+  agent,
+  ana,
+  at,
+  builder,
+  detail,
+  members,
+  pullRequests,
+  setupComplete,
+  tasks,
+} from "./test/samples";
 
 afterEach(cleanup);
 
@@ -34,6 +44,13 @@ async function open(
   await within(panel).findByText("Description");
   return { ...fake, panel };
 }
+
+/** The panel of `task` with `questions`. */
+const withQuestions = (
+  task: TaskDetail,
+  questions: Question[],
+  extra: Record<string, Reply> = {},
+) => open({ ...task, questions }, extra);
 
 const patches = (sent: { method: string; body: unknown }[]) =>
   sent.filter((s) => s.method === "PATCH").map((s) => s.body);
@@ -195,7 +212,9 @@ describe("the task panel", () => {
       version: 4,
       title: "Add the sign-up and sign-in forms",
     });
-    await waitFor(() => expect(within(panel).queryByRole("form")).toBeNull());
+    await waitFor(() =>
+      expect(within(panel).queryByRole("form", { name: "Edit the requirements" })).toBeNull(),
+    );
   });
 
   it("shows the paths, the tasks it waits for, the labels and the branch, and what waits", async () => {
@@ -292,7 +311,9 @@ describe("the task panel", () => {
         },
       ]),
     );
-    await waitFor(() => expect(within(panel).queryByRole("form")).toBeNull());
+    await waitFor(() =>
+      expect(within(panel).queryByRole("form", { name: "Edit the fields" })).toBeNull(),
+    );
   });
 
   it("clears the branch and the tasks it waits for, and says why a bad field is refused", async () => {
@@ -368,6 +389,131 @@ describe("the task panel", () => {
     cleanup();
     const none = await open(detail);
     expect(within(none.panel).queryByRole("region", { name: "Usage" })).toBeNull();
+  });
+
+  it("shows the questions, open first, each with who asked and the answer", async () => {
+    const answered: Question = {
+      id: id(40),
+      taskId: detail.id,
+      askedBy: builder,
+      text: "Which fields?",
+      wait: false,
+      status: "ANSWERED",
+      answer: "Email and password.",
+      answeredBy: ana,
+      createdAt: at,
+      answeredAt: at,
+    };
+    const waiting: Question = {
+      ...answered,
+      id: id(41),
+      text: "Should it confirm the email?",
+      wait: true,
+      status: "OPEN",
+      answer: null,
+      answeredBy: null,
+      answeredAt: null,
+    };
+    const { panel } = await withQuestions(detail, [answered, waiting]);
+    const section = within(panel).getByRole("region", { name: "Questions" });
+    const items = within(within(section).getByRole("list", { name: "Questions" })).getAllByRole(
+      "listitem",
+    );
+    expect(items).toHaveLength(2);
+    const [first, second] = items as [HTMLElement, HTMLElement];
+    expect(within(first).getByText("Should it confirm the email?")).toBeTruthy();
+    expect(within(first).getByText(/^Builder, /)).toBeTruthy();
+    expect(within(first).getByText("Open: the task waits for its answer")).toBeTruthy();
+    expect(within(first).getByRole("form", { name: "Answer the question" })).toBeTruthy();
+    expect(within(second).getByText("Which fields?")).toBeTruthy();
+    expect(within(second).getByText(/^Answered by Ana Lima, /)).toBeTruthy();
+    expect(within(second).getByText("Email and password.")).toBeTruthy();
+    expect(within(second).queryByRole("form")).toBeNull();
+    cleanup();
+
+    const none = await withQuestions(detail, []);
+    expect(within(none.panel).getByText("No questions yet.")).toBeTruthy();
+  });
+
+  it("answers an open question and asks one, each checked before it is sent", async () => {
+    const asked: Question = {
+      id: id(41),
+      taskId: detail.id,
+      askedBy: builder,
+      text: "Should it confirm the email?",
+      wait: false,
+      status: "OPEN",
+      answer: null,
+      answeredBy: null,
+      createdAt: at,
+      answeredAt: null,
+    };
+    const answered = { ...asked, status: "ANSWERED", answer: "Yes.", answeredBy: ana };
+    const { panel, sent } = await withQuestions(detail, [asked], {
+      [`POST /questions/${asked.id}/answer`]: { body: answered },
+      [`POST /tasks/${detail.id}/questions`]: { status: 201, body: { ...asked, id: id(42) } },
+    });
+    const posts = () => sent.filter((s) => s.method === "POST");
+    const answerForm = within(panel).getByRole("form", { name: "Answer the question" });
+    await userEvent.type(within(answerForm).getByLabelText("Answer"), "  ");
+    await userEvent.click(within(answerForm).getByRole("button", { name: "Post the answer" }));
+    expect((await within(answerForm).findByRole("alert")).textContent).toBe(
+      "Fill in the required fields and keep each within its limit, then try again.",
+    );
+    expect(posts()).toEqual([]);
+    await userEvent.type(within(answerForm).getByLabelText("Answer"), "Yes.");
+    await userEvent.click(within(answerForm).getByRole("button", { name: "Post the answer" }));
+    await waitFor(() =>
+      expect(posts()).toEqual([
+        { method: "POST", path: `/questions/${asked.id}/answer`, body: { answer: "Yes." } },
+      ]),
+    );
+
+    const askForm = within(panel).getByRole("form", { name: "Ask a question" });
+    await userEvent.type(within(askForm).getByLabelText("Question"), "Which provider?");
+    await userEvent.click(within(askForm).getByRole("button", { name: "Ask the question" }));
+    await waitFor(() =>
+      expect(posts()[1]).toEqual({
+        method: "POST",
+        path: `/tasks/${detail.id}/questions`,
+        body: { text: "Which provider?" },
+      }),
+    );
+    await waitFor(() =>
+      expect((within(askForm).getByLabelText("Question") as HTMLTextAreaElement).value).toBe(""),
+    );
+  });
+
+  it("locks asking and answering on a read-only project, and asking on a closed task", async () => {
+    const asked: Question = {
+      id: id(41),
+      taskId: detail.id,
+      askedBy: builder,
+      text: "Should it confirm the email?",
+      wait: false,
+      status: "OPEN",
+      answer: null,
+      answeredBy: null,
+      createdAt: at,
+      answeredAt: null,
+    };
+    const task = { ...detail, questions: [asked] };
+    renderWith(<ProjectTab selectedTaskId={task.id} onSelectTask={() => {}} />, {
+      routes: routes(task),
+      readOnly: true,
+    });
+    expect(
+      button("Post the answer", await screen.findByRole("region", { name: "Questions" })),
+    ).toHaveProperty("disabled", true);
+    expect(button("Ask the question")).toHaveProperty("disabled", true);
+    expect(screen.getByLabelText("Question")).toHaveProperty("disabled", true);
+    cleanup();
+
+    const done = await withQuestions({ ...task, status: "DONE" }, [asked]);
+    expect(within(done.panel).queryByRole("form", { name: "Ask a question" })).toBeNull();
+    expect(within(done.panel).getByText("A Done task takes no more questions.")).toBeTruthy();
+    // Its open questions can still be answered.
+    expect(button("Post the answer", done.panel).disabled).toBe(false);
   });
 
   it("locks editing the fields on a read-only project", async () => {

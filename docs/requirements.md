@@ -191,6 +191,43 @@ request, and compare the task panels with what was done.
 
 ---
 
+### Story 7 - Agents ask instead of guessing, and read a briefing first (Priority: P2)
+
+An agent unsure of a task asks a question on it instead of guessing; with `wait`, it stops and the
+task waits in Blocked for the answer. A member answers on the task's panel, or a peer agent through
+MCP, and the asker hears of it. Before starting, an agent reads the task's briefing: the task, its
+questions, its paths, what it waits for, the tasks sharing its paths, and the context the host gives
+for its title, in one answer of a bounded size.
+
+**Why this priority**: an agent that guesses at unclear requirements wastes a run and a review; a
+question, answered where the task is planned, keeps the answer with the task for the next agent.
+
+**Independent Test**: with the fake host, ask a question as an agent holding a task's claim with
+`wait`, answer it as a member, check the signals, the task's status and its panel, and read the
+briefing as an agent, a member and a managed run with a long context.
+
+**Acceptance Scenarios**:
+
+1. **Given** an open task, **When** an agent asks a question (or a member on the task's panel),
+   **Then** it is on the task, open, with who asked and when, and on its timeline; the task's
+   creator, when it is another agent, receives a `clarification.requested` signal. A Done or
+   Cancelled task is refused.
+2. **Given** an agent holding a task's claim, **When** it asks with `wait`, **Then** its claim ends
+   and the task moves to Blocked; without the claim, `wait` is refused.
+3. **Given** an open question, **When** a member answers it on the panel, or a peer agent with
+   `answer_question`, **Then** it is answered once, with who answered and when; the asker, when an
+   agent, receives a `clarification.answered` signal; an agent can't answer its own question.
+4. **Given** a task a question's `wait` moved to Blocked, **When** every question asked on it with
+   `wait` is answered, **Then** it returns to Ready; a task blocked by a blocker report or a
+   member's move stays Blocked.
+5. **Given** a task, **When** a member, an agent or a managed run reads its briefing, **Then** it
+   has the task, its open and answered questions, its paths, the tasks it waits for with their
+   statuses, its overlaps and the host's context for its title (none for a run), within 8,000
+   characters of JSON: the context cut first, then the oldest answered questions, the task kept
+   whole.
+
+---
+
 ## Rules
 
 - **R-0**: DevSync MUST take who is asking (member, role), the workspace, the project and its
@@ -198,8 +235,8 @@ request, and compare the task panels with what was done.
 - **R-1**: DevSync MUST map the dashboard's roles: every role reads and writes tasks,
   comments, assignments, links and messages to agents; Owners and Admins register, rotate and revoke
   agents; Owners, Admins and Approvers decide managed runs.
-- **R-2**: DevSync MUST keep its tasks, revisions, the tasks each waits for, comments, agents,
-  signals, outbox, observed pull requests and runs in the `devsync` schema, with optimistic
+- **R-2**: DevSync MUST keep its tasks, revisions, the tasks each waits for, comments, questions,
+  agents, signals, outbox, observed pull requests and runs in the `devsync` schema, with optimistic
   concurrency on task edits and every requirements change kept as a revision.
 - **R-3**: DevSync MUST write its audit entries through the host's audit log (kind `project`,
   actions prefixed `devsync.`), with names and ids only.
@@ -235,6 +272,16 @@ request, and compare the task panels with what was done.
 - **R-13**: The usage an agent reports with a progress report or a review request MUST be kept with
   that report, apart from the payload its peers receive, and shown apart from the task's managed
   runs' usage, as the agents' own estimate.
+- **R-14**: A question MUST be asked only on an open task, answered once and never by the agent
+  that asked it, and an agent's text and answer MUST pass the host's redactor. Only the agent
+  holding the task's live claim MAY make it wait; the task MUST return to Ready only when a
+  question's wait blocked it and none of its questions asked with `wait` is open. An agent's
+  question and answer signals MUST count against its 20 signals a minute.
+- **R-15**: A briefing MUST NOT pass 8,000 characters of JSON unless its task, open questions,
+  paths, waits and overlaps alone do, cutting the context first and then the oldest answered
+  questions, and saying how many of each it cut. It MUST ask the host's context as the caller (a
+  member or an agent), never for a managed run, and pass on only the contract's fields of a context
+  that parses.
 
 ## Data (the `devsync` schema)
 
@@ -244,8 +291,9 @@ table has `workspace_id` and `project_id` (except where noted), and every query 
 
 | Table | Columns (beyond `id` uuid pk, `workspace_id`, `project_id`, `created_at`) | Keys and indexes |
 |---|---|---|
-| `task` | `title`, `description`, `acceptance_criteria`, `status` (BACKLOG, READY, CLAIMED, IN_PROGRESS, BLOCKED, REVIEW, DONE, CANCELLED), `revision` int, `version` int, `creator_user_id` uuid?, `creator_agent_id` uuid?, `create_request_id` uuid?, `assignee_user_id` uuid?, `claim_agent_id` uuid?, `claim_id` uuid?, `claim_expires_at`?, `pull_request_number` int?, `finding_fingerprint`?, `finding_rule`?, `finding_file`? (the security finding it was made from, as the host gave it), `owns` text[] and `labels` text[] (empty by default), `branch`?, `updated_at` | (`project_id`, `status`); (`project_id`, `assignee_user_id`); unique (`project_id`, `creator_agent_id`, `create_request_id`) |
+| `task` | `title`, `description`, `acceptance_criteria`, `status` (BACKLOG, READY, CLAIMED, IN_PROGRESS, BLOCKED, REVIEW, DONE, CANCELLED), `revision` int, `version` int, `creator_user_id` uuid?, `creator_agent_id` uuid?, `create_request_id` uuid?, `assignee_user_id` uuid?, `claim_agent_id` uuid?, `claim_id` uuid?, `claim_expires_at`?, `pull_request_number` int?, `finding_fingerprint`?, `finding_rule`?, `finding_file`? (the security finding it was made from, as the host gave it), `owns` text[] and `labels` text[] (empty by default), `branch`?, `blocked_by_question` bool (a question's `wait` moved it to Blocked; cleared when it leaves Blocked), `updated_at` | (`project_id`, `status`); (`project_id`, `assignee_user_id`); unique (`project_id`, `creator_agent_id`, `create_request_id`) |
 | `task_dependency` | (no `id` or `created_at`) `task_id` → task cascade, `depends_on_task_id` → task cascade (a task it waits for, of the same project), `position` int (its order, from 0) | pk (`task_id`, `depends_on_task_id`); (`depends_on_task_id`) |
+| `question` | `task_id` → task cascade, `asker_user_id`?, `asker_agent_id`?, `request_id` uuid? (an agent's), `text`, `wait` bool, `answer`?, `answerer_user_id`?, `answerer_agent_id`?, `answered_at`? | (`task_id`, `created_at`); unique (`project_id`, `asker_agent_id`, `request_id`) |
 | `task_revision` | `task_id` → task cascade, `number`, `title`, `description`, `acceptance_criteria`, `author_user_id`?, `author_agent_id`? | pk (`task_id`, `number`) |
 | `task_comment` | `task_id` → task cascade, `author_user_id`, `body` | (`task_id`, `created_at`) |
 | `agent` | `name`, `kind` (CLAUDE, CODEX), `token_hash` unique, `expires_at`, `revoked_at`?, `last_seen_at`?, `registered_by_user_id`? | (`project_id`) |

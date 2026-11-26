@@ -4,6 +4,8 @@ import {
   AcknowledgeSignalInput,
   AgentTaskInput,
   AgentTaskUpdate,
+  AnswerQuestionInput,
+  AskQuestionInput,
   MCP_TOOL_INPUTS,
   PublishSignalInput,
   ReviewDecisionInput,
@@ -35,6 +37,9 @@ describe("the MCP tools' inputs", () => {
         "report_blocker",
         "request_review",
         "submit_review",
+        "ask_question",
+        "answer_question",
+        "get_briefing",
       ].sort(),
     );
     expect(MCP_TOOL_INPUTS.get_project_state.safeParse({}).success).toBe(true);
@@ -152,6 +157,27 @@ describe("the MCP tools' inputs", () => {
     expect(AgentTaskUpdate.safeParse({ ...update, ...fields }).success).toBe(true);
     expect(AgentTaskUpdate.safeParse({ ...update, branch: null }).success).toBe(true);
     expect(AgentTaskUpdate.safeParse({ ...update, branch: "a b" }).success).toBe(false);
+  });
+
+  it("take a question, waiting for its answer or not, idempotent by its request id", () => {
+    const ask = { taskId: randomUUID(), requestId: randomUUID(), text: "Which port?" };
+    expect(AskQuestionInput.safeParse(ask).success).toBe(true);
+    expect(AskQuestionInput.safeParse({ ...ask, wait: true }).success).toBe(true);
+    expect(AskQuestionInput.safeParse({ ...ask, wait: "yes" }).success).toBe(false);
+    expect(AskQuestionInput.safeParse({ ...ask, text: text(4001) }).success).toBe(false);
+    expect(AskQuestionInput.safeParse({ ...ask, text: " " }).success).toBe(false);
+    expect(AskQuestionInput.safeParse({ ...ask, requestId: undefined }).success).toBe(false);
+    expect(AskQuestionInput.safeParse({ ...ask, claimId: randomUUID() }).success).toBe(false);
+  });
+
+  it("take an answer to a question, and a task to brief", () => {
+    const answer = { questionId: randomUUID(), answer: "8080" };
+    expect(AnswerQuestionInput.safeParse(answer).success).toBe(true);
+    expect(AnswerQuestionInput.safeParse({ ...answer, answer: text(4001) }).success).toBe(false);
+    expect(AnswerQuestionInput.safeParse({ ...answer, questionId: "q1" }).success).toBe(false);
+    expect(MCP_TOOL_INPUTS.ask_question).toBe(AskQuestionInput);
+    expect(MCP_TOOL_INPUTS.answer_question).toBe(AnswerQuestionInput);
+    expect(MCP_TOOL_INPUTS.get_briefing).toBe(TaskRef);
   });
 
   it("take a review decision", () => {

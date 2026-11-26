@@ -27,16 +27,17 @@ afterAll(async () => {
 
 /**
  * The most characters the actions' list (names as the host lists them, descriptions and input
- * JSON schemas, as JSON) may take: the size P4 reached (11,960: P3's 9,384 with the task fields,
- * the claim rules and usage), rounded up to the next 1,000. Raise it only with a reason: every
+ * JSON schemas, as JSON) may take: the size P6 reached (13,924: P4's 11,960 with questions and
+ * the briefing; P3's was 9,384), rounded up to the next 1,000. Raise it only with a reason: every
  * agent reads the whole list.
  */
-const ACTIONS_BUDGET = 12_000;
+const ACTIONS_BUDGET = 14_000;
 
 const KINDS = {
   get_project_state: "read",
   list_tasks: "read",
   get_task: "read",
+  get_briefing: "read",
   get_pending_signals: "read",
   acknowledge_signal: "write",
   claim_task: "write",
@@ -47,6 +48,8 @@ const KINDS = {
   update_task: "write",
   report_progress: "write",
   report_blocker: "write",
+  ask_question: "write",
+  answer_question: "write",
   request_review: "write",
   submit_review: "write",
   request_run: "start",
@@ -188,6 +191,8 @@ describe("DevSync's actions", () => {
       waits: ["claim_task"],
       usage: ["report_progress", "request_review"],
       fields: ["create_task", "update_task"],
+      ask: ["ask_question"],
+      briefing: ["get_briefing", "claim_task"],
     };
     for (const [rule, names] of Object.entries(concerns)) {
       const text = ACTION_RULES[rule as keyof typeof ACTION_RULES];
@@ -199,6 +204,10 @@ describe("DevSync's actions", () => {
     expect(ACTION_RULES.remember).toContain("memory tools");
     expect(ACTION_RULES.limit).toContain("3 claimed tasks");
     expect(ACTION_RULES.usage).toContain("since your previous report");
+    expect(ACTION_RULES.ask).toBe(
+      "Ask a question instead of guessing; with wait, the task waits for the answer.",
+    );
+    expect(ACTION_RULES.briefing).toBe("Read the briefing before you start.");
   });
 
   it("stay within their size budget", () => {
@@ -300,6 +309,42 @@ describe("a member calling an action", () => {
     expect(edited).toMatchObject({ id: created.id, status: "READY" });
   });
 
+  it("reads a task's briefing with the host's context for its title, and asks only on the panel", async () => {
+    const s = await setup();
+    const task = await s.readyTask();
+    const fact = {
+      source: "note 1",
+      kind: "fact" as const,
+      author: "The owner",
+      trust: "untrusted" as const,
+      text: "Cards only.",
+    };
+    s.host.contextBlock = { instructions: [], facts: [fact] };
+    const briefing = await s.result("get_briefing", s.asMember(), { taskId: task.id });
+    expect(briefing).toMatchObject({
+      task: { id: task.id, title: "Ship checkout", acceptanceCriteria: "Pays", status: "READY" },
+      openQuestions: [],
+      context: { instructions: [], facts: [fact] },
+    });
+    expect(s.host.contextAsked).toEqual([
+      {
+        caller: { projectId: s.project.projectId, userId: (s.members[0] as Member).userId },
+        subject: "Ship checkout",
+      },
+    ]);
+    expect(
+      await s.refused("ask_question", s.asMember(), {
+        taskId: task.id,
+        requestId: crypto.randomUUID(),
+        text: "Which cards?",
+      }),
+    ).toEqual({
+      code: "forbidden",
+      message:
+        "Only a coding agent asks a question through this action. A member asks it on the task's panel in DevSync's tab.",
+    });
+  });
+
   it("is refused an agents-only action, and a write to a read-only project, as the result", async () => {
     const s = await setup();
     const task = await s.readyTask();
@@ -323,6 +368,8 @@ describe("a member calling an action", () => {
       "report_blocker",
       "request_review",
       "submit_review",
+      "ask_question",
+      "answer_question",
     ] as const) {
       const answer = await s.call(name, s.asMember(), sampleInput(name, task.id));
       const { refused } = answer.result as { refused: { code: string; message: string } };
@@ -437,6 +484,45 @@ describe("an agent calling an action", () => {
     expect(task.dependencies).toEqual([{ id: first.id, title: "Add a cart", status: "CANCELLED" }]);
   });
 
+  it("asks a question the task waits for, reads it in the briefing, and a peer answers it", async () => {
+    const s = await setup();
+    const task = await s.readyTask();
+    await s.result("claim_task", s.asClaude, { taskId: task.id, claimId: crypto.randomUUID() });
+    const asked = await s.result("ask_question", s.asClaude, {
+      taskId: task.id,
+      requestId: crypto.randomUUID(),
+      text: "Visa only?",
+      wait: true,
+    });
+    expect(asked).toMatchObject({
+      taskId: task.id,
+      status: "OPEN",
+      wait: true,
+      askedBy: { kind: "agent", agentId: s.claudeId, name: "Claude" },
+    });
+    const briefing = await s.result("get_briefing", s.asClaude, { taskId: task.id });
+    expect(briefing.task.status).toBe("BLOCKED");
+    expect(briefing.openQuestions.map((q: { id: string }) => q.id)).toEqual([asked.id]);
+    expect(s.host.contextAsked.at(-1)?.caller).toEqual({
+      projectId: s.project.projectId,
+      agentId: s.claudeId,
+    });
+
+    // Not its own; a peer answers, and the task is Ready again.
+    const own = { questionId: asked.id, answer: "Yes." };
+    expect((await s.refused("answer_question", s.asClaude, own)).code).toBe("forbidden");
+    const answered = await s.result("answer_question", s.asCodex, {
+      questionId: asked.id,
+      answer: "Visa and Mastercard.",
+    });
+    expect(answered).toMatchObject({
+      status: "ANSWERED",
+      answer: "Visa and Mastercard.",
+      answeredBy: { kind: "agent", agentId: s.codex.id, name: "Codex" },
+    });
+    expect((await getTask(s.host, s.memberCtx(), task.id)).status).toBe("READY");
+  });
+
   it("is refused `me`, a members-only start, and when the host no longer lists it", async () => {
     const s = await setup();
     const task = await s.readyTask();
@@ -459,6 +545,11 @@ describe("a managed run calling an action", () => {
     expect(state.tasks.map((t: { id: string }) => t.id)).toEqual([task.id]);
     expect((await s.result("list_tasks", s.asRun, { status: "READY" })).tasks).toHaveLength(1);
     expect((await s.result("get_task", s.asRun, { taskId: task.id })).task.id).toBe(task.id);
+    // Its briefing has no context: the host takes no run there.
+    const briefing = await s.result("get_briefing", s.asRun, { taskId: task.id });
+    expect(briefing.task.id).toBe(task.id);
+    expect(briefing.context).toEqual({ instructions: [], facts: [] });
+    expect(s.host.contextAsked).toEqual([]);
     expect((await s.refused("list_tasks", s.asRun, { assignee: "me" })).code).toBe("invalid");
   });
 
@@ -468,7 +559,7 @@ describe("a managed run calling an action", () => {
     const message =
       "A managed run can only read the project's state and its tasks; what it changes reaches the task through its draft pull request.";
     for (const name of Object.keys(KINDS) as (keyof typeof KINDS)[]) {
-      if (["get_project_state", "list_tasks", "get_task"].includes(name)) continue;
+      if (["get_project_state", "list_tasks", "get_task", "get_briefing"].includes(name)) continue;
       expect(await s.refused(name, s.asRun, sampleInput(name, task.id))).toEqual({
         code: "forbidden",
         message,
@@ -507,6 +598,7 @@ function sampleInput(name: keyof typeof KINDS, taskId: string): object {
     get_project_state: {},
     list_tasks: {},
     get_task: { taskId },
+    get_briefing: { taskId },
     get_pending_signals: {},
     acknowledge_signal: { id: id() },
     claim_task: { taskId, claimId: id() },
@@ -522,6 +614,8 @@ function sampleInput(name: keyof typeof KINDS, taskId: string): object {
     update_task: { taskId, version: 1, title: "Changed" },
     report_progress: activity,
     report_blocker: activity,
+    ask_question: { taskId, requestId: id(), text: "Which port?" },
+    answer_question: { questionId: id(), answer: "8080." },
     request_review: activity,
     submit_review: {
       taskId,

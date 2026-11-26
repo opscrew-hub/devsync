@@ -27,6 +27,7 @@ export const LIMITS = {
   acceptanceCriteria: 8000,
   comment: 4000,
   message: 4000,
+  question: 4000,
   name: 80,
 } as const;
 

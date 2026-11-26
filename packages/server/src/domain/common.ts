@@ -1,13 +1,21 @@
 /**
  * What the domain files share: parsing an input, the role and read-only checks, the agent-row lock,
- * finding a task of the project, reading a security finding from the host, naming members, and the
- * refusals more than one of them gives. Internal to the server: the package's index doesn't export
- * it.
+ * an agent's signal limit, finding a task of the project, reading a security finding from the host,
+ * naming members and agents, and the refusals more than one of them gives. Internal to the server:
+ * the package's index doesn't export it.
  */
-import { type Action, type Author, can, Finding, Id, type Role } from "@devsync/schemas";
-import { and, eq, type SQL } from "drizzle-orm";
+import {
+  type Action,
+  type Author,
+  can,
+  Finding,
+  Id,
+  type Role,
+  SignalKind,
+} from "@devsync/schemas";
+import { and, count, eq, gte, inArray, or, type SQL, sql } from "drizzle-orm";
 import type { z } from "zod";
-import { agent, task } from "../db";
+import { agent, signal, task } from "../db";
 import {
   type AgentActor,
   type DevSyncDb,
@@ -155,4 +163,62 @@ export function memberAuthor(
   userId: string,
 ): Extract<Author, { kind: "member" }> {
   return { kind: "member", userId, name: names.get(userId) ?? FORMER_MEMBER };
+}
+
+/** The name shown for an agent whose row is gone. */
+export const REMOVED_AGENT = "Removed agent";
+
+/** Members' names by user id, agents' by agent id. */
+export interface Names {
+  members: Map<string, string>;
+  agents: Map<string, string>;
+}
+
+/** A member or an agent as an author, by `names`; null for neither (the host's GitHub facts). */
+export function authorOf(
+  names: Names,
+  userId: string | null,
+  agentId: string | null,
+): Author | null {
+  if (userId) return memberAuthor(names.members, userId);
+  if (agentId) return { kind: "agent", agentId, name: names.agents.get(agentId) ?? REMOVED_AGENT };
+  return null;
+}
+
+/** How many signals an agent may send in a minute. */
+const SIGNALS_PER_MINUTE = 20;
+
+/**
+ * Refuses an agent that sent 20 signals in the last minute, the most it may, in `tx` holding its
+ * row. Only what the agent sent itself counts: the kinds publish_signal allows, with its payload
+ * `{ message }` or a question's (`questionId`, from `ask_question` and `answer_question`). The
+ * outbox's deliveries of the agent's reports (a review request's too) carry their task and no
+ * question, and don't count.
+ */
+export async function requireSignalRate(
+  tx: DevSyncDb,
+  actor: AgentActor,
+  now: Date,
+): Promise<void> {
+  const [recent] = await tx
+    .select({ sent: count() })
+    .from(signal)
+    .where(
+      and(
+        eq(signal.projectId, actor.project.projectId),
+        eq(signal.senderAgentId, actor.agentId),
+        inArray(signal.kind, SignalKind.options),
+        or(
+          sql`${signal.payload} -> 'taskId' is null`,
+          sql`${signal.payload} -> 'questionId' is not null`,
+        ),
+        gte(signal.createdAt, new Date(now.getTime() - 60_000)),
+      ),
+    );
+  if ((recent?.sent ?? 0) >= SIGNALS_PER_MINUTE) {
+    throw new DevSyncError(
+      "rate-limited",
+      `You sent ${SIGNALS_PER_MINUTE} signals in the last minute, the most an agent may. Wait a minute and try again.`,
+    );
+  }
 }

@@ -11,17 +11,14 @@ import {
   can,
   Id,
   PublishSignalInput,
-  SignalKind,
   type Task,
 } from "@devsync/schemas";
-import { and, asc, count, eq, gte, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { agent, type SignalRow, signal, task } from "../db";
 import { type AgentActor, DevSyncError, type DevSyncHost, type ProjectContext } from "../host";
-import { lockAgentRow, parse, REFUSAL, requireWritable } from "./common";
+import { lockAgentRow, parse, REFUSAL, requireSignalRate, requireWritable } from "./common";
 import { selectTasks, toTask } from "./tasks";
 
-/** How many signals an agent may send in a minute. */
-const SIGNALS_PER_MINUTE = 20;
 /** How many replies a chain of signals may hold. */
 const MAX_HOPS = 4;
 /** How many signals `pendingSignals` answers, and tasks `agentProjectState`. */
@@ -192,27 +189,7 @@ export async function publishAgentSignal(
       .where(and(eq(agent.id, fields.recipientId), eq(agent.projectId, projectId)));
     if (!recipient || recipient.revokedAt) throw new DevSyncError("not-found", REFUSAL.noSuchPeer);
 
-    // Only what the agent published counts: the kinds publish_signal allows, its payload
-    // `{ message }`. The outbox's deliveries of the agent's reports (a review request's too) carry
-    // their task, and don't count.
-    const [recent] = await tx
-      .select({ sent: count() })
-      .from(signal)
-      .where(
-        and(
-          eq(signal.projectId, projectId),
-          eq(signal.senderAgentId, actor.agentId),
-          inArray(signal.kind, SignalKind.options),
-          sql`${signal.payload} -> 'taskId' is null`,
-          gte(signal.createdAt, new Date(now.getTime() - 60_000)),
-        ),
-      );
-    if ((recent?.sent ?? 0) >= SIGNALS_PER_MINUTE) {
-      throw new DevSyncError(
-        "rate-limited",
-        `You sent ${SIGNALS_PER_MINUTE} signals in the last minute, the most an agent may. Wait a minute and try again.`,
-      );
-    }
+    await requireSignalRate(tx, actor, now);
 
     let hopCount = 0;
     if (replyToId) {
