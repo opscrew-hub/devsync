@@ -161,8 +161,8 @@ type HostAudit = { actor: AuditActor } & Pick<AuditEntry, "action" | "detail">;
 
 /**
  * The change's entries in the host's audit log (docs/host.md, Audit): a task created, its
- * requirements changed, a question asked or answered, an assignment, a move of its status, and an
- * agent's own claim starting or ending, each with names and ids only, never a text. A member's are
+ * requirements changed, a question asked or answered, a review requested or decided, an
+ * assignment, a move of its status, and an agent's own claim starting or ending, each with names and ids only, never a text. A member's are
  * theirs (`{ userId }`); an agent's and the queues' are the host's, an agent's with its id in the
  * detail. A claim another's change ended (a member's cancel, a takeover of an expired claim) is in
  * that change's own entry, the move or the new claim.
@@ -185,6 +185,17 @@ function auditEntries(change: Change): HostAudit[] {
       break;
     case "requirements.changed":
       add("devsync.task.requirements_changed", { revision: payloadId(change, "revision") });
+      break;
+    case "review.requested":
+      // The requesting agent's id is the detail's, as every agent's entry has it.
+      required(change, agentId, "agent");
+      add("devsync.review.requested");
+      break;
+    case "review.approved":
+    case "review.changes_requested":
+      add(`devsync.${change.kind}`, {
+        reviewRequestId: required(change, change.reviewRequestId, "review request"),
+      });
       break;
     case "question.asked":
     case "question.answered":

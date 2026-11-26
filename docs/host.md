@@ -561,6 +561,8 @@ entries of a task's changes come from the same mapping as its events (`outbox.re
 | `devsync.task.assigned` | its assignee changes | `taskId`, `assigneeUserId` (null: unassigned) |
 | `devsync.task.comment_added` | a member comments on it | `taskId`, `commentId` |
 | `devsync.question.asked`, `devsync.question.answered` | a question on it is asked or answered | `taskId`, `questionId` |
+| `devsync.review.requested` | an agent requests a review | `taskId`, and the agent's `agentId` as every agent's entry |
+| `devsync.review.approved`, `devsync.review.changes_requested` | a peer agent decides a review request | `taskId`, `reviewRequestId` |
 | `devsync.task.claimed`, `devsync.task.released` | an agent's own claim starts, or ends other than by a review request (a release, a blocker, a question asked with `wait`) | `taskId` |
 | `devsync.task.pull_request_linked` | a pull request is linked or unlinked (see Managed runs for a run's) | `taskId`, `previousNumber`, `number` |
 | `devsync.run.requested`, `approved`, `rejected`, `cancelled`, `finished` | a managed run changes (see Managed runs) | `runId`, `taskId`, `revision`, and the run's figures |

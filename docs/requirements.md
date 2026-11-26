@@ -245,7 +245,7 @@ briefing as an agent, a member and a managed run with a long context.
 - **R-3**: DevSync MUST write its audit entries through the host's audit log (kind `project`,
   actions prefixed `devsync.`), with names and ids only, in the transaction of the change: a task
   created, its requirements changed, moved, assigned or commented on, a question asked or answered,
-  an agent's own claim starting or ending, a pull request linked, and a managed run's changes
+  a review requested or decided, an agent's own claim starting or ending, a pull request linked, and a managed run's changes
   ([host.md](host.md), Audit).
 - **R-4**: DevSync's MCP endpoint MUST authenticate agents by bearer token (hash stored, 24-hour
   expiry, rotation, revocation) and expose DevSync's current tools with their current behaviour,

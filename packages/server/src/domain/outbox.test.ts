@@ -606,6 +606,55 @@ describe("DevSync's audit entries (docs/host.md, Audit)", () => {
       ["host", "devsync.task.released", { taskId, agentId: blocked }],
       ["host", "devsync.task.moved", { taskId, from: "CLAIMED", to: "BLOCKED", agentId: blocked }],
     ]);
+
+    // A review requested, changes requested, requested again and approved.
+    await updateTask(host, ctx, taskId, { version: await versionOf(taskId), status: "READY" });
+    const askReview = async () => {
+      const lease = await claimTask(host, claude, { taskId, claimId: randomUUID() });
+      audited();
+      const asked = await requestReview(host, claude, {
+        taskId,
+        claimId: lease.claimId,
+        revision: 2,
+        requestId: randomUUID(),
+        message: "Ready for review.",
+      });
+      return asked.id;
+    };
+    audited();
+    const first = await askReview();
+    expect(audited()).toEqual([
+      ["host", "devsync.review.requested", { taskId, agentId: blocked }],
+      ["host", "devsync.task.moved", { taskId, from: "CLAIMED", to: "REVIEW", agentId: blocked }],
+    ]);
+    const decision = { taskId, revision: 2, message: "Rename the handler." };
+    await submitReview(host, codex, {
+      ...decision,
+      reviewRequestId: first,
+      requestId: randomUUID(),
+      decision: "CHANGES_REQUESTED",
+    });
+    expect(audited()).toEqual([
+      [
+        "host",
+        "devsync.review.changes_requested",
+        { taskId, reviewRequestId: first, agentId: agent },
+      ],
+      ["host", "devsync.task.moved", { taskId, from: "REVIEW", to: "READY", agentId: agent }],
+    ]);
+    const second = await askReview();
+    audited();
+    await submitReview(host, codex, {
+      ...decision,
+      message: "Looks right.",
+      reviewRequestId: second,
+      requestId: randomUUID(),
+      decision: "APPROVED",
+    });
+    expect(audited()).toEqual([
+      ["host", "devsync.review.approved", { taskId, reviewRequestId: second, agentId: agent }],
+    ]);
+
     const own = await createTask(host, codex, { ...requirements, requestId: randomUUID() });
     expect(audited()).toEqual([
       ["host", "devsync.task.created", { taskId: own.id, status: "BACKLOG", agentId: agent }],
