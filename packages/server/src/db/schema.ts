@@ -224,6 +224,11 @@ export const agent = devsyncSchema.table(
     revokedAt: tstz("revoked_at"),
     lastSeenAt: tstz("last_seen_at"),
     registeredByUserId: uuid("registered_by_user_id"),
+    /**
+     * When, in milliseconds since the epoch, the agent created or edited a task within the last
+     * minute: those count against its 20 signals a minute, beside its signals, questions and answers.
+     */
+    taskWrites: jsonb("task_writes").$type<number[]>().notNull().default(sql`'[]'::jsonb`),
     createdAt: createdAt(),
   },
   (t) => [index().on(t.projectId)],

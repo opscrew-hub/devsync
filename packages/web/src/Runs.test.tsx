@@ -163,7 +163,7 @@ describe("the runs section's setup", () => {
     const other: TaskDetail = { ...detail, ...(tasks[1] as Task) };
     const { sent } = renderWith(<Tab />, {
       routes: {
-        "GET /tasks": { body: { tasks } },
+        "GET /tasks": { body: { tasks, nextCursor: null } },
         "GET /members": { body: { members } },
         "GET /agents": { body: { agents: [] } },
         "GET /pull-requests": { body: { pullRequests } },

@@ -226,7 +226,7 @@ briefing as an agent, a member and a managed run with a long context.
    has the task, its open and answered questions, its paths, the tasks it waits for with their
    statuses, its overlaps and the host's context for its title (none for a run), within 8,000
    characters of JSON: the context cut first, then the oldest answered questions, then the newest
-   open ones, only the task kept whole. A managed run reads only its own task's briefing and
+   overlaps, then the newest open questions, only the task kept whole. A managed run reads only its own task's briefing and
    detail.
 
 ---
@@ -283,16 +283,23 @@ briefing as an agent, a member and a managed run with a long context.
   holding the task's live claim MAY make it wait; the task MUST return to Ready only when a
   question's wait blocked it and none of its open questions still has `wait`, which a move off
   Blocked clears. Each question and answer of an agent MUST count against its 20 signals a minute,
-  whether or not it signals anyone.
-- **R-15**: A briefing MUST NOT pass 8,000 characters of JSON unless its task, with its paths,
-  waits and overlaps, alone does, cutting the context first, then the oldest answered questions,
-  then the newest open ones, and saying how many of each it cut (the answered questions the task's
-  detail leaves out among them), measuring each part once so the cut is linear. It MUST ask the
+  whether or not it signals anyone, and so MUST each task it creates or edits.
+- **R-15**: A briefing MUST NOT pass 8,000 characters of JSON unless its task, with its paths and
+  waits, alone does, cutting the context first, then the oldest answered questions, then the
+  newest overlaps, then the newest open questions, and saying how many of each it cut (the answered
+  questions and overlaps the task's detail leaves out among them), measuring each part once so the
+  cut is linear. It MUST ask the
   host's context as the caller (a member or an agent), never for a managed run, and pass on only
   the contract's fields of a context that parses.
 - **R-16**: A managed run's token MUST read only its own run's task (`get_task`, `get_briefing`),
   never the project's lists nor another task, and a run MUST NOT be asked for or approved while its
   task waits for an open task.
+- **R-17**: A task MUST hold at most 200 revisions of its requirements and 500 comments, and its
+  detail MUST list at most its 50 newest revisions, 100 newest comments, 100 latest timeline events
+  and 20 oldest overlaps, saying how many of each it leaves out. The project's and the workspace's
+  task lists MUST answer pages of at most 100 tasks, each next page from the last one's cursor.
+  Signals acknowledged over 30 days ago MUST be deleted; delivered outbox events, the timeline,
+  stay.
 
 ## Data (the `devsync` schema)
 
@@ -307,7 +314,7 @@ table has `workspace_id` and `project_id` (except where noted), and every query 
 | `question` | `task_id` → task cascade, `asker_user_id`?, `asker_agent_id`?, `request_id` uuid? (an agent's), `text`, `wait` bool, `answer`?, `answerer_user_id`?, `answerer_agent_id`?, `answered_at`? | (`task_id`, `created_at`); unique (`project_id`, `asker_agent_id`, `request_id`) |
 | `task_revision` | `task_id` → task cascade, `number`, `title`, `description`, `acceptance_criteria`, `author_user_id`?, `author_agent_id`? | pk (`task_id`, `number`) |
 | `task_comment` | `task_id` → task cascade, `author_user_id`, `body` | (`task_id`, `created_at`) |
-| `agent` | `name`, `kind` (CLAUDE, CODEX), `token_hash` unique, `expires_at`, `revoked_at`?, `last_seen_at`?, `registered_by_user_id`? | (`project_id`) |
+| `agent` | `name`, `kind` (CLAUDE, CODEX), `token_hash` unique, `expires_at`, `revoked_at`?, `last_seen_at`?, `registered_by_user_id`?, `task_writes` jsonb (when, in milliseconds, it created or edited a task within the last minute, for its rate) | (`project_id`) |
 | `signal` | `recipient_agent_id` → agent cascade, `sender_user_id`?, `sender_agent_id`?, `github_delivery_id`?, `reply_to_id`? unique, `hop_count`, `kind`, `payload` jsonb, `idempotency_key` uuid, `acknowledged_at`? | (`project_id`, `recipient_agent_id`, `acknowledged_at`, `created_at`); unique (`recipient_agent_id`, `github_delivery_id`); unique (`project_id`, `sender_user_id`, `idempotency_key`); unique (`project_id`, `sender_agent_id`, `idempotency_key`) |
 | `outbox_event` | `actor_user_id`?, `actor_agent_id`?, `task_id`?, `request_id`?, `review_request_id`? → outbox_event unique, `kind`, `payload` jsonb, `usage` jsonb? (the usage an agent reported with a progress report or a review request, never delivered to peers), `available_at`, `processed_at`?, `attempts`. It is also the task's timeline: agents' progress, blocker, review request and review decision reports are outbox events of the task | (`processed_at`, `available_at`); (`project_id`, `task_id`, `created_at`); unique (`project_id`, `actor_agent_id`, `request_id`) |
 | `pull_request` | `number`, `title`, `state` (open, closed, merged), `url`, `head_ref`, `head_sha`, `source_updated_at` | unique (`project_id`, `number`) |

@@ -202,7 +202,7 @@ function TaskBody({ task, repository }: { task: TaskDetail; repository?: Reposit
       <Usage usage={task.usage} />
       <Revisions task={task} />
       <Comments task={task} />
-      <Timeline events={task.timeline} />
+      <Timeline events={task.timeline} notShown={task.timelineNotShown} />
     </>
   );
 }
@@ -226,6 +226,19 @@ function EditRequirements({ task, onDone }: { task: TaskDetail; onDone: () => vo
       <Problem error={form.save.error} />
       <FormButtons label="Save the requirements" form={form} onDone={onDone} />
     </form>
+  );
+}
+
+/**
+ * How many of a list's items the server leaves out (the project's export has them all):
+ * "1 older comment isn't shown.", "3 older comments aren't shown.", nothing for none.
+ */
+function NotShown({ count, what }: { count: number; what: string }) {
+  if (count === 0) return null;
+  return (
+    <p className="sub">
+      {count === 1 ? `1 ${what} isn't shown.` : `${count} ${what}s aren't shown.`}
+    </p>
   );
 }
 
@@ -265,13 +278,7 @@ function Questions({ task }: { task: TaskDetail }) {
           <QuestionItem key={question.id} question={question} write={write} />
         ))}
       </ul>
-      {task.answeredNotShown > 0 && (
-        <p className="sub">
-          {task.answeredNotShown === 1
-            ? "1 older answered question isn't shown."
-            : `${task.answeredNotShown} older answered questions aren't shown.`}
-        </p>
-      )}
+      <NotShown count={task.answeredNotShown} what="older answered question" />
       {CLOSED.includes(task.status) ? (
         <p className="sub">{`A ${STATUS_LABEL[task.status]} task takes no more questions.`}</p>
       ) : (
@@ -380,7 +387,7 @@ function TaskScope({ task }: { task: TaskDetail }) {
   const [editing, setEditing] = useState(false);
   const heading = useId();
   const open = task.dependencies.filter((d) => !CLOSED.includes(d.status));
-  const overlaps = task.overlaps.length;
+  const overlaps = task.overlaps.length + task.overlapsNotShown;
 
   return (
     <section className={styles.stack} aria-labelledby={heading}>
@@ -407,6 +414,7 @@ function TaskScope({ task }: { task: TaskDetail }) {
               </li>
             ))}
           </ul>
+          <NotShown count={task.overlapsNotShown} what="more task" />
         </>
       )}
       {editing ? (
@@ -493,7 +501,7 @@ function lines(text: FormDataEntryValue | null, key = (line: string) => line): s
  */
 function EditScope({ task, onDone }: { task: TaskDetail; onDone: () => void }) {
   const form = useFormSave(task);
-  const listed = useTasks().data?.tasks ?? [];
+  const listed = useTasks().tasks;
   const [waitsFor, setWaitsFor] = useState<string[]>(task.dependsOn);
   const choices: TaskSummary[] = [
     ...listed.filter(
@@ -759,6 +767,7 @@ function Revisions({ task }: { task: TaskDetail }) {
           </li>
         ))}
       </ul>
+      <NotShown count={task.revisionsNotShown} what="older revision" />
     </div>
   );
 }
@@ -795,6 +804,7 @@ function Comments({ task }: { task: TaskDetail }) {
           </li>
         ))}
       </ul>
+      <NotShown count={task.commentsNotShown} what="older comment" />
       <form className={styles.form} onSubmit={submit}>
         <Field label="Comment">
           <textarea
@@ -839,12 +849,13 @@ function eventLabel(kind: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-function Timeline({ events }: { events: TimelineEvent[] }) {
+function Timeline({ events, notShown }: { events: TimelineEvent[]; notShown: number }) {
   const { Icon } = useDevSync().ui;
   return (
     <div className={styles.stack}>
       <h4 className="cream">Timeline</h4>
       {events.length === 0 && <p className="sub">Nothing has happened yet.</p>}
+      <NotShown count={notShown} what="older event" />
       <ol className="feed" aria-label="Timeline">
         {events.map((event) => (
           <li key={event.id}>

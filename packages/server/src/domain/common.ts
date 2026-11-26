@@ -220,12 +220,28 @@ export function authorOf(
 /** How many signals an agent may send in a minute. */
 const SIGNALS_PER_MINUTE = 20;
 
+/** The window the agent's rate counts over. */
+const RATE_WINDOW_MS = 60_000;
+
+/** When the agent created or edited a task since `since` (ms), from its row's `task_writes`. */
+async function recentTaskWrites(tx: DevSyncDb, actor: AgentActor, since: number) {
+  const [row] = await tx
+    .select({ writes: agent.taskWrites })
+    .from(agent)
+    .where(and(eq(agent.id, actor.agentId), eq(agent.projectId, actor.project.projectId)));
+  const writes: unknown = row?.writes;
+  return Array.isArray(writes)
+    ? writes.filter((at): at is number => typeof at === "number" && at >= since)
+    : [];
+}
+
 /**
- * Refuses an agent that sent 20 signals, questions and answers in the last minute, the most it
- * may, in `tx` holding its row: what it published (the kinds publish_signal allows, with its payload
- * `{ message }`), and each question it asked and answer it gave, whether or not it signalled anyone.
- * The signals a question or an answer sends, and the outbox's deliveries of the agent's reports (a
- * review request's too), carry their task and don't count again.
+ * Refuses an agent that sent 20 signals, questions, answers and task changes in the last minute,
+ * the most it may, in `tx` holding its row: what it published (the kinds publish_signal allows,
+ * with its payload `{ message }`), each question it asked and answer it gave, whether or not it
+ * signalled anyone, and each task it created or edited (`countTaskWrite`). The signals a question
+ * or an answer sends, and the outbox's deliveries of the agent's reports (a review request's too),
+ * carry their task and don't count again.
  */
 export async function requireSignalRate(
   tx: DevSyncDb,
@@ -233,7 +249,7 @@ export async function requireSignalRate(
   now: Date,
 ): Promise<void> {
   const { projectId } = actor.project;
-  const since = new Date(now.getTime() - 60_000);
+  const since = new Date(now.getTime() - RATE_WINDOW_MS);
   const [published] = await tx
     .select({ sent: count() })
     .from(signal)
@@ -266,11 +282,27 @@ export async function requireSignalRate(
         gte(question.answeredAt, since),
       ),
     );
-  const sent = (published?.sent ?? 0) + (asked?.sent ?? 0) + (answered?.sent ?? 0);
+  const written = (await recentTaskWrites(tx, actor, since.getTime())).length;
+  const sent = (published?.sent ?? 0) + (asked?.sent ?? 0) + (answered?.sent ?? 0) + written;
   if (sent >= SIGNALS_PER_MINUTE) {
     throw new DevSyncError(
       "rate-limited",
-      `You sent ${SIGNALS_PER_MINUTE} signals, questions and answers in the last minute, the most an agent may. Wait a minute and try again.`,
+      `You sent ${SIGNALS_PER_MINUTE} signals, questions, answers and task changes in the last minute, the most an agent may. Wait a minute and try again.`,
     );
   }
+}
+
+/**
+ * Counts a task the agent creates or edits against its 20 a minute, in `tx`, the change's: its row
+ * locked, refused past them (`requireSignalRate`), and the change's time kept on its row with those
+ * of the last minute only, so the row holds 20 at most. A change that rolls back counts nothing.
+ */
+export async function countTaskWrite(tx: DevSyncDb, actor: AgentActor, now: Date): Promise<void> {
+  await lockAgentRow(tx, actor);
+  await requireSignalRate(tx, actor, now);
+  const recent = await recentTaskWrites(tx, actor, now.getTime() - RATE_WINDOW_MS);
+  await tx
+    .update(agent)
+    .set({ taskWrites: [...recent, now.getTime()] })
+    .where(and(eq(agent.id, actor.agentId), eq(agent.projectId, actor.project.projectId)));
 }

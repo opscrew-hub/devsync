@@ -176,7 +176,10 @@ describe("project routes", () => {
     const listed = await developer("GET", "/tasks");
     expect(listed.status).toBe(200);
     expect(TaskList.parse(listed.body).tasks).toEqual([task]);
-    expect((await developer("GET", "/tasks?status=READY")).body).toEqual({ tasks: [] });
+    expect((await developer("GET", "/tasks?status=READY")).body).toEqual({
+      tasks: [],
+      nextCursor: null,
+    });
 
     const { userId } = member("developer");
     const edited = await developer("PATCH", `/tasks/${task.id}`, {
@@ -195,8 +198,14 @@ describe("project routes", () => {
     expect(TaskList.parse((await developer("GET", "/tasks?assignee=me")).body).tasks).toHaveLength(
       1,
     );
-    expect((await as("owner")("GET", "/tasks?assignee=me")).body).toEqual({ tasks: [] });
-    expect((await developer("GET", `/tasks?assignee=none`)).body).toEqual({ tasks: [] });
+    expect((await as("owner")("GET", "/tasks?assignee=me")).body).toEqual({
+      tasks: [],
+      nextCursor: null,
+    });
+    expect((await developer("GET", `/tasks?assignee=none`)).body).toEqual({
+      tasks: [],
+      nextCursor: null,
+    });
     expect(
       TaskList.parse((await developer("GET", `/tasks?status=READY&assignee=${userId}`)).body).tasks,
     ).toHaveLength(1);
@@ -310,6 +319,34 @@ describe("project routes", () => {
       expect((await routes.request(path, { method })).status, `${method} ${path}`).toBe(404);
     }
     expect(AgentList.parse((await as("owner")("GET", "/agents")).body).agents).toHaveLength(2);
+  });
+
+  it("page the tasks by `limit` and `cursor`, refusing a bad one by its field", async () => {
+    const { ctx, host, as } = setup();
+    const created = [];
+    for (const title of ["One", "Two", "Three"]) {
+      created.push(await createTask(host, ctx("owner"), { ...newTask, title }));
+    }
+    const member = as("developer");
+    const first = TaskList.parse((await member("GET", "/tasks?limit=2")).body);
+    expect(first.tasks).toHaveLength(2);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const next = await member("GET", `/tasks?limit=2&cursor=${first.nextCursor}`);
+    const rest = TaskList.parse(next.body);
+    expect(rest).toMatchObject({ nextCursor: null });
+    expect([...first.tasks, ...rest.tasks].map((t) => t.id).sort()).toEqual(
+      created.map((t) => t.id).sort(),
+    );
+    for (const [query, field] of [
+      ["limit=0", "limit"],
+      ["limit=101", "limit"],
+      ["limit=ten", "limit"],
+      ["cursor=bm90IGEgY3Vyc29y", "cursor"],
+    ]) {
+      expect(refusal(await member("GET", `/tasks?${query}`), 422, "invalid").fields).toEqual([
+        field,
+      ]);
+    }
   });
 
   it("refuse a change to a Cancelled task's requirements, 409", async () => {
@@ -515,7 +552,7 @@ describe("project routes", () => {
     expect(host.errors).toHaveLength(2);
     expect(host.errors[1]).toContain("The events are unavailable.");
     expect(host.errors[1]).not.toContain("Secret title");
-    expect((await as("owner")("GET", "/tasks")).body).toEqual({ tasks: [] });
+    expect((await as("owner")("GET", "/tasks")).body).toEqual({ tasks: [], nextCursor: null });
   });
 });
 
@@ -768,7 +805,7 @@ describe("project finding routes", () => {
       finding: { fingerprint: moved.fingerprint },
     });
     expect(refusal(create, 404, "not-found").message).toBe(gone.message);
-    expect((await owner("GET", "/tasks")).body).toEqual({ tasks: [] });
+    expect((await owner("GET", "/tasks")).body).toEqual({ tasks: [], nextCursor: null });
   });
 });
 
@@ -810,7 +847,10 @@ describe("workspace routes", () => {
     expect(WorkspaceTaskList.parse(mine.body).tasks).toEqual([
       { ...assigned, projectName: "acme/other" },
     ]);
-    expect((await as("owner")("GET", "/tasks?assignee=me")).body).toEqual({ tasks: [] });
+    expect((await as("owner")("GET", "/tasks?assignee=me")).body).toEqual({
+      tasks: [],
+      nextCursor: null,
+    });
     expect(
       WorkspaceTaskList.parse(
         (await as("owner")("GET", `/tasks?project=${other.projectId}&assignee=none`)).body,

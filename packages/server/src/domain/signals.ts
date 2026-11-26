@@ -20,7 +20,7 @@ import { lockAgentRow, parse, REFUSAL, requireSignalRate, requireWritable } from
 import { selectTasks, toTask } from "./tasks";
 
 /** How many replies a chain of signals may hold. */
-const MAX_HOPS = 4;
+export const MAX_HOPS = 4;
 /** How many signals `pendingSignals` answers, and tasks `agentProjectState`. */
 const PAGE = 100;
 

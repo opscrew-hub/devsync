@@ -31,10 +31,10 @@ function show() {
   return renderWith(<WorkspacePage taskHref={taskHref} />, {
     apiBase: WS,
     routes: {
-      "GET /tasks": { body: { tasks: open } },
-      [`GET /tasks?project=${BLOG}`]: { body: { tasks: open.slice(1) } },
-      "GET /tasks?status=DONE": { body: { tasks: [done] } },
-      "GET /tasks?assignee=me": { body: { tasks: open.slice(0, 1) } },
+      "GET /tasks": { body: { tasks: open, nextCursor: null } },
+      [`GET /tasks?project=${BLOG}`]: { body: { tasks: open.slice(1), nextCursor: null } },
+      "GET /tasks?status=DONE": { body: { tasks: [done], nextCursor: null } },
+      "GET /tasks?assignee=me": { body: { tasks: open.slice(0, 1), nextCursor: null } },
       "GET /members": { body: { members } },
     },
   });
@@ -76,10 +76,31 @@ describe("WorkspacePage", () => {
     expect(sent.map((s) => s.path)).toContain("/tasks?assignee=me");
   });
 
+  it("reads more tasks a page at a time, counting those read", async () => {
+    const { sent } = renderWith(<WorkspacePage taskHref={taskHref} />, {
+      apiBase: WS,
+      routes: {
+        "GET /tasks": { body: { tasks: open.slice(0, 1), nextCursor: "next" } },
+        "GET /tasks?cursor=next": { body: { tasks: open.slice(1), nextCursor: null } },
+        "GET /members": { body: { members } },
+      },
+    });
+    await screen.findByRole("link", { name: /Add the sign-up form/ });
+    expect(screen.getByText("1+")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Show more tasks" }));
+    expect(await screen.findByRole("link", { name: /Write the first post/ })).toBeTruthy();
+    expect(screen.getByText("2")).toBeTruthy();
+    expect(sent.map((s) => s.path)).toContain("/tasks?cursor=next");
+    expect(screen.queryByRole("button", { name: "Show more tasks" })).toBeNull();
+  });
+
   it("says when nothing matches", async () => {
     renderWith(<WorkspacePage taskHref={taskHref} />, {
       apiBase: WS,
-      routes: { "GET /tasks": { body: { tasks: [] } }, "GET /members": { body: { members } } },
+      routes: {
+        "GET /tasks": { body: { tasks: [], nextCursor: null } },
+        "GET /members": { body: { members } },
+      },
     });
     expect(await screen.findByText("No open tasks")).toBeTruthy();
     expect(screen.getByText(/Create tasks on a project's DevSync tab/)).toBeTruthy();

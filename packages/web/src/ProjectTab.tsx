@@ -85,7 +85,7 @@ function TaskList({ selectedTaskId, onSelectTask }: ProjectTabProps) {
       New task
     </button>
   );
-  const list = tasks.data?.tasks ?? [];
+  const list = tasks.tasks;
   // One button: the empty state's while there is no task yet, the header's afterwards.
   const empty = tasks.isSuccess && list.length === 0;
 
@@ -131,6 +131,18 @@ function TaskList({ selectedTaskId, onSelectTask }: ProjectTabProps) {
           </section>
         );
       })}
+      {tasks.hasNextPage && (
+        <div className={styles.buttons}>
+          <button
+            className="btn btn-sm btn-secondary bordered"
+            type="button"
+            disabled={tasks.isFetchingNextPage}
+            onClick={() => tasks.fetchNextPage()}
+          >
+            Show more tasks
+          </button>
+        </div>
+      )}
       {creating && (
         <NewTask
           onClose={() => setCreating(false)}

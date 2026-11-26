@@ -48,7 +48,7 @@ describe("the devsync schema's migration", () => {
 
   it("applies twice, each migration journaled once in devsync.__drizzle_migrations", async () => {
     await testDb.migrate();
-    expect(await testDb.db.select().from(journal)).toHaveLength(8);
+    expect(await testDb.db.select().from(journal)).toHaveLength(9);
     const tables = await testDb.db
       .select({ name: catalog.tableName })
       .from(catalog)
@@ -87,6 +87,8 @@ describe("the devsync schema's migration", () => {
       .returning();
     expect(a?.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(a?.createdAt).toEqual(at);
+    // No task created or edited within the last minute yet.
+    expect(a?.taskWrites).toEqual([]);
     if (!a) throw new Error("no agent");
 
     const [t] = await db

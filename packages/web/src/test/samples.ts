@@ -119,6 +119,9 @@ export const detail: TaskDetail = {
   comments: [{ id: id(20), author: ana, body: "Use the shop's colours.", createdAt: at }],
   questions: [],
   answeredNotShown: 0,
+  revisionsNotShown: 0,
+  commentsNotShown: 0,
+  timelineNotShown: 0,
   timeline: [
     {
       id: id(21),
@@ -132,6 +135,7 @@ export const detail: TaskDetail = {
   pullRequest: null,
   dependencies: [],
   overlaps: [],
+  overlapsNotShown: 0,
   usage: { agents: null, runs: null },
 };
 

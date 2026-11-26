@@ -8,6 +8,7 @@ import { z } from "zod";
 import { moveAgents } from "./domain/agents";
 import { deliverDue } from "./domain/delivery";
 import { applyGithubFact, GithubJob } from "./domain/pull-requests";
+import { purgeSignals } from "./domain/retention";
 import { dispatchRun, sweepRuns } from "./domain/runs";
 import type { DevSyncHost, QueueName } from "./host";
 
@@ -45,6 +46,9 @@ const RunsJob = z
 
 /** `devsync.agents-move`'s payload: the schedule's empty one. */
 const AgentsMoveJob = z.object({}).nullish();
+
+/** `devsync.retention`'s payload: the schedule's empty one. */
+const RetentionJob = z.object({}).nullish();
 
 /** Parses a job's payload, refusing it with the invalid fields' names (never their values). */
 function parsePayload<T extends z.ZodType>(queue: QueueName, schema: T, payload: unknown) {
@@ -103,6 +107,16 @@ export const jobs = {
       await moveAgents(host);
     },
     cron: "0 * * * *",
+    retryLimit: 3,
+    retryBackoff: true,
+  },
+  /** Deletes the signals acknowledged over 30 days ago, every project's, once a day. */
+  "devsync.retention": {
+    async handler(payload, host) {
+      parsePayload("devsync.retention", RetentionJob, payload);
+      await purgeSignals(host);
+    },
+    cron: "0 3 * * *",
     retryLimit: 3,
     retryBackoff: true,
   },

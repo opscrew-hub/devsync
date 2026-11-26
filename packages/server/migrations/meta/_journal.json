@@ -57,6 +57,13 @@
       "when": 1795696839283,
       "tag": "0007_questions",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795704569891,
+      "tag": "0008_agent_task_writes",
+      "breakpoints": true
     }
   ]
 }

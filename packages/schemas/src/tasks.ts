@@ -172,10 +172,22 @@ export const PullRequestLink = z.strictObject({
 });
 export type PullRequestLink = z.infer<typeof PullRequestLink>;
 
-/** `GET /tasks`' query: `assignee` is `me`, `none` or a user id. */
+/** The most tasks one page of a list answers, and how many it answers without `limit`. */
+export const TASK_PAGE = 100;
+
+/**
+ * `GET /tasks`' query, and `list_tasks`' input: `assignee` is `me`, `none` or a user id;
+ * `limit` (1 to 100, a query string's number too) the page's size, 100 without it; `cursor` the
+ * `nextCursor` of the page before, for the next one.
+ */
 export const TaskListQuery = z.strictObject({
   status: TaskStatus.optional(),
   assignee: z.union([z.literal("me"), z.literal("none"), Id]).optional(),
+  limit: z.coerce.number().int().min(1).max(TASK_PAGE).optional(),
+  cursor: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,200}$/)
+    .optional(),
 });
 export type TaskListQuery = z.infer<typeof TaskListQuery>;
 
@@ -209,16 +221,22 @@ export type Task = z.infer<typeof Task>;
 export const TaskSummary = z.object({ id: Id, title: z.string(), status: TaskStatus });
 export type TaskSummary = z.infer<typeof TaskSummary>;
 
-/** `GET /tasks` (project route). */
-export const TaskList = z.object({ tasks: z.array(Task) });
+/**
+ * `GET /tasks` (project route): a page of the tasks, most recently updated first, and the cursor of
+ * the next page, or null on the last.
+ */
+export const TaskList = z.object({ tasks: z.array(Task), nextCursor: z.string().nullable() });
 export type TaskList = z.infer<typeof TaskList>;
 
 /** A task on the workspace's list, with its project's name. */
 export const WorkspaceTask = Task.extend({ projectName: z.string() });
 export type WorkspaceTask = z.infer<typeof WorkspaceTask>;
 
-/** `GET /tasks` (workspace route). */
-export const WorkspaceTaskList = z.object({ tasks: z.array(WorkspaceTask) });
+/** `GET /tasks` (workspace route): a page, as the project route's. */
+export const WorkspaceTaskList = z.object({
+  tasks: z.array(WorkspaceTask),
+  nextCursor: z.string().nullable(),
+});
 export type WorkspaceTaskList = z.infer<typeof WorkspaceTaskList>;
 
 /** A pull request as DevSync last saw it. */
@@ -269,7 +287,10 @@ export type TimelineEvent = z.infer<typeof TimelineEvent>;
  * beside its managed runs', kept apart (`usage`, each null when there is none); and its questions,
  * the open ones first, each group oldest first (`questions`): every open one (asking holds them to
  * 50) and the 50 most recently asked answered ones, with how many older answered ones it leaves out
- * (`answeredNotShown`; the project's export has them all).
+ * (`answeredNotShown`). It lists at most the 50 newest revisions, the 100 newest comments, the 100
+ * latest timeline events and the 20 oldest overlaps, each with how many more it leaves out
+ * (`revisionsNotShown`, `commentsNotShown`, `timelineNotShown`, `overlapsNotShown`); the
+ * project's export has them all.
  */
 export const TaskDetail = Task.extend({
   description: z.string(),
@@ -279,10 +300,14 @@ export const TaskDetail = Task.extend({
   comments: z.array(Comment),
   questions: z.array(Question),
   answeredNotShown: z.number().int().nonnegative(),
+  revisionsNotShown: z.number().int().nonnegative(),
+  commentsNotShown: z.number().int().nonnegative(),
   timeline: z.array(TimelineEvent),
+  timelineNotShown: z.number().int().nonnegative(),
   pullRequest: PullRequest.nullable(),
   dependencies: z.array(TaskSummary),
   overlaps: z.array(z.object({ task: TaskSummary, paths: z.array(z.string()) })),
+  overlapsNotShown: z.number().int().nonnegative(),
   usage: z.object({ agents: UsageTotal.nullable(), runs: UsageTotal.nullable() }),
 });
 export type TaskDetail = z.infer<typeof TaskDetail>;

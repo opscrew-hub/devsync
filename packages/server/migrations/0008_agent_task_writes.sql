@@ -1,0 +1,1 @@
+ALTER TABLE "devsync"."agent" ADD COLUMN "task_writes" jsonb DEFAULT '[]'::jsonb NOT NULL;

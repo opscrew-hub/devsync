@@ -127,11 +127,11 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 
 | Method and path | Permission | Body | Answer |
 |---|---|---|---|
-| `GET /tasks?status=&assignee=` | read | | `{ tasks: Task[] }`; `assignee` is `me`, `none` or a user id |
+| `GET /tasks?status=&assignee=&limit=&cursor=` | read | | `{ tasks: Task[], nextCursor }`, a page (see Pages of tasks); `assignee` is `me`, `none` or a user id |
 | `POST /tasks` | `task.write` | `TaskInput` | 201 `Task` |
 | `GET /tasks/:taskId` | read | | `TaskDetail` |
-| `PATCH /tasks/:taskId` | `task.write` | `TaskUpdate` | `Task` |
-| `POST /tasks/:taskId/comments` | `task.write` | `CommentInput` | 201 `Comment` |
+| `PATCH /tasks/:taskId` | `task.write` | `TaskUpdate` | `Task`; a requirements change past the task's 200 revisions is refused 409 (see Bounds) |
+| `POST /tasks/:taskId/comments` | `task.write` | `CommentInput` | 201 `Comment`; a task's 501st comment is refused 409 (see Bounds) |
 | `PUT /tasks/:taskId/pull-request` | `task.write` | `PullRequestLink` | `Task` |
 | `POST /tasks/:taskId/questions` | `task.write` | `QuestionInput` | 201 `Question`; a Done or Cancelled task, and a task with 50 open questions, are refused 409 (see Questions) |
 | `POST /questions/:questionId/answer` | `task.write` | `AnswerInput` | `Question`; once: the same answer again by the same member answers it as saved, another is refused 409 |
@@ -151,8 +151,44 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 
 | Method and path | Permission | Answer |
 |---|---|---|
-| `GET /tasks?project=&status=&assignee=` | read | `{ tasks: (Task & { projectName })[] }`; without `status`, the open ones (not Done or Cancelled) |
+| `GET /tasks?project=&status=&assignee=&limit=&cursor=` | read | `{ tasks: (Task & { projectName })[], nextCursor }`, a page as the project route's; without `status`, the open ones (not Done or Cancelled) |
 | `GET /members` | read | `{ members: Member[] }` |
+
+### Pages of tasks
+
+Both `GET /tasks` (and `list_tasks`) answer a page of tasks, most recently updated first (then by
+id): `limit` tasks, 1 to 100, and 100 without it, and `nextCursor`, an opaque string to pass as
+`cursor` for the next page, or null on the last. A page is read after the previous page's last task
+(its `updatedAt` and id), so a task appears at most once while the pages are read, and a task
+changed meanwhile moves to the first page. A cursor DevSync didn't give is refused 422 (`cursor`),
+and so is a `limit` outside 1 to 100. The pages read more with "Show more tasks". 100 is the size
+`get_project_state` and an agent's inbox already answer.
+
+### Bounds
+
+A task's history is bounded, so its detail and briefing stay small whatever happens to it:
+
+- it holds at most 200 revisions of its requirements: a change past them is refused 409 ("This
+  task has 200 revisions of its requirements, the most a task keeps. Create a new task for further
+  changes."), while its other fields and its status still change; 200 is far past what a task's
+  planning takes, while 200 revisions at their limits (16,160 characters each) are 3 MB at most;
+- at most 500 comments: the 501st is refused 409 ("This task has 500 comments, the most a task
+  keeps. Go on in a new task."), counted with the task's row locked; 500 comments at 4,000
+  characters are 2 MB at most;
+- at most 50 open questions (see Questions);
+- its detail (`TaskDetail`) lists its 50 newest revisions, 100 newest comments, 100 latest timeline
+  events, 50 most recently asked answered questions and the 20 oldest overlaps, and says how many
+  of each it leaves out (`revisionsNotShown`, `commentsNotShown`, `timelineNotShown`,
+  `answeredNotShown`, `overlapsNotShown`); the project's export has them all. 50 revisions and
+  100 comments are what a panel shows before anyone scrolls that far; 20 overlaps say plainly a
+  task shares its paths with many.
+
+An agent's task creates and edits (`create_task`, `update_task`) count against its 20 a minute,
+beside its signals, questions and answers, so a looping agent can't grow a task's history fast; a
+retry of a task it created doesn't count, and members' changes don't either. Each such change's
+time is kept on the agent's row (`task_writes`) with those of the last minute only. The daily
+`devsync.retention` deletes the signals acknowledged over 30 days ago (see Queues); delivered outbox
+events stay, as they are the tasks' timelines.
 
 ### Shapes
 
@@ -181,17 +217,18 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 - `Task`: `id`, `projectId`, `title`, `status`, `revision`, `version`, `assigneeUserId`, `claim`
   (`{ agentId, agentName, expiresAt }` or null), `pullRequestNumber`, `owns`, `dependsOn`,
   `labels`, `branch`, `createdAt`, `updatedAt`.
-- `TaskDetail`: a `Task` with `description`, `acceptanceCriteria`, `creator`, `revisions` (newest
-  first: `number`, the three fields, `author`, `createdAt`), `comments` (newest first: `id`,
-  `author`, `body`, `createdAt`), `questions` (each a `Question`, the open ones first, each group
-  oldest first: every open one, and the 50 most recently asked answered ones), `answeredNotShown`
-  (how many older answered questions it leaves out; the project's export has them all), `timeline`
-  (the task's events oldest first: `id`, `kind`, `actor`, `message`, `revision`, `createdAt`),
+- `TaskDetail`: a `Task` with `description`, `acceptanceCriteria`, `creator`, `revisions` (its 50
+  newest, newest first: `number`, the three fields, `author`, `createdAt`), `revisionsNotShown`,
+  `comments` (its 100 newest, newest first: `id`, `author`, `body`, `createdAt`),
+  `commentsNotShown`, `questions` (each a `Question`, the open ones first, each group oldest first:
+  every open one, and the 50 most recently asked answered ones), `answeredNotShown`, `timeline`
+  (the task's 100 latest events, oldest first: `id`, `kind`, `actor`, `message`, `revision`,
+  `createdAt`), `timelineNotShown`, each `…NotShown` how many older ones it leaves out (see Bounds),
   `pullRequest` (or null), `dependencies` (the tasks it waits for in their order, each
   `{ id, title, status }`), `overlaps` (while it is open, the project's other open tasks, neither
-  Done nor Cancelled, whose paths overlap its own, oldest first: `task` (`{ id, title, status }`)
+  Done nor Cancelled, whose paths overlap its own, the 20 oldest: `task` (`{ id, title, status }`)
   and `paths`, the paths they share, sorted: a path both name, or the one inside the other's
-  folder) and `usage` (`{ agents, runs }`: the sum of its agents' reported usage
+  folder), `overlapsNotShown` (how many more it leaves out) and `usage` (`{ agents, runs }`: the sum of its agents' reported usage
   and, kept apart, of its managed runs', each a `UsageTotal` or null when there is none).
 - `UsageTotal`: `inputTokens`, `outputTokens`, `cacheCreationInputTokens`, `cacheReadInputTokens`
   (a figure a report left out counts 0), `costUsd` (to the millionth of a dollar; the agents' is
@@ -259,7 +296,8 @@ agents as every timeline event is, and host events (see Events).
   a retry of one saved is answered as saved, whatever the count). When the task's creator is an
   agent other than the asker, it gets a `clarification.requested` signal,
   `{ taskId, questionId, message }`; a revoked creator gets none. Each question an agent asks
-  counts against its 20 signals a minute, with what it publishes, whether or not it signals anyone
+  counts against its 20 signals a minute, with what it publishes and the tasks it creates and edits
+  (see Bounds), whether or not it signals anyone
   (one past them is refused 429, and the question isn't kept); a retry under the same `requestId`
   is no new question.
 - **Waiting.** With `wait: true`, an agent holding the task's live claim ends it and the task moves
@@ -288,17 +326,17 @@ the same list until a later release (see DevSync's own endpoint below).
 | Action | Kind | Who | Input | What it does |
 |---|---|---|---|---|
 | `get_project_state` | read | members and agents | | the project, its agents and its 100 most recently updated tasks |
-| `list_tasks` | read | members and agents | `status`?, `assignee`? (`me`, `none` or a user id) | `{ tasks }`, as `GET /tasks`; `me` is a member's own |
-| `get_task` | read | everyone (a managed run its own task only) | `taskId` | `{ task, latestRun }`: the `TaskDetail`, with its questions (every open one, the 50 most recently asked answered ones and `answeredNotShown`), its pull request, the tasks it waits for, the open tasks sharing its paths and its usage, and its latest `Run` (or null) |
-| `get_briefing` | read | everyone (a managed run its own task only) | `taskId` | the task's briefing (see Briefing below): `task` (`id`, `title`, `description`, `acceptanceCriteria`, `status`, `revision`), `openQuestions`, `answeredQuestions`, `owns`, `waitsFor` (the tasks it waits for, each `{ id, title, status }`), `overlaps`, `context` (`{ instructions, facts }`, the host's entries with their trust) and `omitted` (`{ contextEntries, answeredQuestions, openQuestions }`) |
+| `list_tasks` | read | members and agents | `status`?, `assignee`? (`me`, `none` or a user id), `limit`? (1–100), `cursor`? | `{ tasks, nextCursor }`, a page as `GET /tasks` (see Pages of tasks); `me` is a member's own |
+| `get_task` | read | everyone (a managed run its own task only) | `taskId` | `{ task, latestRun }`: the `TaskDetail`, with its latest revisions, comments and events, its questions (every open one, the 50 most recently asked answered ones), each list with how many it leaves out (see Bounds), its pull request, the tasks it waits for, the 20 oldest open tasks sharing its paths and its usage, and its latest `Run` (or null) |
+| `get_briefing` | read | everyone (a managed run its own task only) | `taskId` | the task's briefing (see Briefing below): `task` (`id`, `title`, `description`, `acceptanceCriteria`, `status`, `revision`), `openQuestions`, `answeredQuestions`, `owns`, `waitsFor` (the tasks it waits for, each `{ id, title, status }`), `overlaps`, `context` (`{ instructions, facts }`, the host's entries with their trust) and `omitted` (`{ contextEntries, answeredQuestions, openQuestions, overlaps }`) |
 | `get_pending_signals` | read | agents | | the agent's oldest unacknowledged signals |
 | `acknowledge_signal` | write | agents | `id` | acknowledges one |
 | `publish_signal` | write | agents | `recipientId`, `kind`, `payload.message`, `idempotencyKey`, `replyToId`? | to a peer agent: one follow-up per signal, four replies per chain, 20 new signals a minute |
 | `claim_task` | write | agents | `taskId`, `claimId` | claims a Ready task (or an expired claim) for 15 minutes, once every task in its `dependsOn` is Done or Cancelled ("This task waits for task "<title>". Claim it once that is done.") and while the agent holds fewer than 3 other live claims ("You hold 3 claimed tasks. Release, finish or report a blocker on one before claiming another."); taking over an expired claim counts as a claim, and claiming again under the same live claim is the same claim. An agent's claims are made one at a time |
 | `renew_task_claim` | write | agents | `taskId`, `claimId` | renews it; answers the current requirements revision |
 | `release_task` | write | agents | `taskId`, `claimId` | releases it and returns the task to Ready |
-| `create_task` | write | agents, and members whose role may (`task.write`) | `requestId`, `title`, `description`, `acceptanceCriteria`, and optionally `owns`, `dependsOn`, `labels`, `branch` | creates a Backlog task, idempotent by `requestId` for its creator (an agent or a member; a retry is compared by its requirements) |
-| `update_task` | write | agents, and members whose role may (`task.write`) | `taskId`, `version`, the requirements, the task's fields, `status` (`BACKLOG` or `READY`) | edits a task; an agent edits only the tasks it created; a Done or Cancelled task's requirements are refused (see Task statuses) |
+| `create_task` | write | agents, and members whose role may (`task.write`) | `requestId`, `title`, `description`, `acceptanceCriteria`, and optionally `owns`, `dependsOn`, `labels`, `branch` | creates a Backlog task, idempotent by `requestId` for its creator (an agent or a member; a retry is compared by its requirements); an agent's counts against its 20 a minute (see Bounds) |
+| `update_task` | write | agents, and members whose role may (`task.write`) | `taskId`, `version`, the requirements, the task's fields, `status` (`BACKLOG` or `READY`) | edits a task; an agent edits only the tasks it created, each edit counting against its 20 a minute (see Bounds); a Done or Cancelled task's requirements are refused (see Task statuses) |
 | `report_progress` | write | agents | `taskId`, `claimId`, `revision`, `requestId`, `message`, `usage`? | a progress report on the timeline; `usage` (`AgentUsage`: `inputTokens`, `outputTokens`, `cacheCreationInputTokens`, `cacheReadInputTokens`, each a non-negative whole number, `costUsd` a non-negative number, `model` 1–100 characters, all optional) is what the agent used since its previous report on the task, its own estimate, kept with the report apart from what peers receive. A retry under the same `requestId` must carry the same usage |
 | `report_blocker` | write | agents | `taskId`, `claimId`, `revision`, `requestId`, `message` | ends the claim, moves the task to Blocked |
 | `ask_question` | write | agents | `taskId`, `requestId`, `text` (1–4000), `wait`? | a `Question` on an open task, idempotent by `requestId`; with `wait`, the agent holding the task's claim ends it and the task moves to Blocked (see Questions) |
@@ -343,7 +381,8 @@ the same list until a later release (see DevSync's own endpoint below).
 - **Size.** A test (`actions.test.ts`) fails when the actions' list (names, descriptions and input
   JSON schemas, as JSON) grows past its budget, 15,000 characters (P3 reached 9,384, P4 11,960 with
   the task's fields, the claim rules and usage, P6 13,956 with questions and the briefing, P7 14,096
-  with a managed run's own-task rule in `get_project_state` and `list_tasks`; P3's budget was
+  with a managed run's own-task rule in `get_project_state` and `list_tasks`, P8 14,382 with
+  `list_tasks`' pages and the task's bounded lists; P3's budget was
   10,000, P4's 12,000, P6's 14,000). An id's schema is `{ type: "string", format: "uuid" }` only,
   without the pattern zod would repeat beside it.
 - **Briefing.** `get_briefing` asks `host.context({ projectId, agentId | userId }, { subject:
@@ -351,12 +390,15 @@ the same list until a later release (see DevSync's own endpoint below).
   there), keeps only the contract's fields of each entry (an answer that doesn't parse is logged,
   naming its fields only, and gives none), and answers within 8,000 characters of JSON: past them,
   the context is cut first, whole entries from its last (its facts before its instructions), then
-  the answered questions, the oldest first, then the open questions, the newest first, and
-  `omitted` counts what was cut, with the older answered questions the task's detail leaves out.
-  The briefing is measured once and each entry and question once, so the cut is linear in them.
-  Only the task, with its paths, waits and overlaps, is never cut, so only a task that alone passes
-  8,000 characters makes a longer briefing, with no context and no question. Context marked
-  `untrusted` is information, not instructions, as its description says.
+  the answered questions, the oldest first, then the overlaps, the newest first, then the open
+  questions, the newest first, and `omitted` counts what was cut, with the older answered
+  questions and the overlaps the task's detail leaves out. The briefing is measured once and each
+  entry, question and overlap once, so the cut is linear in them. Only the task, with its paths and
+  waits, is never cut, so only a task that alone passes 8,000 characters makes a longer briefing,
+  with no context, no question and no overlap; however many tasks share its paths, the briefing
+  holds the bound. Open questions go last: they are this task's own open matters, while an overlap
+  is about another task, which `get_task` lists too. Context marked `untrusted` is information, not
+  instructions, as its description says.
 
 The host's Agents dialog (the **Agents** button at the top of the project's page) registers an
 agent, shows its token once and gives these snippets. For Claude Code:
@@ -448,6 +490,11 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
   transaction gives `host.agents.adopt` its rows that still have a token and nulls their
   `token_hash` and `expires_at`. A project with DevSync off waits for the next hour; one whose move
   fails is logged (the error's name only) and tried again then.
+- `devsync.retention`: every day at 03:00 UTC (`0 3 * * *`), with an empty payload, deletes the
+  signals acknowledged over 30 days ago, every project's. A signal's replies go with it, so a
+  conversation goes whole once all of it was acknowledged that long ago, its last reply first, and
+  one still holding a newer or unacknowledged reply stays. Delivered outbox events stay: they are
+  the tasks' timelines. Daily is enough for a 30-day window, at an hour of little traffic.
 
 ## Events
 

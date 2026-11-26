@@ -20,7 +20,7 @@ afterEach(cleanup);
 
 function routes(task: TaskDetail = detail, extra: Record<string, Reply> = {}) {
   return {
-    "GET /tasks": { body: { tasks } },
+    "GET /tasks": { body: { tasks, nextCursor: null } },
     "GET /members": { body: { members } },
     "GET /agents": { body: { agents: [agent] } },
     "GET /pull-requests": { body: { pullRequests } },
@@ -455,6 +455,31 @@ describe("the task panel", () => {
     cleanup();
     const one = await open({ ...detail, questions: [answered], answeredNotShown: 1 });
     expect(within(one.panel).getByText("1 older answered question isn't shown.")).toBeTruthy();
+  });
+
+  it("says how many older revisions, comments and events, and later overlaps, it doesn't show", async () => {
+    const overlap = {
+      task: { id: id(13), title: "Fix the checkout total", status: "CLAIMED" as const },
+      paths: ["src/checkout/total.ts"],
+    };
+    const { panel } = await open({
+      ...detail,
+      owns: ["src/"],
+      overlaps: [overlap],
+      revisionsNotShown: 48,
+      commentsNotShown: 1,
+      timelineNotShown: 7,
+      overlapsNotShown: 3,
+    });
+    expect(within(panel).getByText("48 older revisions aren't shown.")).toBeTruthy();
+    expect(within(panel).getByText("1 older comment isn't shown.")).toBeTruthy();
+    expect(within(panel).getByText("7 older events aren't shown.")).toBeTruthy();
+    const fields = within(panel).getByRole("region", { name: "Paths and dependencies" });
+    expect(within(fields).getByText("Shares paths with 4 other open tasks:")).toBeTruthy();
+    expect(within(fields).getByText("3 more tasks aren't shown.")).toBeTruthy();
+    cleanup();
+    const plain = await open(detail);
+    expect(within(plain.panel).queryByText(/aren't shown|isn't shown/)).toBeNull();
   });
 
   it("answers an open question and asks one, each checked before it is sent", async () => {
