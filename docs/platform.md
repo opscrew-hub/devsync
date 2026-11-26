@@ -57,6 +57,11 @@ their tokens still working:
 A later release drops the fallback and the token columns, once every moved token is past its 24
 hours.
 
+A follow-up (from P2): DevSync never hears of a revoke on the dashboard. The agent is refused at
+once everywhere, but its DevSync row keeps receiving its inbox and peers' signals, and its claim
+lasts until it expires, 15 minutes at most. Reading the host's list when delivering would close
+that.
+
 ### Actions, served through `/mcp` (P3)
 
 Each MCP tool is declared once as an action (`serverModule.actions`), and DevSync's own endpoint
