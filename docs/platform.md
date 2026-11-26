@@ -163,3 +163,9 @@ time. Then `app.opscrew.dev` pins the reviewed commit.
   last pinned commit: the briefing measured once per item and a cap on a task's open questions; a
   run's token reads only its own task; a run asked for only once its task's dependencies are done;
   a run's changed paths and models redacted; the OIDC request token in the key backstop.
+- [ ] **P8, the 2026-11-26 audit's other findings** (after P7; issues #76–#79 and #81–#83). Bounded
+  task history and lists, a read-only project refusing a member's message to an agent, a Done or
+  Cancelled task's requirements kept as they are, DevSync's changes in the host's audit log, the
+  run workflow's actions pinned to commits, a rate limit on DevSync's own MCP endpoint and a
+  cached runs setup, and the informational items (a caller kind no rule names refused, the
+  workspace checked beside the project, the enums checked by the database).
