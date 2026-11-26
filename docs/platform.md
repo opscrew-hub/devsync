@@ -78,7 +78,7 @@ DevSync's records, `start` for asking for a managed run.
 | `request_run` | start | members whose role may (`run.request`); the run still waits for an approval |
 
 - **Callers.** A member acts with their role through `can()`; an agent is an `AgentActor`, as
-  today; a run reads only, and its writes are refused.
+  today; a run reads only its own task (P7), and its writes are refused.
 - **Refusals.** An action answers DevSync's refusals as its result, `{ refused: { code, message } }`,
   with the same plain-English message as today. It throws only for a fault, which the host reports
   as "failed".
@@ -159,7 +159,7 @@ time. Then `app.opscrew.dev` pins the reviewed commit.
   `packages/schemas/src/workflow.ts`, `packages/schemas/src/runs.ts` and their tests,
   `packages/server/src/domain/runs.ts`, `packages/web/src/Runs*`, `docs/managed-runs.md`,
   `docs/host.md`'s Managed runs).
-- [ ] **P7, the whole change's review** (after P6; the files below). The review of everything since the
+- [x] **P7, the whole change's review** (after P6; the files below). The review of everything since the
   last pinned commit: the briefing measured once per item and a cap on a task's open questions; a
   run's token reads only its own task; a run asked for only once its task's dependencies are done;
   a run's changed paths and models redacted; the OIDC request token in the key backstop.
