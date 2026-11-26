@@ -79,7 +79,8 @@ function sameSignal(
 
 /**
  * `POST /agents/:agentId/messages` (`task.write`): a member's message to one of the project's live
- * agents, idempotent by its key (the same key with another message is refused).
+ * agents, idempotent by its key (the same key with another message is refused). A read-only
+ * project is refused, as every other member's write is.
  */
 export async function publishSignal(
   host: DevSyncHost,
@@ -87,6 +88,7 @@ export async function publishSignal(
   agentId: string,
   input: AgentMessage,
 ): Promise<AgentMessageReceipt> {
+  requireWritable(ctx.project);
   if (!can(ctx.member.role, "task.write")) {
     throw new DevSyncError(
       "forbidden",

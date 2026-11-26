@@ -312,6 +312,24 @@ describe("project routes", () => {
     expect(AgentList.parse((await as("owner")("GET", "/agents")).body).agents).toHaveLength(2);
   });
 
+  it("refuse a message to an agent on a read-only project, as every other change there", async () => {
+    const { host, project, as } = setup();
+    const agent = await hostAgent(host, project, { name: "Codex", kind: "CODEX" });
+    const frozen = as("owner", { ...project, readOnly: true });
+    const message = {
+      kind: "system.warning",
+      message: "A message on a project past its plan",
+      idempotencyKey: crypto.randomUUID(),
+    };
+    const error = refusal(
+      await frozen("POST", `/agents/${agent.id}/messages`, message),
+      403,
+      "forbidden",
+    );
+    expect(error.message).toMatch(/read-only/);
+    refusal(await frozen("POST", "/tasks", newTask), 403, "forbidden");
+  });
+
   describe.each(ROLES)("a member who is %s", (role) => {
     it("reads everything, changes tasks and messages agents", async () => {
       const { host, project, ctx, as } = setup();

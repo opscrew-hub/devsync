@@ -86,7 +86,8 @@ the request:
 The host has already checked that the member belongs to the workspace (and isn't suspended), that
 the project is the workspace's and that DevSync is on for both. It also refuses members' changes
 (any method but GET) to a read-only project, one past the workspace's plan, or a disconnected one.
-DevSync checks the role.
+DevSync checks the role, and refuses every member's change to a read-only project again (403), a
+message to an agent too.
 
 ## Roles and permissions
 

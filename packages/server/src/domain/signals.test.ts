@@ -143,6 +143,19 @@ describe("a member's message to an agent", () => {
     );
     expect(error.fields).toEqual(["message"]);
   });
+
+  it("is refused on a read-only project, as every other member's write is, and keeps nothing", async () => {
+    const { host, project, as, codex } = await setup();
+    const frozen = as("owner", { ...project, readOnly: true });
+    const input = {
+      kind: "system.warning" as const,
+      message: "A message on a project past its plan",
+      idempotencyKey: crypto.randomUUID(),
+    };
+    const error = await refusal(publishSignal(host, frozen, codex.id, input), "forbidden");
+    expect(error.message).toMatch(/read-only/);
+    expect(await pendingSignals(host, codex.actor)).toEqual([]);
+  });
 });
 
 describe("publishAgentSignal", () => {
