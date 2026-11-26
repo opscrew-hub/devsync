@@ -236,12 +236,14 @@ describe("the managed runs' workflow file", () => {
   it("never prints a key or a token, nor traces the script that holds them", () => {
     const run = text(step("agent", "Run the coding agent"));
     const key =
-      /\$\{?(ANTHROPIC_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CODEX_API_KEY|ANTHROPIC_AUTH_TOKEN|OPSCREW_MCP_TOKEN|OPSCREW_AI_CREDENTIAL|ACTIONS_ID_TOKEN_REQUEST_TOKEN|oidc|token|!key)\b/;
+      /\$\{?(ANTHROPIC_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CODEX_API_KEY|ANTHROPIC_AUTH_TOKEN|OPSCREW_MCP_TOKEN|OPSCREW_AI_CREDENTIAL|ACTIONS_ID_TOKEN_REQUEST_TOKEN|oidc|token|request_token|secret|!key)\b/;
     // A token is only masked, or written to a file, a pipe or curl's header file: never to the log.
     const handled = [
       /^ *echo "::add-mask::\$(oidc|token|OPSCREW_AI_CREDENTIAL)"$/,
       /^ *(\S+=\$\(|\(umask 077 && )?printf '%s' "\$(oidc|token|OPSCREW_MCP_TOKEN)" (\||> "\$RUNNER_TEMP\/devsync-[a-z-]+")/,
       /--header @<\(printf 'Authorization: bearer %s\\n' "\$ACTIONS_ID_TOKEN_REQUEST_TOKEN"\) \\$/,
+      // The check reads each key or token through a pipe.
+      / -f <\(printf '%s' "\$secret"\)( \.)?$/,
     ];
     let masked = 0;
     for (const script of scripts()) {
@@ -295,7 +297,7 @@ describe("the managed runs' workflow file", () => {
     expect(run).toContain("export OPSCREW_MCP_TOKEN=\n");
     expect(run).toContain("export OPSCREW_AI_CREDENTIAL=\n");
     const loop = run.indexOf(
-      "for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPSCREW_MCP_TOKEN OPSCREW_AI_CREDENTIAL; do",
+      "for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPSCREW_MCP_TOKEN OPSCREW_AI_CREDENTIAL ACTIONS_ID_TOKEN_REQUEST_TOKEN; do",
     );
     expect(loop).toBeGreaterThan(run.indexOf(`claude "\${flags[@]}"`));
     expect(loop).toBeGreaterThan(run.indexOf("env -u OPENAI_API_KEY codex"));
@@ -304,12 +306,12 @@ describe("the managed runs' workflow file", () => {
   it("refuses a change that holds any key or token, every one that is set, never putting one in argv", () => {
     const run = text(step("agent", "Run the coding agent"));
     const loop = run.indexOf(
-      "for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPSCREW_MCP_TOKEN OPSCREW_AI_CREDENTIAL; do",
+      "for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPSCREW_MCP_TOKEN OPSCREW_AI_CREDENTIAL ACTIONS_ID_TOKEN_REQUEST_TOKEN; do",
     );
-    const guard = run.indexOf(`if [ -z "$failure" ] && [ -n "\${!key}" ]; then`);
-    const files = run.indexOf('grep -rqsF --exclude-dir=.git -f <(printenv "$key") .');
+    const guard = run.indexOf('if [ -z "$failure" ] && [ -n "$secret" ]; then');
+    const files = run.indexOf(`grep -rqsF --exclude-dir=.git -f <(printf '%s' "$secret") .`);
     const names = run.indexOf(
-      'find . -name .git -prune -o -print 2>/dev/null | grep -qsF -f <(printenv "$key")',
+      `find . -name .git -prune -o -print 2>/dev/null | grep -qsF -f <(printf '%s' "$secret")`,
     );
     const refusal = run.indexOf(
       'echo "::error::The change holds the $key secret, so it is not published."',
@@ -341,6 +343,37 @@ describe("the managed runs' workflow file", () => {
     expect(run.slice(failedCheck, done)).toContain("failure=agent-failed");
     // No grep's answer is folded into another's: each is read on its own.
     expect(run.slice(loop, done)).not.toMatch(/grep[^\n]*\|\|/);
+  });
+
+  it("checks the change for GitHub's request token through a copy it never exports, when it is set", () => {
+    const run = text(step("agent", "Run the coding agent"));
+    const copy = run.indexOf('declare +x request_token="$ACTIONS_ID_TOKEN_REQUEST_TOKEN"\n');
+    const unset = run.indexOf("unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN");
+    // Copied right before the unset, which comes first thing, so no agent ever gets it.
+    expect(copy).toBeGreaterThan(run.indexOf("set +e"));
+    expect(run.slice(copy, unset).split("\n")).toHaveLength(2);
+    expect(run.match(/\brequest_token\b/g)).toHaveLength(2);
+    expect(run).not.toMatch(/export [^\n]*request_token|env [^\n]*request_token/);
+    // In the check's loop, its copy stands for it; a value that is empty is never checked.
+    const loop = run.indexOf(
+      "for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPSCREW_MCP_TOKEN OPSCREW_AI_CREDENTIAL ACTIONS_ID_TOKEN_REQUEST_TOKEN; do",
+    );
+    const body = run
+      .slice(loop, run.indexOf("done", loop))
+      .split("\n")
+      .map((line) => line.trim());
+    expect(body.slice(1, 4)).toEqual([
+      `secret=\${!key}`,
+      '[ "$key" != ACTIONS_ID_TOKEN_REQUEST_TOKEN ] || secret=$request_token',
+      'if [ -z "$failure" ] && [ -n "$secret" ]; then',
+    ]);
+    // No key or token reaches a command's arguments: printf is the shell's own.
+    expect(run).not.toMatch(/printenv/);
+    expect(body.filter((line) => line.includes("$secret"))).toEqual([
+      'if [ -z "$failure" ] && [ -n "$secret" ]; then',
+      `grep -rqsF --exclude-dir=.git -f <(printf '%s' "$secret") .`,
+      `find . -name .git -prune -o -print 2>/dev/null | grep -qsF -f <(printf '%s' "$secret")`,
+    ]);
   });
 
   it("keeps the write token out of the agent job, which checks out without credentials", () => {
@@ -409,10 +442,19 @@ describe("the managed runs' workflow file", () => {
       expect(script).toContain(`echo "${warning}"`);
     }
     expect(script).not.toMatch(/exit [1-9]/);
-    // Only this step asks GitHub for an OIDC token; the agent step unsets the means to.
+    // Only this step asks GitHub for an OIDC token; the agent step unsets the means to, keeping
+    // only a copy of the request token for its check of the change.
     const asking = lines.filter((line) => line.includes("ACTIONS_ID_TOKEN_REQUEST"));
-    expect(asking).toHaveLength(3);
     expect(asking.filter((line) => script.includes(line))).toHaveLength(2);
+    const agentStep = text(step("agent", "Run the coding agent"));
+    const others = asking.filter((line) => !script.includes(line)).map((line) => line.trim());
+    expect(others).toEqual([
+      'declare +x request_token="$ACTIONS_ID_TOKEN_REQUEST_TOKEN"',
+      "unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+      "for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPSCREW_MCP_TOKEN OPSCREW_AI_CREDENTIAL ACTIONS_ID_TOKEN_REQUEST_TOKEN; do",
+      '[ "$key" != ACTIONS_ID_TOKEN_REQUEST_TOKEN ] || secret=$request_token',
+    ]);
+    for (const line of others) expect(agentStep).toContain(line);
   });
 
   it("keeps GitHub's OIDC means from the agents, and the OIDC token too once it is used", () => {

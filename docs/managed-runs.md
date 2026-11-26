@@ -10,11 +10,14 @@ and [research/openai.md](research/openai.md); the host's side is `ModuleHost.git
 ## The flow
 
 1. A member asks for a run on a Ready task. DevSync records it, `REQUESTED`, at the task's current
-   revision. A task has at most one run that hasn't ended.
+   revision. A task has at most one run that hasn't ended, and none while a task it waits for is
+   open (neither Done nor Cancelled): "This task waits for task "<title>". Ask for a run once that
+   is done."
 2. An Owner, Admin or Approver approves or rejects it; the requester, or any of them, may cancel it
    while it is `REQUESTED`. Approving is refused when the task's requirements changed since the
    request, or the task is no longer Ready: "The task changed since this run was asked for. Cancel
-   it and ask for a new run."
+   it and ask for a new run."; and while a task it waits for is open, given since: "This task waits
+   for task "<title>". Approve the run once that is done."
 3. Approved, it is `QUEUED`, and the `devsync.runs` job asks the host for its reference for the run
    (`host.ai.allowRun`), then dispatches the project's `devsync.yml` through
    `host.github.dispatch` with `run_id` (the run's id), `task` (the requested revision's title,
@@ -30,8 +33,9 @@ and [research/openai.md](research/openai.md); the host's side is `ModuleHost.git
    `.github/`), pushes `devsync/<run id>` and opens a draft pull request; and a `report` job, always
    run, which uploads the `devsync-result` artifact.
 5. When GitHub says the run completed (a `workflow_run` fact on `devsync.github`), DevSync reads
-   `devsync-result` through `host.github.artifact`, checks it, stores it, deletes the run's
-   artifacts and ends the run `SUCCEEDED` or `FAILED`. A succeeded run's draft pull request is
+   `devsync-result` through `host.github.artifact`, checks it, stores it (its changed paths and
+   models through the host's redactor), deletes the run's artifacts and ends the run `SUCCEEDED`
+   or `FAILED`. A succeeded run's draft pull request is
    linked to the task when the task has none. A run still `RUNNING` six hours after its dispatch is
    read once more and, without a result, ends `FAILED` (`no-result`).
 
@@ -203,7 +207,8 @@ repository has no key of the workspace's own, pays for it with the workspace's A
 - **The agent step never sees GitHub's means to ask for OIDC tokens.** The runner sets
   `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` in every step of a job that
   may ask for one, over the step's own `env`, so the step can't blank them there. Its shell unsets
-  both first thing, so neither agent's process gets them. It reads the two files and removes them
+  both first thing, so neither agent's process gets them; it keeps only a copy of the request
+  token, never exported, for the backstop. It reads the two files and removes them
   before anything else; the OIDC token stays a shell variable, never exported.
 - **Paying with the AI credits.** The key order stays `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`,
   `OPENAI_API_KEY`. With none of them and a request, the agent step exchanges the same OIDC token,
@@ -238,14 +243,20 @@ repository has no key of the workspace's own, pays for it with the workspace's A
   - Neither agent gets the AI credential's or the MCP token's own variable: Claude Code has the
     credential as its auth token and the MCP token in its configuration only; Codex has the MCP
     token in its environment.
-- **The backstop** checks the change for the MCP token and the gateway credential as it does for
-  the keys, every one that is set, failing closed.
+- **The backstop** checks the change for the MCP token, the gateway credential and GitHub's OIDC
+  request token (through its unexported copy) as it does for the keys, every one that is set,
+  failing closed. Each value reaches `grep` through a pipe from the shell's own `printf`, never
+  in a command's arguments.
 
-What remains: through `/mcp`, a run's agent can read the project's data on the dashboard, whatever
-the run's token lets it read. A prompt injection in the default branch's code, which the agent
-reads as it works, could make it copy that data into the change. The backstop looks for the keys
-and tokens only, not for that data, and `publish` pushes the branch and opens the draft pull request
-before anyone reviews it, so in a public repository what was copied is public at once.
+What remains: through `/mcp`, a run's agent reads its own task only: DevSync gives the run's token
+`get_task` and `get_briefing` for the run's task and refuses the project's lists and every other
+task, so a prompt injection in the default branch's code, which the agent reads as it works, can
+copy no other task into the pull request (its own task's detail names the tasks it waits for and
+those sharing its paths, by title and status only). What it reads of its own task (its
+requirements, questions, comments and timeline) could still be copied into the change: the
+backstop looks for the keys and tokens only, and `publish` pushes the branch and opens the draft
+pull request before anyone reviews it, so in a public repository what was copied is public at
+once.
 
 ## Not in the first version
 

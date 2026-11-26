@@ -241,9 +241,11 @@ jobs:
         run: |
           set +e
           # GitHub gives every step of this job the means to ask for OIDC tokens, over the step's
-          # own env: no agent gets them. What the step before left, the job's OIDC token for
+          # own env: no agent gets them. Only a copy of the request token stays, never exported,
+          # for the check of the change below. What the step before left, the job's OIDC token for
           # OpsCrew and the run's MCP token, is read and removed before anything else, and the MCP
           # configuration written below goes when the step ends.
+          declare +x request_token="$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
           unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
           trap 'rm -f "$RUNNER_TEMP/devsync-mcp.json"' EXIT
           oidc=
@@ -436,14 +438,17 @@ jobs:
             turns=$(jq -c '.num_turns | if type == "number" and . >= 0 then floor else null end' "$RUNNER_TEMP/claude.json")
           fi
           # No key or token leaves in the change: not in a file's content, not in a path's name.
-          # Each one that is set is checked, every one when several are. Only grep's 1 says it
-          # found nothing: any other answer, an error included, keeps the change from being
-          # published. Neither prints a file name.
-          for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPSCREW_MCP_TOKEN OPSCREW_AI_CREDENTIAL; do
-            if [ -z "$failure" ] && [ -n "\${!key}" ]; then
-              grep -rqsF --exclude-dir=.git -f <(printenv "$key") .
+          # Each one that is set is checked, every one when several are, GitHub's request token
+          # through its unexported copy. Each reaches grep through a pipe, never in a command's
+          # arguments. Only grep's 1 says it found nothing: any other answer, an error included,
+          # keeps the change from being published. Neither prints a file name.
+          for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPSCREW_MCP_TOKEN OPSCREW_AI_CREDENTIAL ACTIONS_ID_TOKEN_REQUEST_TOKEN; do
+            secret=\${!key}
+            [ "$key" != ACTIONS_ID_TOKEN_REQUEST_TOKEN ] || secret=$request_token
+            if [ -z "$failure" ] && [ -n "$secret" ]; then
+              grep -rqsF --exclude-dir=.git -f <(printf '%s' "$secret") .
               contents=$?
-              find . -name .git -prune -o -print 2>/dev/null | grep -qsF -f <(printenv "$key")
+              find . -name .git -prune -o -print 2>/dev/null | grep -qsF -f <(printf '%s' "$secret")
               names=("\${PIPESTATUS[@]}")
               if [ "$contents" = 0 ] || [ "\${names[1]}" = 0 ]; then
                 echo "::error::The change holds the $key secret, so it is not published."

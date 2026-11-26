@@ -61,7 +61,6 @@ async function setup() {
       description: "",
       acceptanceCriteria: "",
       owns: ["src/"],
-      dependsOn: [first.id],
       labels: ["ui"],
       branch: "feature/x",
     });
@@ -106,8 +105,10 @@ async function setup() {
         updatedAt: "2026-01-01T00:00:00.000Z",
       },
     });
-    await linkPullRequest(host, ctx, created.id, { number: 4 });
+    const linked = await linkPullRequest(host, ctx, created.id, { number: 4 });
     const asked = await requestRun(host, ctx, ready.id);
+    // It waits for its first step from now on: a run is asked for only while it waits for none.
+    await updateTask(host, ctx, created.id, { version: linked.version, dependsOn: [first.id] });
     return { taskId: created.id, firstId: first.id, agentId: registered.id, runId: asked.id };
   };
   return {

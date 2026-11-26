@@ -7,10 +7,10 @@
  * its claims are made one at a time (its row locked), so two at once can't both take the third.
  */
 import { TaskClaimInput, type TaskStatus } from "@devsync/schemas";
-import { and, asc, count, eq, gt, lte, ne, notInArray, or, sql } from "drizzle-orm";
-import { task, taskDependency } from "../db";
+import { and, count, eq, gt, lte, ne, or, sql } from "drizzle-orm";
+import { task } from "../db";
 import { type AgentActor, type DevSyncDb, DevSyncError, type DevSyncHost } from "../host";
-import { lockAgentRow, parse, REFUSAL, requireWritable } from "./common";
+import { lockAgentRow, openDependency, parse, REFUSAL, requireWritable } from "./common";
 import { outbox } from "./outbox";
 
 /** How long a claim lasts from its claim or renewal. */
@@ -84,29 +84,11 @@ async function requireClaimable(
   taskId: string,
   now: Date,
 ): Promise<void> {
-  const [waiting] = await tx
-    .select({ title: task.title })
-    .from(taskDependency)
-    .innerJoin(
-      task,
-      and(
-        eq(task.id, taskDependency.dependsOnTaskId),
-        eq(task.projectId, taskDependency.projectId),
-      ),
-    )
-    .where(
-      and(
-        eq(taskDependency.taskId, taskId),
-        eq(taskDependency.projectId, actor.project.projectId),
-        notInArray(task.status, ["DONE", "CANCELLED"]),
-      ),
-    )
-    .orderBy(asc(taskDependency.position))
-    .limit(1);
-  if (waiting) {
+  const waiting = await openDependency(tx, actor.project, taskId);
+  if (waiting !== null) {
     throw new DevSyncError(
       "conflict",
-      `This task waits for task "${waiting.title}". Claim it once that is done.`,
+      `This task waits for task "${waiting}". Claim it once that is done.`,
     );
   }
   if ((await otherClaims(tx, actor, taskId, now)) >= CLAIM_LIMIT) {

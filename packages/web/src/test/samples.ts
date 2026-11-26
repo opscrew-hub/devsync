@@ -118,6 +118,7 @@ export const detail: TaskDetail = {
   ],
   comments: [{ id: id(20), author: ana, body: "Use the shop's colours.", createdAt: at }],
   questions: [],
+  answeredNotShown: 0,
   timeline: [
     {
       id: id(21),

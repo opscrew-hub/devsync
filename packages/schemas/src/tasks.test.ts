@@ -307,6 +307,7 @@ describe("the answers", () => {
           answeredAt: now,
         },
       ],
+      answeredNotShown: 3,
       timeline: [
         {
           id: randomUUID(),
@@ -349,6 +350,10 @@ describe("the answers", () => {
     expect(TaskDetail.safeParse(detail).success).toBe(true);
     expect(TaskDetail.safeParse({ ...detail, usage: { agents: null } }).success).toBe(false);
     expect(TaskDetail.safeParse({ ...detail, questions: undefined }).success).toBe(false);
+    // How many older answered questions the detail leaves out: a whole number, never negative.
+    for (const answeredNotShown of [undefined, -1, 1.5]) {
+      expect(TaskDetail.safeParse({ ...detail, answeredNotShown }).success).toBe(false);
+    }
     expect(
       TaskDetail.safeParse({
         ...detail,

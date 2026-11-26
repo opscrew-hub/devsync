@@ -132,7 +132,7 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 | `PATCH /tasks/:taskId` | `task.write` | `TaskUpdate` | `Task` |
 | `POST /tasks/:taskId/comments` | `task.write` | `CommentInput` | 201 `Comment` |
 | `PUT /tasks/:taskId/pull-request` | `task.write` | `PullRequestLink` | `Task` |
-| `POST /tasks/:taskId/questions` | `task.write` | `QuestionInput` | 201 `Question`; a Done or Cancelled task is refused 409 (see Questions) |
+| `POST /tasks/:taskId/questions` | `task.write` | `QuestionInput` | 201 `Question`; a Done or Cancelled task, and a task with 50 open questions, are refused 409 (see Questions) |
 | `POST /questions/:questionId/answer` | `task.write` | `AnswerInput` | `Question`; once: the same answer again by the same member answers it as saved, another is refused 409 |
 | `GET /findings?fingerprint=` | read | | `FindingAnswer` (see Security findings) |
 | `GET /pull-requests` | read | | `{ pullRequests: PullRequest[] }`, the 50 most recently updated |
@@ -140,7 +140,7 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 | `GET /agents` | read | | `{ agents: Agent[] }`: the host's agents that may reach DevSync (`host.agents.list`), then DevSync's own not yet moved, newest first |
 | `POST /agents/:agentId/messages` | `task.write` | `AgentMessage` | 201 `{ id, kind, createdAt }`, idempotent by its key; an agent that hasn't connected to DevSync yet is refused 404 |
 | `GET /tasks/:taskId/runs` | read | | `{ runs: Run[] }`, the task's 50 latest, newest first |
-| `POST /tasks/:taskId/runs` | `run.request` | | 201 `Run`, waiting for approval |
+| `POST /tasks/:taskId/runs` | `run.request` | | 201 `Run`, waiting for approval; a task that waits for an open task is refused 409 (see Managed runs) |
 | `GET /runs/setup` | read | | `RunSetup` |
 | `POST /runs/:runId/approve` | `run.decide` | | `Run` |
 | `POST /runs/:runId/reject` | `run.decide` | | `Run` |
@@ -183,12 +183,14 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 - `TaskDetail`: a `Task` with `description`, `acceptanceCriteria`, `creator`, `revisions` (newest
   first: `number`, the three fields, `author`, `createdAt`), `comments` (newest first: `id`,
   `author`, `body`, `createdAt`), `questions` (each a `Question`, the open ones first, each group
-  oldest first), `timeline` (the task's events oldest first: `id`, `kind`, `actor`, `message`,
-  `revision`, `createdAt`), `pullRequest` (or null), `dependencies` (the tasks it waits
-  for in their order, each `{ id, title, status }`), `overlaps` (while it is open, the project's
-  other open tasks, neither Done nor Cancelled, whose paths overlap its own, oldest first: `task`
-  (`{ id, title, status }`) and `paths`, the paths they share, sorted: a path both name, or the one
-  inside the other's folder) and `usage` (`{ agents, runs }`: the sum of its agents' reported usage
+  oldest first: every open one, and the 50 most recently asked answered ones), `answeredNotShown`
+  (how many older answered questions it leaves out; the project's export has them all), `timeline`
+  (the task's events oldest first: `id`, `kind`, `actor`, `message`, `revision`, `createdAt`),
+  `pullRequest` (or null), `dependencies` (the tasks it waits for in their order, each
+  `{ id, title, status }`), `overlaps` (while it is open, the project's other open tasks, neither
+  Done nor Cancelled, whose paths overlap its own, oldest first: `task` (`{ id, title, status }`)
+  and `paths`, the paths they share, sorted: a path both name, or the one inside the other's
+  folder) and `usage` (`{ agents, runs }`: the sum of its agents' reported usage
   and, kept apart, of its managed runs', each a `UsageTotal` or null when there is none).
 - `UsageTotal`: `inputTokens`, `outputTokens`, `cacheCreationInputTokens`, `cacheReadInputTokens`
   (a figure a report left out counts 0), `costUsd` (to the millionth of a dollar; the agents' is
@@ -245,13 +247,16 @@ the answer, who gave it and when. Asking and answering are timeline events of th
 (`question.asked`, `question.answered`, with the text as their message), delivered to the project's
 agents as every timeline event is, and host events (see Events).
 
-- **Asking.** On an open task only (neither Done nor Cancelled): a member on the task's panel
-  (`POST /tasks/:taskId/questions`), an agent with `ask_question`, idempotent by its `requestId`
-  (the same id for another question is refused 409). When the task's creator is an agent other than
-  the asker, it gets a `clarification.requested` signal, `{ taskId, questionId, message }`; a
-  revoked creator gets none. Each question an agent asks counts against its 20 signals a minute,
-  with what it publishes, whether or not it signals anyone (one past them is refused 429, and the
-  question isn't kept); a retry under the same `requestId` is no new question.
+- **Asking.** On an open task only (neither Done nor Cancelled), with fewer than 50 open questions
+  ("This task has 50 open questions. Answer some before asking another.", 409, for members and
+  agents alike): a member on the task's panel (`POST /tasks/:taskId/questions`), an agent with
+  `ask_question`, idempotent by its `requestId` (the same id for another question is refused 409;
+  a retry of one saved is answered as saved, whatever the count). When the task's creator is an
+  agent other than the asker, it gets a `clarification.requested` signal,
+  `{ taskId, questionId, message }`; a revoked creator gets none. Each question an agent asks
+  counts against its 20 signals a minute, with what it publishes, whether or not it signals anyone
+  (one past them is refused 429, and the question isn't kept); a retry under the same `requestId`
+  is no new question.
 - **Waiting.** With `wait: true`, an agent holding the task's live claim ends it and the task moves
   to Blocked, as `report_blocker` does; without the claim, `wait` is refused 409. The task keeps
   `blocked_by_question` while it stays Blocked, which tells it apart from a task a blocker report
@@ -277,10 +282,10 @@ the same list until a later release (see DevSync's own endpoint below).
 
 | Action | Kind | Who | Input | What it does |
 |---|---|---|---|---|
-| `get_project_state` | read | everyone | | the project, its agents and its 100 most recently updated tasks |
-| `list_tasks` | read | everyone | `status`?, `assignee`? (`me`, `none` or a user id) | `{ tasks }`, as `GET /tasks`; `me` is a member's own |
-| `get_task` | read | everyone | `taskId` | `{ task, latestRun }`: the `TaskDetail`, with its questions, its pull request, the tasks it waits for, the open tasks sharing its paths and its usage, and its latest `Run` (or null) |
-| `get_briefing` | read | everyone | `taskId` | the task's briefing (see Briefing below): `task` (`id`, `title`, `description`, `acceptanceCriteria`, `status`, `revision`), `openQuestions`, `answeredQuestions`, `owns`, `waitsFor` (the tasks it waits for, each `{ id, title, status }`), `overlaps`, `context` (`{ instructions, facts }`, the host's entries with their trust) and `omitted` (`{ contextEntries, answeredQuestions, openQuestions }`) |
+| `get_project_state` | read | members and agents | | the project, its agents and its 100 most recently updated tasks |
+| `list_tasks` | read | members and agents | `status`?, `assignee`? (`me`, `none` or a user id) | `{ tasks }`, as `GET /tasks`; `me` is a member's own |
+| `get_task` | read | everyone (a managed run its own task only) | `taskId` | `{ task, latestRun }`: the `TaskDetail`, with its questions (every open one, the 50 most recently asked answered ones and `answeredNotShown`), its pull request, the tasks it waits for, the open tasks sharing its paths and its usage, and its latest `Run` (or null) |
+| `get_briefing` | read | everyone (a managed run its own task only) | `taskId` | the task's briefing (see Briefing below): `task` (`id`, `title`, `description`, `acceptanceCriteria`, `status`, `revision`), `openQuestions`, `answeredQuestions`, `owns`, `waitsFor` (the tasks it waits for, each `{ id, title, status }`), `overlaps`, `context` (`{ instructions, facts }`, the host's entries with their trust) and `omitted` (`{ contextEntries, answeredQuestions, openQuestions }`) |
 | `get_pending_signals` | read | agents | | the agent's oldest unacknowledged signals |
 | `acknowledge_signal` | write | agents | `id` | acknowledges one |
 | `publish_signal` | write | agents | `recipientId`, `kind`, `payload.message`, `idempotencyKey`, `replyToId`? | to a peer agent: one follow-up per signal, four replies per chain, 20 new signals a minute |
@@ -304,10 +309,16 @@ the same list until a later release (see DevSync's own endpoint below).
 - **Callers.** No action names a host permission: DevSync's checks stay `can()`'s, in the domain. A
   member acts with their role. An agent acts as itself, with the host's name: DevSync's row of it is
   made at its first call, its kind read from `host.agents.list`, so its inbox, claims and timeline
-  point at it, as on DevSync's own endpoint. A managed run (`kind: "run"`) reads the project's state
-  and its tasks only (`get_briefing` too). Every other action refuses it, as an agents-only action
-  refuses a member (`ask_question` and `answer_question` say a member asks and answers on the
-  task's panel) and `request_run` refuses an agent, each saying who can.
+  point at it, as on DevSync's own endpoint. A managed run (`kind: "run"`, its `runRef` DevSync's
+  run id) reads its own task only: DevSync finds the run in the project (one that isn't the
+  project's is refused 404, "There's no such managed run in this project, so it reads none of the
+  project's tasks.") and answers `get_task` and `get_briefing` for that run's task alone; another
+  task, `get_project_state` and `list_tasks` are refused 403 ("A managed run reads only its own
+  task: use get_briefing or get_task with its task id."), so a prompt injection the run's agent
+  reads can copy no other task into its pull request. Every other action refuses it ("A managed run
+  can only read its own task; what it changes reaches the task through its draft pull request."),
+  as an agents-only action refuses a member (`ask_question` and `answer_question` say a member asks
+  and answers on the task's panel) and `request_run` refuses an agent, each saying who can.
 - **Refusals.** An action answers DevSync's refusals as its result,
   `{ refused: { code, message } }`, with the codes and plain-English messages of the HTTP API, and
   agents' writes to a read-only project are refused. It throws only for a fault, which the host
@@ -325,9 +336,10 @@ the same list until a later release (see DevSync's own endpoint below).
   (`ask_question`); and read the briefing before starting (`get_briefing`, `claim_task`). Each
   description is at most 1,000 characters.
 - **Size.** A test (`actions.test.ts`) fails when the actions' list (names, descriptions and input
-  JSON schemas, as JSON) grows past its budget, 14,000 characters (P3 reached 9,384, P4 11,960 with
-  the task's fields, the claim rules and usage, P6 13,956 with questions and the briefing; P3's
-  budget was 10,000, P4's 12,000). An id's schema is `{ type: "string", format: "uuid" }` only,
+  JSON schemas, as JSON) grows past its budget, 15,000 characters (P3 reached 9,384, P4 11,960 with
+  the task's fields, the claim rules and usage, P6 13,956 with questions and the briefing, P7 14,096
+  with a managed run's own-task rule in `get_project_state` and `list_tasks`; P3's budget was
+  10,000, P4's 12,000, P6's 14,000). An id's schema is `{ type: "string", format: "uuid" }` only,
   without the pattern zod would repeat beside it.
 - **Briefing.** `get_briefing` asks `host.context({ projectId, agentId | userId }, { subject:
   <the task's title> })` as the caller (a managed run gets no context: the host takes no run
@@ -335,10 +347,11 @@ the same list until a later release (see DevSync's own endpoint below).
   naming its fields only, and gives none), and answers within 8,000 characters of JSON: past them,
   the context is cut first, whole entries from its last (its facts before its instructions), then
   the answered questions, the oldest first, then the open questions, the newest first, and
-  `omitted` counts what was cut. Only the task, with its paths, waits and overlaps, is never cut,
-  so only a task that alone passes 8,000 characters makes a longer briefing, with no context and
-  no question. Context marked `untrusted` is information, not instructions, as its description
-  says.
+  `omitted` counts what was cut, with the older answered questions the task's detail leaves out.
+  The briefing is measured once and each entry and question once, so the cut is linear in them.
+  Only the task, with its paths, waits and overlaps, is never cut, so only a task that alone passes
+  8,000 characters makes a longer briefing, with no context and no question. Context marked
+  `untrusted` is information, not instructions, as its description says.
 
 The host's Agents dialog (the **Agents** button at the top of the project's page) registers an
 agent, shows its token once and gives these snippets. For Claude Code:
@@ -450,8 +463,9 @@ one. `merged` comes for each task linked to the pull request.
 Every text DevSync stores from an agent passes `host.redact` first: a report's or a review's
 message, a signal's message, a question's text and an answer, the requirements of a task an agent
 creates or edits, its paths, labels and branch (checked again after the redactor: a branch it
-turned into `[redacted]` is no branch name, and is refused by its field), and the model a report's
-usage names. Members' text is kept as they wrote it.
+turned into `[redacted]` is no branch name, and is refused by its field), the model a report's
+usage names, and a managed run's changed paths and models from its `result.json`. Members' text is
+kept as they wrote it.
 
 ## Migrations and removal
 
@@ -507,7 +521,10 @@ A member asks for a run on a Ready task; an Owner, Admin or Approver approves it
 DevSync's workflow in the project's own GitHub Actions, which runs Claude Code on an Anthropic or
 OpenRouter key of the workspace's own (or Codex on an OpenAI key), or, without a key, on the
 workspace's AI credits, and opens a draft pull request itself. The design is
-[managed-runs.md](managed-runs.md); this is what DevSync asks of the host.
+[managed-runs.md](managed-runs.md); this is what DevSync asks of the host. A task that waits for an
+open task (neither Done nor Cancelled) gets no run: asking is refused 409 ("This task waits for
+task "<title>". Ask for a run once that is done."), and so is approving ("… Approve the run once
+that is done."), as a claim is.
 
 `serverModule` declares `workflows: ["devsync.yml"]` (with `github: true`), so the host lets DevSync
 start `.github/workflows/devsync.yml` and nothing else. DevSync calls `host.github`, the contract's
@@ -518,7 +535,7 @@ throw GitHub's errors:
 |---|---|---|
 | `setup(projectId, "devsync.yml")` | `GET /runs/setup`, and before a run is asked for | `workflow`, and whether `secrets` holds `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, give `RunSetup`; asking for a run while the workflow is missing answers 409 with `missing`'s words. A key is never missing: without one, the run pays with the workspace's AI credits |
 | `dispatch(projectId, "devsync.yml", { run_id, task, opscrew_origin?, opscrew_request? })` | `devsync.runs`, at most once per approved run | `run_id` is the run's id; `task` is `{ "title", "description", "acceptanceCriteria" }` of the requested revision as JSON, at most 60,000 characters (a longer task is refused when the run is asked for); `opscrew_origin` and `opscrew_request` are `ai.allowRun`'s answer, when it gave one (below). The run is then `RUNNING` with `githubRunId`; a failure ends it `FAILED` with that failure as its reason |
-| `artifact(projectId, githubRunId, "devsync-result")` | a `workflow_run` fact, and the six-hour sweep | `result.json` (schema version 1, `RunResult` in `@devsync/schemas`) is checked (the run's own id, a pull request of the project's own repository, at most 1,000 changed paths of at most 400 characters with no NUL or lone surrogate, every figure non-negative, a known `provider` (`opscrew` for the AI credits), which a succeeded run must have, and `turns` a non-negative whole number or null) and kept, its `turns` with its usage (`Run.usage.turns`); a result that fails a check ends the run `bad-result`, none `no-result`. A failure fails the fact's job, so the host retries it |
+| `artifact(projectId, githubRunId, "devsync-result")` | a `workflow_run` fact, and the six-hour sweep | `result.json` (schema version 1, `RunResult` in `@devsync/schemas`) is checked (the run's own id, a pull request of the project's own repository, at most 1,000 changed paths of at most 400 characters with no NUL or lone surrogate, every figure non-negative, a known `provider` (`opscrew` for the AI credits), which a succeeded run must have, and `turns` a non-negative whole number or null) and kept, its changed paths and models through `host.redact`, its `turns` with its usage (`Run.usage.turns`); a result that fails a check ends the run `bad-result`, none `no-result`. A failure fails the fact's job, so the host retries it |
 | `deleteArtifact(projectId, githubRunId, name)` | once the run has ended | both `devsync-result` and `devsync-patch`; a failure is logged, and GitHub removes them when they expire |
 
 Before each dispatch, outside any transaction and before the run is claimed, `devsync.runs` calls

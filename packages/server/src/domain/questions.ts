@@ -8,9 +8,11 @@
  * Ready once none of its open questions has `wait`; when it leaves Blocked another way, the flag and
  * its open questions' `wait` are cleared, so only the current block's question counts, and a task
  * blocked by a blocker report or a member's move stays Blocked. Each question and answer of an
- * agent counts against its 20 signals a minute, signal or not. Asking and answering are timeline
- * events of the task (`question.asked`, `question.answered`) with their host events; an agent's
- * text passes the host's redactor before it is stored. Every query filters by the project.
+ * agent counts against its 20 signals a minute, signal or not. A task holds at most 50 open
+ * questions, and its detail lists them all with its 50 most recently asked answered ones (its
+ * export keeps every one), so a task's detail and briefing stay bounded. Asking and answering are
+ * timeline events of the task (`question.asked`, `question.answered`) with their host events; an
+ * agent's text passes the host's redactor before it is stored. Every query filters by the project.
  */
 import { randomUUID } from "node:crypto";
 import {
@@ -23,7 +25,7 @@ import {
   STATUS_LABEL,
   type TaskStatus,
 } from "@devsync/schemas";
-import { and, asc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, type SQL, sql } from "drizzle-orm";
 import { agent, type QuestionRow, question, signal, type TaskRow, task } from "../db";
 import {
   type AgentActor,
@@ -62,18 +64,46 @@ function actorIds(actor: QuestionActor): NonNullable<OutboxActor> {
 /** The statuses of a task that takes no more questions. */
 const CLOSED: readonly TaskStatus[] = ["DONE", "CANCELLED"];
 
+/** The most open questions a task holds at once: one more is refused until one is answered. */
+export const OPEN_QUESTION_LIMIT = 50;
+/** How many of a task's answered questions its detail lists: the most recently asked. */
+export const ANSWERED_LISTED = 50;
+
 const REQUEST_REUSED =
   "This request ID was already used for another question. Send the question with a new request ID.";
 
 // --- Reads --------------------------------------------------------------------------------------
 
-/** The task's questions: the open ones first, each group oldest first. */
-export function selectQuestions(db: DevSyncDb, project: ProjectRef, taskId: string) {
-  return db
-    .select()
-    .from(question)
-    .where(and(eq(question.taskId, taskId), eq(question.projectId, project.projectId)))
-    .orderBy(sql`${question.answeredAt} is not null`, asc(question.createdAt), asc(question.id));
+/**
+ * The task's questions as its detail lists them: every open one (at most 50, as asking holds them),
+ * then its 50 most recently asked answered ones, each group oldest first; and how many older
+ * answered ones it leaves out.
+ */
+export async function taskQuestions(
+  db: DevSyncDb,
+  project: ProjectRef,
+  taskId: string,
+): Promise<{ rows: QuestionRow[]; answeredNotShown: number }> {
+  const ofTask = and(eq(question.taskId, taskId), eq(question.projectId, project.projectId));
+  const answered = and(ofTask, isNotNull(question.answeredAt));
+  const [open, latest, [total]] = await Promise.all([
+    db
+      .select()
+      .from(question)
+      .where(and(ofTask, isNull(question.answeredAt)))
+      .orderBy(asc(question.createdAt), asc(question.id)),
+    db
+      .select()
+      .from(question)
+      .where(answered)
+      .orderBy(desc(question.createdAt), desc(question.id))
+      .limit(ANSWERED_LISTED),
+    db.select({ answered: count() }).from(question).where(answered),
+  ]);
+  return {
+    rows: [...open, ...latest.reverse()],
+    answeredNotShown: Math.max(0, (total?.answered ?? 0) - latest.length),
+  };
 }
 
 /** The agents a question names: its asker and its answerer, when they are agents. */
@@ -246,6 +276,23 @@ async function ask(host: DevSyncHost, actor: QuestionActor, asked: Asked): Promi
       throw new DevSyncError(
         "conflict",
         `This task is ${STATUS_LABEL[current.status]}, so it takes no more questions. Ask on an open task.`,
+      );
+    }
+    // Counted with the task locked, so two questions at once can't both take the last place.
+    const [open] = await tx
+      .select({ count: count() })
+      .from(question)
+      .where(
+        and(
+          eq(question.taskId, taskId),
+          eq(question.projectId, project.projectId),
+          isNull(question.answeredAt),
+        ),
+      );
+    if ((open?.count ?? 0) >= OPEN_QUESTION_LIMIT) {
+      throw new DevSyncError(
+        "conflict",
+        `This task has ${OPEN_QUESTION_LIMIT} open questions. Answer some before asking another.`,
       );
     }
     const holdsClaim =
