@@ -538,6 +538,16 @@ describe("the task panel", () => {
     expect(button("Post the answer", done.panel).disabled).toBe(false);
   });
 
+  it("locks editing a Done or Cancelled task's requirements, saying why, but not its fields", async () => {
+    for (const status of ["DONE", "CANCELLED"] as const) {
+      const { panel } = await open({ ...detail, status });
+      expect(button("Edit the requirements", panel).disabled).toBe(true);
+      expect(within(panel).getByText(/its requirements stay as they are/)).toBeTruthy();
+      expect(button("Edit the fields", panel).disabled).toBe(false);
+      cleanup();
+    }
+  });
+
   it("locks editing the fields on a read-only project", async () => {
     renderWith(<ProjectTab selectedTaskId={detail.id} onSelectTask={() => {}} />, {
       routes: routes(),

@@ -667,6 +667,53 @@ describe("updateTask", () => {
     expect(final.message).toBe("This task is Cancelled, which is final: it can't move to Ready.");
   });
 
+  it("keeps a Done or Cancelled task's requirements as they are, a member's and an agent's edit", async () => {
+    const builder = await seedAgent(projectA);
+    const cancelled = await createTask(host, builder, {
+      ...fields,
+      title: "Delivered",
+      requestId: randomUUID(),
+    });
+    await updateTask(host, as(owner), cancelled.id, { version: 1, status: "CANCELLED" });
+    const changes = [
+      { title: "Renamed" },
+      { description: "Rewritten after the work was closed" },
+      { acceptanceCriteria: "Something else" },
+    ];
+    for (const change of changes) {
+      const error = await refusal(
+        updateTask(host, as(owner), cancelled.id, { version: 2, ...change }),
+        "conflict",
+      );
+      expect(error.message).toBe(
+        "This task is Cancelled, which is final: its requirements stay as they are. Create a new task for further work.",
+      );
+      await refusal(updateTask(host, builder, cancelled.id, { version: 2, ...change }), "conflict");
+    }
+
+    // Done too, reached from Review as a member marks it.
+    const done = await createTask(host, as(owner), fields);
+    await testDb.db.update(task).set({ status: "REVIEW" }).where(eq(task.id, done.id));
+    await updateTask(host, as(owner), done.id, { version: 1, status: "DONE" });
+    const error = await refusal(
+      updateTask(host, as(admin), done.id, { version: 2, title: "Renamed" }),
+      "conflict",
+    );
+    expect(error.message).toMatch(/^This task is Done, which is final/);
+
+    // The same requirements, the task's fields and its assignee may still be given.
+    const kept = await updateTask(host, as(owner), done.id, {
+      version: 2,
+      ...fields,
+      labels: ["shipped"],
+      assigneeUserId: admin.userId,
+    });
+    expect(kept).toMatchObject({ status: "DONE", revision: 1, version: 3, labels: ["shipped"] });
+    const detail = await getTask(host, as(owner), cancelled.id);
+    expect(detail).toMatchObject({ status: "CANCELLED", revision: 1, version: 2 });
+    expect(detail.revisions).toHaveLength(1);
+  });
+
   it("changes a claimed task's status only by its claim or by cancelling it, which ends the claim", async () => {
     const builder = await seedAgent(projectA);
     const created = await createTask(host, as(owner), fields);

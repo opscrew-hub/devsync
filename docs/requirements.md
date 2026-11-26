@@ -240,7 +240,8 @@ briefing as an agent, a member and a managed run with a long context.
   agents; Owners, Admins and Approvers decide managed runs.
 - **R-2**: DevSync MUST keep its tasks, revisions, the tasks each waits for, comments, questions,
   agents, signals, outbox, observed pull requests and runs in the `devsync` schema, with optimistic
-  concurrency on task edits and every requirements change kept as a revision.
+  concurrency on task edits and every requirements change kept as a revision. A Done or Cancelled
+  task's requirements MUST NOT change, a member's edit and an agent's alike.
 - **R-3**: DevSync MUST write its audit entries through the host's audit log (kind `project`,
   actions prefixed `devsync.`), with names and ids only.
 - **R-4**: DevSync's MCP endpoint MUST authenticate agents by bearer token (hash stored, 24-hour

@@ -233,11 +233,15 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 ### Task statuses
 
 Backlog, Ready, Claimed, In progress, Blocked, Review, Done, Cancelled. The moves allowed are
-`TRANSITIONS` in `@devsync/schemas`. A claimed task changes status only by its claim (or by being
-cancelled) until the claim expires or its agent is revoked; then anyone may move it, and the claim
-is cleared. Every change to a task's title, description or acceptance criteria keeps a new
-revision; every edit checks the task's `version` and is refused with "This task changed. Reload it
-and try again." when another came first. An agent claims a task only once every task it waits for
+`TRANSITIONS` in `@devsync/schemas`; Done and Cancelled are final. A claimed task changes status
+only by its claim (or by being cancelled) until the claim expires or its agent is revoked; then
+anyone may move it, and the claim is cleared. Every change to a task's title, description or
+acceptance criteria keeps a new revision. A Done or Cancelled task's requirements no longer change,
+by a member's edit or an agent's (409: "This task is Done, which is final: its requirements stay as
+they are. Create a new task for further work."); its paths, labels, branch, the tasks it waits for
+and its assignee still may, and the task's panel locks its requirements' edit. Every edit checks
+the task's `version` and is refused with "This task changed. Reload it and try again." when
+another came first. An agent claims a task only once every task it waits for
 is Done or Cancelled, and holds at most 3 live claims at once (see `claim_task`). A question asked
 with `wait` moves a claimed task to Blocked, and its answers back to Ready (see Questions).
 
@@ -294,7 +298,7 @@ the same list until a later release (see DevSync's own endpoint below).
 | `renew_task_claim` | write | agents | `taskId`, `claimId` | renews it; answers the current requirements revision |
 | `release_task` | write | agents | `taskId`, `claimId` | releases it and returns the task to Ready |
 | `create_task` | write | agents, and members whose role may (`task.write`) | `requestId`, `title`, `description`, `acceptanceCriteria`, and optionally `owns`, `dependsOn`, `labels`, `branch` | creates a Backlog task, idempotent by `requestId` for its creator (an agent or a member; a retry is compared by its requirements) |
-| `update_task` | write | agents, and members whose role may (`task.write`) | `taskId`, `version`, the requirements, the task's fields, `status` (`BACKLOG` or `READY`) | edits a task; an agent edits only the tasks it created |
+| `update_task` | write | agents, and members whose role may (`task.write`) | `taskId`, `version`, the requirements, the task's fields, `status` (`BACKLOG` or `READY`) | edits a task; an agent edits only the tasks it created; a Done or Cancelled task's requirements are refused (see Task statuses) |
 | `report_progress` | write | agents | `taskId`, `claimId`, `revision`, `requestId`, `message`, `usage`? | a progress report on the timeline; `usage` (`AgentUsage`: `inputTokens`, `outputTokens`, `cacheCreationInputTokens`, `cacheReadInputTokens`, each a non-negative whole number, `costUsd` a non-negative number, `model` 1–100 characters, all optional) is what the agent used since its previous report on the task, its own estimate, kept with the report apart from what peers receive. A retry under the same `requestId` must carry the same usage |
 | `report_blocker` | write | agents | `taskId`, `claimId`, `revision`, `requestId`, `message` | ends the claim, moves the task to Blocked |
 | `ask_question` | write | agents | `taskId`, `requestId`, `text` (1–4000), `wait`? | a `Question` on an open task, idempotent by `requestId`; with `wait`, the agent holding the task's claim ends it and the task moves to Blocked (see Questions) |

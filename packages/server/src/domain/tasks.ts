@@ -939,8 +939,9 @@ async function claimHolds(tx: DevSyncDb, row: TaskRow, now: Date): Promise<boole
  * `PATCH /tasks/:taskId` (a member, `TaskUpdate`) and `update_task` (an agent, its fields without
  * `taskId`): checks the version read, the lifecycle and a claim's hold on the status; keeps a new
  * revision when the requirements change, and none for its paths, the tasks it waits for, its labels
- * or its branch. An agent edits only the tasks it created, moves them to Backlog or Ready only, and
- * never assigns them. An assignee is a member of the workspace.
+ * or its branch. A Done or Cancelled task's requirements no longer change (its other fields may). An
+ * agent edits only the tasks it created, moves them to Backlog or Ready only, and never assigns
+ * them. An assignee is a member of the workspace.
  */
 export async function updateTask(
   host: DevSyncHost,
@@ -1011,6 +1012,13 @@ export async function updateTask(
       fields.title !== current.title ||
       fields.description !== current.description ||
       fields.acceptanceCriteria !== current.acceptanceCriteria;
+    // What was asked of a closed task stays the record of it: its requirements no longer change.
+    if (revised && CLOSED.includes(current.status)) {
+      throw new DevSyncError(
+        "conflict",
+        `This task is ${STATUS_LABEL[current.status]}, which is final: its requirements stay as they are. Create a new task for further work.`,
+      );
+    }
 
     const [saved] = await tx
       .update(task)

@@ -129,6 +129,8 @@ function FormButtons({
 function TaskBody({ task, repository }: { task: TaskDetail; repository?: Repository }) {
   const { may } = useDevSync();
   const write = may("task.write");
+  // A Done or Cancelled task's requirements no longer change; the server refuses it too.
+  const closed = CLOSED.includes(task.status);
   const [editing, setEditing] = useState(false);
   const update = useTaskUpdate(task.id);
   // Moves and assignments go with the version last read; a refusal reloads the task.
@@ -166,11 +168,14 @@ function TaskBody({ task, repository }: { task: TaskDetail; repository?: Reposit
           <p className={styles.prose}>{task.description || "No description."}</p>
           <h4 className="cream">Acceptance criteria</h4>
           <p className={styles.prose}>{task.acceptanceCriteria || "No acceptance criteria."}</p>
+          {closed && (
+            <p className="sub">{`This task is ${STATUS_LABEL[task.status]}: its requirements stay as they are.`}</p>
+          )}
           <div className={styles.buttons}>
             <button
               className="btn btn-sm btn-secondary bordered"
               type="button"
-              disabled={!write}
+              disabled={!write || closed}
               onClick={() => setEditing(true)}
             >
               Edit the requirements

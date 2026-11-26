@@ -312,6 +312,18 @@ describe("project routes", () => {
     expect(AgentList.parse((await as("owner")("GET", "/agents")).body).agents).toHaveLength(2);
   });
 
+  it("refuse a change to a Cancelled task's requirements, 409", async () => {
+    const { ctx, host, as } = setup();
+    const task = await createTask(host, ctx("owner"), newTask);
+    await updateTask(host, ctx("owner"), task.id, { version: 1, status: "CANCELLED" });
+    const error = refusal(
+      await as("developer")("PATCH", `/tasks/${task.id}`, { version: 2, title: "Renamed" }),
+      409,
+      "conflict",
+    );
+    expect(error.message).toMatch(/^This task is Cancelled, which is final/);
+  });
+
   it("refuse a message to an agent on a read-only project, as every other change there", async () => {
     const { host, project, as } = setup();
     const agent = await hostAgent(host, project, { name: "Codex", kind: "CODEX" });
