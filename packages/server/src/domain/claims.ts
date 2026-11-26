@@ -225,9 +225,8 @@ export async function claimTask(
 }
 
 /**
- * `renew_task_claim`: 15 more minutes from now; answers the current requirements' revision. The
- * limit counts as for a claim: an agent holding more than 3 live claims (from before the limit)
- * renews none of them until it holds 3.
+ * `renew_task_claim`: 15 more minutes from now; answers the current requirements' revision. Only
+ * new claims count against the limit: claims from before it run out on their own.
  */
 export async function renewTaskClaim(
   host: DevSyncHost,
@@ -237,23 +236,13 @@ export async function renewTaskClaim(
   requireWritable(actor.project);
   const fields = parse(TaskClaimInput, input);
   const now = host.clock.now();
-  return host.db.transaction(async (tx) => {
-    await lockAgentRow(tx, actor);
-    const [lease] = await tx
-      .update(task)
-      .set({ claimExpiresAt: new Date(now.getTime() + CLAIM_LEASE_MS) })
-      .where(heldBy(actor, fields, now))
-      .returning(leaseColumns);
-    if (!lease) throw new DevSyncError("conflict", REFUSAL.claimNotActive);
-    const others = await otherClaims(tx, actor, fields.taskId, now);
-    if (others >= CLAIM_LIMIT) {
-      throw new DevSyncError(
-        "conflict",
-        `You hold ${others + 1} claimed tasks, more than ${CLAIM_LIMIT}. Release, finish or report a blocker on one before renewing this claim.`,
-      );
-    }
-    return toLease(lease);
-  });
+  const [lease] = await host.db
+    .update(task)
+    .set({ claimExpiresAt: new Date(now.getTime() + CLAIM_LEASE_MS) })
+    .where(heldBy(actor, fields, now))
+    .returning(leaseColumns);
+  if (!lease) throw new DevSyncError("conflict", REFUSAL.claimNotActive);
+  return toLease(lease);
 }
 
 /** `release_task`: ends the claim and returns the task to Ready. */

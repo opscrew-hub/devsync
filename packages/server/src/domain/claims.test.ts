@@ -266,38 +266,6 @@ describe("task claims", () => {
     expect(await claimTask(host, codex, fourth)).toMatchObject({ claimId: fourth.claimId });
   });
 
-  it("renew no claim of an agent holding more than 3, as a claim would be refused", async () => {
-    const { host, agents } = await setup();
-    const [codex] = agents;
-    const scope = { workspaceId: codex.project.workspaceId, projectId: codex.project.projectId };
-    // Four claims from before the limit, made directly.
-    const claims = [];
-    for (let i = 0; i < 4; i++) {
-      const claimId = crypto.randomUUID();
-      const [row] = await testDb.db
-        .insert(task)
-        .values({
-          ...scope,
-          title: `Held ${i}`,
-          description: "",
-          acceptanceCriteria: "",
-          status: "CLAIMED",
-          claimAgentId: codex.agentId,
-          claimId,
-          claimExpiresAt: new Date(Date.parse(FAKE_NOW) + LEASE),
-        })
-        .returning();
-      if (!row) throw new Error("no task");
-      claims.push({ taskId: row.id, claimId });
-    }
-    const [first, ...rest] = claims as [(typeof claims)[0], ...typeof claims];
-    expect((await refusal(renewTaskClaim(host, codex, first), "conflict")).message).toBe(
-      "You hold 4 claimed tasks, more than 3. Release, finish or report a blocker on one before renewing this claim.",
-    );
-    await releaseTask(host, codex, rest[0] as (typeof claims)[0]);
-    expect(await renewTaskClaim(host, codex, first)).toMatchObject({ claimId: first.claimId });
-  });
-
   it("are refused on a read-only project", async () => {
     const { host, agents, taskId } = await setup();
     await testDb.db.update(task).set({ status: "READY" }).where(eq(task.id, taskId));

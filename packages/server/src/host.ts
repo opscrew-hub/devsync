@@ -16,7 +16,8 @@ import type { z } from "zod";
  * The host's database, or a transaction on it: DevSync's tables live in the `devsync` schema of
  * the same database, so a DevSync transaction is the host's and the host's audit entry commits with
  * it. DevSync uses Drizzle's query builder only (never `db.query`), so the host's schema type
- * doesn't matter here.
+ * doesn't matter here, and `execute` for one transaction-level advisory lock (the dependency
+ * check, whose result it never reads).
  */
 // biome-ignore lint/suspicious/noExplicitAny: the host's own schema type, which DevSync never reads.
 export type DevSyncDb = PgDatabase<PgQueryResultHKT, any>;
