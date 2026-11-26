@@ -904,10 +904,11 @@ export async function createTask(
   const creator = actorIds(actor);
 
   const result = await host.db.transaction(async (tx) => {
+    // One create per agent at a time: a retry finds what the first attempt saved, and the count of
+    // its 20 a minute below can't be raced. A member's two at once under one request id: the
+    // database keeps the first, and the second fails.
+    if (agentActor) await lockAgentRow(tx, agentActor);
     if (requestId) {
-      // One create per agent at a time, so a retry finds what the first attempt saved. A member's
-      // two at once under one request id: the database keeps the first, and the second fails.
-      if (agentActor) await lockAgentRow(tx, agentActor);
       const [existing] = await selectTasks(
         tx,
         and(
@@ -938,8 +939,8 @@ export async function createTask(
         return { task: toTask(existing), created: false };
       }
     }
-    // An agent's new task counts against its 20 a minute, its row locked above (an agent's task
-    // always has a request id); its retry above doesn't count.
+    // An agent's new task counts against its 20 a minute, its row locked above; its retry above
+    // doesn't count.
     if (agentActor) await countTaskWrite(tx, agentActor, at);
     // One open task per finding (R-10); two creates at the same instant may both pass, accepted.
     const linked = finding ? await linkedTask(tx, project, finding) : null;

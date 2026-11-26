@@ -28,6 +28,9 @@ describe("TokenBuckets", () => {
     const buckets = new TokenBuckets(2, () => now);
     for (let i = 0; i < 10_000; i++) buckets.take(`old-${i}`);
     buckets.take("busy");
+    // None refilled yet, so the oldest made room for it, and only the oldest.
+    expect(buckets.has("old-0")).toBe(false);
+    expect(buckets.has("old-1")).toBe(true);
     buckets.take("busy");
     // A minute later every old bucket is full again, and limits nothing: they make room.
     now = 60_000;
