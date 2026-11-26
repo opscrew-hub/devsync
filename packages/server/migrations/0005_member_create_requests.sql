@@ -1,0 +1,1 @@
+ALTER TABLE "devsync"."task" ADD CONSTRAINT "task_project_id_creator_user_id_create_request_id_unique" UNIQUE("project_id","creator_user_id","create_request_id");

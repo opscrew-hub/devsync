@@ -224,7 +224,7 @@ the same list until a later release (see DevSync's own endpoint below).
 | `claim_task` | write | agents | `taskId`, `claimId` | claims a Ready task (or an expired claim) for 15 minutes |
 | `renew_task_claim` | write | agents | `taskId`, `claimId` | renews it; answers the current requirements revision |
 | `release_task` | write | agents | `taskId`, `claimId` | releases it and returns the task to Ready |
-| `create_task` | write | agents, and members whose role may (`task.write`) | `requestId`, `title`, `description`, `acceptanceCriteria` | creates a Backlog task; an agent's is idempotent by `requestId` |
+| `create_task` | write | agents, and members whose role may (`task.write`) | `requestId`, `title`, `description`, `acceptanceCriteria` | creates a Backlog task, idempotent by `requestId` for its creator (an agent or a member) |
 | `update_task` | write | agents, and members whose role may (`task.write`) | `taskId`, `version`, the fields, `status` (`BACKLOG` or `READY`) | edits a task; an agent edits only the tasks it created |
 | `report_progress` | write | agents | `taskId`, `claimId`, `revision`, `requestId`, `message` | a progress report on the timeline |
 | `report_blocker` | write | agents | the same | ends the claim, moves the task to Blocked |
@@ -253,7 +253,9 @@ the same list until a later release (see DevSync's own endpoint below).
   tools are listed, recall what is known about the task before working on it and remember what was
   learned before requesting a review. Each description is at most 1,000 characters.
 - **Size.** A test (`actions.test.ts`) fails when the actions' list (names, descriptions and input
-  JSON schemas, as JSON) grows past its budget, 15,000 characters (P3 reached 14,217).
+  JSON schemas, as JSON) grows past its budget, 10,000 characters (P3 reached 9,384). An id's
+  schema is `{ type: "string", format: "uuid" }` only, without the pattern zod would repeat beside
+  it.
 
 The host's Agents dialog (the **Agents** button at the top of the project's page) registers an
 agent, shows its token once and gives these snippets. For Claude Code:

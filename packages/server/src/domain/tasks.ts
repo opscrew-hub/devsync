@@ -1,8 +1,8 @@
 /**
  * Tasks: create, read, edit, move, assign, comment and link a pull request, for a project's members
  * (a `ProjectContext`) and its agents (an `AgentActor`). The rules: the lifecycle, the version
- * check, a revision per requirements change, a claimed task's status changed only by its claim, an
- * agent's `requestId` idempotency, an agent's requirements through the host's redactor, and an
+ * check, a revision per requirements change, a claimed task's status changed only by its claim, the
+ * creator's `requestId` idempotency, an agent's requirements through the host's redactor, and an
  * outbox event per change recorded (with its host events) in its transaction. Every query filters
  * by the project.
  */
@@ -13,6 +13,7 @@ import {
   type Comment,
   CommentInput,
   type Finding,
+  Id,
   type PullRequest,
   PullRequestLink,
   type Revision,
@@ -68,7 +69,7 @@ import { type OutboxActor, outbox } from "./outbox";
 /** Who acts on a task: a member on a project route, or an agent through MCP. */
 export type TaskActor = ProjectContext | AgentActor;
 
-/** Who reads a project's tasks: a member, an agent, or a managed run, which has only its project. */
+/** Who reads a project's tasks: a member, an agent, or a managed run (its project only). */
 export type TaskReader = TaskActor | Pick<TaskActor, "project">;
 
 /** The name shown for an agent whose row is gone. */
@@ -77,6 +78,9 @@ const REMOVED_AGENT = "Removed agent";
 const TASK_CHANGED = "This task changed. Reload it and try again.";
 /** How many of a task's latest events its timeline shows. */
 const TIMELINE_LIMIT = 100;
+
+/** A member's task: `POST /tasks`' body, or `create_task`'s with its `requestId`. */
+const MemberTaskInput = TaskInput.extend({ requestId: Id.optional() });
 
 /** An agent's `update_task` fields, its task id given apart. */
 const AgentUpdateFields = AgentTaskUpdate.omit({ taskId: true });
@@ -421,12 +425,13 @@ export async function getTask(
 // --- Writes -------------------------------------------------------------------------------------
 
 /**
- * `POST /tasks` (a member, `TaskInput`) and `create_task` (an agent, `AgentTaskInput`): a task in
- * Backlog with revision 1 of its requirements. An agent's retry with the same `requestId` answers
- * the task it created; the same `requestId` with other requirements is refused. A member's task
- * from a security finding keeps the finding's fingerprint, rule and file as the host gives them,
- * read again here (never the browser's copy): a finding the host no longer gives is refused, and so
- * is one with an open linked task (`linkedTask`).
+ * `POST /tasks` (a member, `TaskInput`) and `create_task` (an agent, `AgentTaskInput`, or a
+ * member, who may give a `requestId` too): a task in Backlog with revision 1 of its requirements.
+ * A retry by the same creator with the same `requestId` answers the task it created; the same
+ * `requestId` with other requirements is refused. A member's task from a security finding keeps the
+ * finding's fingerprint, rule and file as the host gives them, read again here (never the
+ * browser's copy): a finding the host no longer gives is refused, and so is one with an open linked
+ * task (`linkedTask`).
  */
 export async function createTask(
   host: DevSyncHost,
@@ -437,24 +442,27 @@ export async function createTask(
   const { project } = actor;
   const agentActor = isAgent(actor) ? actor : null;
   const agentId = agentActor?.agentId ?? null;
-  const parsed: TaskInput & { requestId: string | null } = agentActor
+  const parsed: TaskInput & { requestId?: string } = agentActor
     ? parse(AgentTaskInput, input)
-    : { requestId: null, ...parse(TaskInput, input) };
-  const { requestId, finding: from, ...given } = parsed;
+    : parse(MemberTaskInput, input);
+  const { requestId = null, finding: from, ...given } = parsed;
   const fields = agentActor ? redactRequirements(host, given) : given;
   const finding = from ? await hostFinding(host, project, from.fingerprint) : null;
   const at = host.clock.now();
   const creator = actorIds(actor);
 
   const result = await host.db.transaction(async (tx) => {
-    if (agentActor && requestId) {
-      // One create per agent at a time, so a retry finds what the first attempt saved.
-      await lockAgentRow(tx, agentActor);
+    if (requestId) {
+      // One create per agent at a time, so a retry finds what the first attempt saved. A member's
+      // two at once under one request id: the database keeps the first, and the second fails.
+      if (agentActor) await lockAgentRow(tx, agentActor);
       const [existing] = await selectTasks(
         tx,
         and(
           eq(task.projectId, project.projectId),
-          eq(task.creatorAgentId, agentActor.agentId),
+          "agentId" in creator
+            ? eq(task.creatorAgentId, creator.agentId)
+            : eq(task.creatorUserId, creator.userId),
           eq(task.createRequestId, requestId),
         ),
       );

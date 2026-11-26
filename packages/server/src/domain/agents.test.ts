@@ -388,6 +388,30 @@ describe("callerActor", () => {
     });
   });
 
+  it("writes nothing for an agent DevSync saw within the last minute under the same name", async () => {
+    const { host, project } = setup();
+    const { ref, token } = registerOnHost(host, project, { name: "Helper" });
+    // DevSync's own endpoint authenticates it first, which records it as seen.
+    await authenticateAgent(host, token);
+    const caller = { agentId: ref.agentId, name: "Helper" };
+    const seen = async () => (await rowOf(ref.agentId))?.lastSeenAt;
+
+    setClock(host, START + 59_000);
+    expect((await callerActor(host, project, caller)).name).toBe("Helper");
+    expect(await seen()).toEqual(new Date(START));
+    // Seen a minute ago: recorded again, so the Agents section shows it as recently active.
+    setClock(host, START + 60_000);
+    await callerActor(host, project, caller);
+    expect(await seen()).toEqual(new Date(START + 60_000));
+    // A revoke DevSync recorded before the move is undone at once: the host verified the agent.
+    await testDb.db
+      .update(agent)
+      .set({ revokedAt: new Date(START) })
+      .where(eq(agent.id, ref.agentId));
+    await callerActor(host, project, caller);
+    expect((await rowOf(ref.agentId))?.revokedAt).toBeNull();
+  });
+
   it("takes an agent DevSync already has, its own not yet moved too, without asking the host", async () => {
     const { host, project } = setup();
     const own = await devsyncAgent(host, project, { name: "Own", kind: "CLAUDE" });

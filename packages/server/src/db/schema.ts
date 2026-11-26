@@ -89,7 +89,7 @@ export const task = devsyncSchema.table(
     version: integer("version").notNull().default(1),
     creatorUserId: uuid("creator_user_id"),
     creatorAgentId: uuid("creator_agent_id"),
-    /** An agent's `requestId` for `create_task`, so a retry creates nothing more. */
+    /** The creator's `requestId` (an agent's or a member's), so a retry creates nothing more. */
     createRequestId: uuid("create_request_id"),
     assigneeUserId: uuid("assignee_user_id"),
     claimAgentId: uuid("claim_agent_id"),
@@ -107,6 +107,7 @@ export const task = devsyncSchema.table(
     index().on(t.projectId, t.status),
     index().on(t.projectId, t.assigneeUserId),
     unique().on(t.projectId, t.creatorAgentId, t.createRequestId),
+    unique().on(t.projectId, t.creatorUserId, t.createRequestId),
   ],
 );
 

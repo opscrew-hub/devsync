@@ -216,11 +216,7 @@ export const actions: readonly DevSyncAction<any>[] = [
     "create_task",
     "write",
     "Create a Backlog task in the project. Supply a new request UUID and reuse it when retrying the same task.",
-    async (ctx, { requestId, ...fields }) => {
-      const actor = await writer(ctx);
-      // An agent's retry with the same request id answers its task; a member's takes none.
-      return createTask(ctx.host, actor, "member" in actor ? fields : { requestId, ...fields });
-    },
+    async (ctx, input) => createTask(ctx.host, await writer(ctx), input),
   ),
   action(
     "update_task",

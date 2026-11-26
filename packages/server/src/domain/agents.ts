@@ -23,6 +23,8 @@ import { REFUSAL } from "./common";
 
 /** Seen within this long: "Recently active" (two minutes). */
 const RECENTLY_ACTIVE_MS = 2 * 60 * 1000;
+/** How often an agent calling actions is recorded as seen, so it stays "Recently active". */
+const SEEN_AGAIN_MS = 60 * 1000;
 /** DevSync's own tokens: 32 random bytes, base64url. */
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{43}$/;
 
@@ -215,7 +217,8 @@ async function seenAgent(
  * The agent calling one of DevSync's actions (`ctx.caller`, which the host built from its token),
  * as the actor of the action's project. Its kind comes from DevSync's row of it or, the first time
  * DevSync sees it, from the host's list of the project's agents: one the host doesn't list (revoked
- * meanwhile) is refused as `unauthenticated`. Records it as seen, as `authenticateAgent` does.
+ * meanwhile) is refused as `unauthenticated`. Records it as seen, as `authenticateAgent` does,
+ * unless DevSync saw it within the last minute under the same name.
  */
 export async function callerActor(
   host: DevSyncHost,
@@ -223,7 +226,12 @@ export async function callerActor(
   caller: { agentId: string; name: string },
 ): Promise<AgentActor> {
   const [row] = await host.db
-    .select({ kind: agent.kind })
+    .select({
+      kind: agent.kind,
+      name: agent.name,
+      revokedAt: agent.revokedAt,
+      lastSeenAt: agent.lastSeenAt,
+    })
     .from(agent)
     .where(
       and(
@@ -232,6 +240,17 @@ export async function callerActor(
         eq(agent.workspaceId, project.workspaceId),
       ),
     );
+  // Current already (DevSync's own endpoint has just recorded it): nothing to write.
+  const now = host.clock.now().getTime();
+  if (
+    row &&
+    row.name === caller.name &&
+    row.revokedAt === null &&
+    row.lastSeenAt &&
+    now - row.lastSeenAt.getTime() < SEEN_AGAIN_MS
+  ) {
+    return { kind: "agent", agentId: caller.agentId, name: row.name, project };
+  }
   let kind = row?.kind;
   if (!kind) {
     const ref = (await host.agents.list(project.projectId))

@@ -12,8 +12,8 @@ import { agent } from "./db";
 import { listRuns, rejectRun, requestRun, SETUP_STEP } from "./domain/runs";
 import { createTask, getTask, updateTask } from "./domain/tasks";
 import type { Caller, DevSyncAction, Member, ProjectContext, ProjectRef } from "./host";
-import { hostAgent } from "./test/helpers";
-import { createTestDb, fakeHost, type TestDb } from "./testing";
+import { hostAgent, setClock } from "./test/helpers";
+import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "./testing";
 
 let testDb: TestDb;
 
@@ -30,7 +30,7 @@ afterAll(async () => {
  * JSON schemas, as JSON) may take: the size P3 reached, rounded up to the next 1,000. Raise it only
  * with a reason: every agent reads the whole list.
  */
-const ACTIONS_BUDGET = 15_000;
+const ACTIONS_BUDGET = 10_000;
 
 const KINDS = {
   get_project_state: "read",
@@ -229,6 +229,8 @@ describe("a member calling an action", () => {
     // Its latest run, for every caller.
     const first = await requestRun(s.host, s.memberCtx(), task.id);
     await rejectRun(s.host, s.memberCtx(), first.id);
+    // A minute on, so the second run is the latest by its time, not by its random id.
+    setClock(s.host, Date.parse(FAKE_NOW) + 60_000);
     const second = await requestRun(s.host, s.memberCtx(developer), task.id);
     for (const caller of [s.asMember(), s.asCodex, s.asRun]) {
       const { latestRun } = await s.result("get_task", caller, { taskId: task.id });
@@ -268,12 +270,16 @@ describe("a member calling an action", () => {
   it("creates and edits tasks as themselves, with their role", async () => {
     const s = await setup();
     const approver = s.members[2] as Member;
-    const created = await s.result("create_task", s.asMember(approver), {
+    const input = {
       requestId: crypto.randomUUID(),
       title: "From the chat",
       description: "",
       acceptanceCriteria: "Works",
-    });
+    };
+    const created = await s.result("create_task", s.asMember(approver), input);
+    // Its confirm pressed twice, or a member's own client retrying: the same task.
+    expect(await s.result("create_task", s.asMember(approver), input)).toEqual(created);
+    expect((await s.result("list_tasks", s.asMember())).tasks).toHaveLength(1);
     expect((await getTask(s.host, s.memberCtx(), created.id)).creator).toEqual({
       kind: "member",
       userId: approver.userId,

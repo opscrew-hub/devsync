@@ -5,7 +5,6 @@
  * Nothing else: the domain is reached through the routes, the queues and the actions, and tests
  * import internals from their own modules.
  */
-export type { Refused } from "./actions";
 export {
   agent,
   githubDelivery,
