@@ -127,7 +127,7 @@ DevSync's records, `start` for asking for a managed run.
 Each runs in its own worktree, test-first, with a fresh reviewer; the lead merges them one at a
 time. Then `app.opscrew.dev` pins the reviewed commit.
 
-- [ ] **P1, the host interface, events and export** (`packages/server/src/host.ts`, `module.ts`,
+- [x] **P1, the host interface, events and export** (`packages/server/src/host.ts`, `module.ts`,
   `testing.ts`, `packages/server/src/domain/**`, `packages/server/src/removal.ts` if needed,
   `docs/host.md`, `docs/platform.md` for its tick). The copy of `ModuleHost` gains `emit`,
   `agents`, `context`, `redact` and `ai.allowRun`, typed as the contract has them, and
