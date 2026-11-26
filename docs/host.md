@@ -303,7 +303,8 @@ text is kept as they wrote it.
 
 `exportProject(tx, projectId)` answers DevSync's rows of the project for its export, read through
 the host's read-only `tx` only: its tasks with their revisions and comments, its runs, its pull
-requests, its timeline (the outbox's events) and its agents, never a token hash or expiry.
+requests and its timeline (the outbox's events). The agents are the host's to export; the timeline
+names them by id.
 
 ## Pages
 

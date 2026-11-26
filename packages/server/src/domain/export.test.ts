@@ -92,7 +92,7 @@ function exported(projectId: string) {
 }
 
 describe("exportProject", () => {
-  it("holds the project's tasks with their revisions and comments, runs, pull requests, timeline and agents", async () => {
+  it("holds the project's tasks with their revisions and comments, runs, pull requests and timeline", async () => {
     const { shop, shopRows } = await setup();
     const data = await exported(shop.projectId);
 
@@ -121,19 +121,8 @@ describe("exportProject", () => {
       "requirements.changed",
       "run.requested",
     ]);
-    expect(data.agents).toEqual([
-      {
-        id: shopRows.agentId,
-        workspaceId: shop.workspaceId,
-        projectId: shop.projectId,
-        name: "Ship checkout agent",
-        kind: "CODEX",
-        revokedAt: null,
-        lastSeenAt: null,
-        registeredByUserId: expect.any(String),
-        createdAt: expect.any(Date),
-      },
-    ]);
+    // The agents are the host's to export: the timeline names them by id.
+    expect(Object.keys(data)).toEqual(["tasks", "runs", "pullRequests", "timeline"]);
   });
 
   it("holds nothing of another project's, and no token hash", async () => {
@@ -158,7 +147,6 @@ describe("exportProject", () => {
       runs: [],
       pullRequests: [],
       timeline: [],
-      agents: [],
     });
   });
 });

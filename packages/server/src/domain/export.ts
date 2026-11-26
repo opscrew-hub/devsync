@@ -1,11 +1,11 @@
 /**
  * A project's export (`serverModule.exportProject`, docs/platform.md): DevSync's rows of the
- * project, read through the host's read-only transaction only. Its tasks with their revisions and
- * comments, its runs, its pull requests, its timeline (the outbox's events) and its agents, never
- * an agent's token hash or expiry.
+ * project, read through the host's read-only transaction only: its tasks with their revisions and
+ * comments, its runs, its pull requests and its timeline (the outbox's events). The agents are the
+ * host's to export; the timeline names them by id.
  */
 import { asc, eq } from "drizzle-orm";
-import { agent, outboxEvent, pullRequest, run, task, taskComment, taskRevision } from "../db";
+import { outboxEvent, pullRequest, run, task, taskComment, taskRevision } from "../db";
 import type { DevSyncDb } from "../host";
 
 /** Rows by their task's id, in their order. */
@@ -52,21 +52,6 @@ export async function exportProject(tx: DevSyncDb, projectId: string) {
     .from(outboxEvent)
     .where(eq(outboxEvent.projectId, projectId))
     .orderBy(asc(outboxEvent.createdAt), asc(outboxEvent.id));
-  const agents = await tx
-    .select({
-      id: agent.id,
-      workspaceId: agent.workspaceId,
-      projectId: agent.projectId,
-      name: agent.name,
-      kind: agent.kind,
-      revokedAt: agent.revokedAt,
-      lastSeenAt: agent.lastSeenAt,
-      registeredByUserId: agent.registeredByUserId,
-      createdAt: agent.createdAt,
-    })
-    .from(agent)
-    .where(eq(agent.projectId, projectId))
-    .orderBy(asc(agent.createdAt), asc(agent.id));
   const revisionsOf = byTask(revisions);
   const commentsOf = byTask(comments);
   return {
@@ -78,6 +63,5 @@ export async function exportProject(tx: DevSyncDb, projectId: string) {
     runs,
     pullRequests,
     timeline,
-    agents,
   };
 }

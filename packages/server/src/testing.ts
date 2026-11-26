@@ -3,12 +3,13 @@
  * the host applies them, a fake host (with a scriptable GitHub, agents, context, redactor and AI),
  * and fresh token-shaped values, so no test commits one.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { WORKFLOW_FILE } from "@devsync/schemas";
 import { PGlite } from "@electric-sql/pglite";
 import { drizzle } from "drizzle-orm/pglite";
 import { migrate } from "drizzle-orm/pglite/migrator";
 import { migrations } from "./db";
+import { hashToken } from "./domain/agents";
 import type {
   AdoptedAgent,
   AgentRef,
@@ -67,7 +68,7 @@ export interface FakeHostOptions {
 
 /**
  * One of the host's agents in the fake: its `AgentRef`, the SHA-256 (hex) of its token
- * (`fakeTokenHash`), and, if any, when its token expires and when it was revoked.
+ * (`hashToken` from domain/agents.ts), and, if any, when its token expires and when it was revoked.
  */
 export interface FakeHostAgent extends AgentRef {
   tokenHash: string;
@@ -247,7 +248,7 @@ function fakeAgents(hostOf: () => FakeHost): FakeAgents {
     adopted: [],
     async verify(token) {
       const host = hostOf();
-      const hash = fakeTokenHash(token);
+      const hash = hashToken(token);
       const found = host.directory.agents.find((a) => a.tokenHash === hash);
       if (!found || !reaches(found) || found.revokedAt) return null;
       if (found.expiresAt && found.expiresAt.getTime() <= host.clock.now().getTime()) return null;
@@ -361,9 +362,4 @@ export function artifactFiles(files: Record<string, string>): Map<string, Uint8A
 /** A fresh random token-shaped value (32 bytes, base64url), made at run time. */
 export function fakeToken(): string {
   return randomBytes(32).toString("base64url");
-}
-
-/** What the host keeps of a token: its SHA-256, as 64 hex characters (a `FakeHostAgent`'s hash). */
-export function fakeTokenHash(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
 }

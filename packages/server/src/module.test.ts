@@ -4,6 +4,7 @@ import type { PgDatabase, PgQueryResultHKT } from "drizzle-orm/pg-core";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { z } from "zod";
+import { hashToken } from "./domain/agents";
 import type { GithubJob as GithubJobSchema } from "./domain/pull-requests";
 import { createTask } from "./domain/tasks";
 import type {
@@ -31,7 +32,6 @@ import {
   type FakeHostAgent,
   fakeHost,
   fakeToken,
-  fakeTokenHash,
   type TestDb,
 } from "./testing";
 
@@ -247,11 +247,53 @@ function some<T>(): T {
   return null as unknown as T;
 }
 
+/** The function `F` taking nothing as its parameters: what no strictly checked `F` takes. */
+type TakingLess<F> = F extends (...args: never[]) => infer R
+  ? (first: never, ...rest: never[]) => R
+  : never;
+
 describe("the contract's types (checked by the typecheck)", () => {
   it("a host's ModuleHost is a DevSyncHost, and serverModule is a ServerModule", () => {
     assignable<DevSyncHost>(some<Contract.ModuleHost>());
     assignable<Contract.ServerModule>(serverModule);
     assignable<Member>(some<Contract.Member>());
+    expect(true).toBe(true);
+  });
+
+  it("checks the parameters of the host's functions strictly, so a copy widening one fails", () => {
+    // Arrow properties, as the contract has them: a method's parameters are checked both ways, so
+    // a copy that widened one (`redact(text: string | null)`) would still take the host's. A
+    // strict member refuses a function that takes less than it says.
+    type Agents = DevSyncHost["agents"];
+    type Ai = DevSyncHost["ai"];
+    type Github = DevSyncGithub;
+    // @ts-expect-error: takes less
+    assignable<DevSyncHost["emit"]>(some<TakingLess<DevSyncHost["emit"]>>());
+    // @ts-expect-error: takes less
+    assignable<DevSyncHost["context"]>(some<TakingLess<DevSyncHost["context"]>>());
+    // @ts-expect-error: takes less
+    assignable<DevSyncHost["redact"]>(some<TakingLess<DevSyncHost["redact"]>>());
+    // @ts-expect-error: takes less
+    assignable<Agents["verify"]>(some<TakingLess<Agents["verify"]>>());
+    // @ts-expect-error: takes less
+    assignable<Agents["list"]>(some<TakingLess<Agents["list"]>>());
+    // @ts-expect-error: takes less
+    assignable<Agents["adopt"]>(some<TakingLess<Agents["adopt"]>>());
+    // @ts-expect-error: takes less
+    assignable<Ai["allowRun"]>(some<TakingLess<Ai["allowRun"]>>());
+    // @ts-expect-error: takes less
+    assignable<Github["setup"]>(some<TakingLess<Github["setup"]>>());
+    // @ts-expect-error: takes less
+    assignable<Github["dispatch"]>(some<TakingLess<Github["dispatch"]>>());
+    // @ts-expect-error: takes less
+    assignable<Github["artifact"]>(some<TakingLess<Github["artifact"]>>());
+    // @ts-expect-error: takes less
+    assignable<Github["deleteArtifact"]>(some<TakingLess<Github["deleteArtifact"]>>());
+    // The check itself: a method's widened parameter still takes the host's; an arrow's doesn't.
+    type Widened = { redact(text: string | null): string };
+    assignable<Widened>(some<Contract.ModuleHost>());
+    // @ts-expect-error: the host's `redact` takes a string only
+    assignable<{ redact: (text: string | null) => string }>(some<Contract.ModuleHost>());
     expect(true).toBe(true);
   });
 
@@ -431,7 +473,7 @@ describe("fakeHost's module platform members", () => {
     name: "Codex",
     kind: "codex",
     modules: ["devsync"],
-    tokenHash: fakeTokenHash(token),
+    tokenHash: hashToken(token),
     ...fields,
   });
 
@@ -470,7 +512,7 @@ describe("fakeHost's module platform members", () => {
       projectId: project.projectId,
       name: "Claude",
       kind: "claude" as const,
-      tokenHash: fakeTokenHash(token),
+      tokenHash: hashToken(token),
       expiresAt: new Date(Date.parse(FAKE_NOW) + 60_000),
       revokedAt: null,
       lastSeenAt: null,
@@ -538,7 +580,7 @@ describe("fakeHost's module platform members", () => {
     expect(host.redact(`Bearer ${token}, again ${token}.`)).toBe(
       "Bearer [redacted], again [redacted].",
     );
-    const hash = fakeTokenHash(token);
+    const hash = hashToken(token);
     const id = crypto.randomUUID();
     expect(host.redact(`Task ${id}, hash ${hash}.`)).toBe(`Task ${id}, hash ${hash}.`);
   });

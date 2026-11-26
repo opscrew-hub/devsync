@@ -356,10 +356,11 @@ describe("DevSync's host events (docs/platform.md, Events)", () => {
     ]);
   });
 
-  it("tell a pull request linked to a task, and merged, once per delivery", async () => {
+  it("tell a pull request linked to a task, and merged, for each task linked to it, once per delivery", async () => {
     const { host, project, ctx, emitted } = await setup();
     const created = await createTask(host, ctx, requirements);
     const taskId = created.id;
+    const later = await createTask(host, ctx, { ...requirements, title: "Ship card checkout" });
     const pullRequestFact = (action: string, merged: boolean, deliveryId = randomUUID()) =>
       applyGithubFact(host, {
         workspaceId: project.workspaceId,
@@ -379,6 +380,8 @@ describe("DevSync's host events (docs/platform.md, Events)", () => {
         },
       });
     await pullRequestFact("opened", false);
+    // The task made later is linked first: the merge still tells the tasks in creation order.
+    await linkPullRequest(host, ctx, later.id, { number: 7 });
     emitted();
     await linkPullRequest(host, ctx, taskId, { number: 7 });
     expect(emitted()).toEqual([["devsync.pr.linked", { taskId, number: 7 }]]);
@@ -389,7 +392,10 @@ describe("DevSync's host events (docs/platform.md, Events)", () => {
 
     const deliveryId = randomUUID();
     await pullRequestFact("closed", true, deliveryId);
-    expect(emitted()).toEqual([["devsync.pr.merged", { taskId, number: 7 }]]);
+    expect(emitted()).toEqual([
+      ["devsync.pr.merged", { taskId, number: 7 }],
+      ["devsync.pr.merged", { taskId: later.id, number: 7 }],
+    ]);
     await pullRequestFact("closed", true, deliveryId);
     expect(emitted()).toEqual([]);
   });
