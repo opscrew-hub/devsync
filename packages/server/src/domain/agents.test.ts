@@ -284,6 +284,29 @@ describe("authenticateAgent", () => {
     expect((await rowOf(own.id))?.lastSeenAt).toEqual(new Date(START + HOUR));
   });
 
+  it("takes DevSync's own token that moved to the host after the host first answered", async () => {
+    const { host, project } = setup();
+    const own = await devsyncAgent(host, project, { name: "Own", kind: "CODEX" });
+    const verify = host.agents.verify;
+    let asked = 0;
+    // The move commits between the host's first answer and DevSync's own check.
+    host.agents.verify = async (token) => {
+      asked++;
+      if (asked > 1) return verify(token);
+      await moveAgents(host);
+      return null;
+    };
+
+    expect(await authenticateAgent(host, own.token)).toEqual({
+      kind: "agent",
+      agentId: own.id,
+      name: "Own",
+      project,
+    });
+    expect(asked).toBe(2);
+    expect(await rowOf(own.id)).toMatchObject({ tokenHash: null, lastSeenAt: new Date(START) });
+  });
+
   it("refuses a malformed, unknown, expired or revoked token alike, as unauthenticated", async () => {
     const { host, project } = setup();
     const one = await devsyncAgent(host, project, { name: "One", kind: "CODEX" });
@@ -440,8 +463,8 @@ describe("moveAgents", () => {
     expect((await rowOf(stray.id))?.tokenHash).toBe(sha256(stray.token));
   });
 
-  it("gives the host back an agent DevSync revoked before the move, once the host revives it", async () => {
-    const { host, project } = setup();
+  it("lists an agent DevSync revoked before the move as Revoked, until the host revives it", async () => {
+    const { host, project, ctx } = setup();
     const own = await devsyncAgent(host, project, { name: "Own", kind: "CODEX" });
     await testDb.db
       .update(agent)
@@ -449,11 +472,16 @@ describe("moveAgents", () => {
       .where(eq(agent.id, own.id));
     await moveAgents(host);
     await refusal(authenticateAgent(host, own.token), "unauthenticated");
+    // The host lists it, without saying it is revoked: DevSync's row does.
+    const status = async () =>
+      (await listAgents(host, ctx())).agents.find((a) => a.id === own.id)?.status;
+    expect(await status()).toBe("Revoked");
 
     // Rotated on the host: a new token, and DevSync's row is live again.
     const token = rotateHostAgent(host, own.id);
     expect((await authenticateAgent(host, token)).agentId).toBe(own.id);
     expect((await rowOf(own.id))?.revokedAt).toBeNull();
+    expect(await status()).toBe("Recently active");
     await revokeHostAgent(host, own.id);
     await refusal(authenticateAgent(host, token), "unauthenticated");
   });

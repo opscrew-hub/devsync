@@ -174,8 +174,9 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
   `other`), `status` (`Recently active`, `Offline`, `Expired`, `Revoked`), `expiresAt` (when
   DevSync's own token expires; null for the host's agents, whose tokens the host shows),
   `lastSeenAt` (last seen by DevSync) and `createdAt` (when DevSync first had the agent; null for
-  one of the host's that hasn't connected yet). The host's agents are `Recently active` or
-  `Offline`.
+  one of the host's that hasn't connected yet). The host's list doesn't say which of its agents are
+  revoked or expired, so the host's agents are `Recently active` or `Offline`, or `Revoked` for one
+  DevSync revoked before its move.
 - `AgentMessage`: `kind` (`clarification.requested`, `clarification.answered`, `review.requested`,
   `system.warning`), `message` (1–4000), `idempotencyKey` (a UUID).
 - `Run`: `id`, `taskId`, `revision` (the requirements revision it runs on), `status` (`REQUESTED`,
@@ -220,14 +221,23 @@ the hourly `devsync.agents-move` (see Queues) gives each row that still has a to
 `host.agents.adopt`, keeping its id and token hash, and nulls the row's token in the same
 transaction. Until then such a token (a bearer token for that agent and project only, valid 24
 hours, of which DevSync keeps only the SHA-256 hash) is checked against DevSync's own row, after
-the host.
+the host. When that row has no live token, the host is asked once more, as the token's move may
+have committed in between, so a token never fails while it moves.
 
 A missing, invalid, expired or revoked token is refused 401 with `WWW-Authenticate: Bearer`, as is
 the host's agent's token while DevSync is off for its project (the host verifies none then).
 DevSync's own token whose project is gone, disconnected or has DevSync off is refused 403 ("DevSync
 is off for this project"), as is a request with an origin other than the host's. Every answer
-carries `Cache-Control: no-store`. An agent revoked on the dashboard is refused at once; a task it
-had claimed stays claimed until the claim expires, 15 minutes at most.
+carries `Cache-Control: no-store`.
+
+An agent revoked on the dashboard is refused at once. DevSync's row of it isn't marked revoked,
+though (only a revoke DevSync made before the move is), so until a later release reads the host's
+revokes, a revoke on the dashboard after the move leaves the agent:
+
+- listed in `get_project_state` and in the Agents section;
+- messaged by members and peers, asked for reviews, and sent GitHub signals, all into an inbox it
+  can no longer read;
+- holding any task it had claimed until the claim expires, 15 minutes at most.
 
 | Tool | Input | What it does |
 |---|---|---|

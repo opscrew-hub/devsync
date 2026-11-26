@@ -69,12 +69,20 @@ describe("the Agents card", () => {
     show("developer", {
       "GET /agents": {
         body: {
-          agents: [{ ...agent, id: id(33), name: "Reviewer", expiresAt: null }, fresh, agent],
+          agents: [
+            { ...agent, id: id(33), name: "Reviewer", expiresAt: null },
+            fresh,
+            agent,
+            // The host's, which DevSync revoked before its move.
+            { ...agent, id: id(34), name: "Gone", status: "Revoked", expiresAt: null },
+          ],
         },
       },
     });
     const list = await screen.findByRole("list", { name: "Agents" });
-    const [hosts, waiting, own] = within(list).getAllByRole("listitem");
+    const [hosts, waiting, own, gone] = within(list).getAllByRole("listitem");
+    expect(gone?.textContent).toContain("Revoked");
+    expect(button("Send a message", gone as HTMLElement).disabled).toBe(true);
     expect(hosts?.textContent).not.toContain("token valid until");
     expect(own?.textContent).toContain("token valid until");
     expect(waiting?.textContent).toContain("Other agent");

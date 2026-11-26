@@ -6,10 +6,9 @@ import type { AgentKind } from "@devsync/schemas";
 import { eq } from "drizzle-orm";
 import { expect } from "vitest";
 import { agent } from "../db";
-import { authenticateAgent, hashToken } from "../domain/agents";
+import { authenticateAgent, HOST_KIND, hashToken } from "../domain/agents";
 import {
   type AgentActor,
-  type AgentRef,
   DevSyncError,
   type ErrorCode,
   type Finding,
@@ -19,11 +18,6 @@ import { type FakeHost, fakeToken } from "../testing";
 
 /** How long a token lasts, the host's and DevSync's own. */
 const TOKEN_LIFETIME_MS = 24 * 60 * 60 * 1000;
-
-const HOST_KIND = { CLAUDE: "claude", CODEX: "codex", OTHER: "other" } as const satisfies Record<
-  AgentKind,
-  AgentRef["kind"]
->;
 
 /** A test's agent: its id, its token, and the actor the MCP endpoint authenticates it as. */
 export interface TestAgent {
@@ -74,8 +68,10 @@ export function rotateHostAgent(host: FakeHost, agentId: string): string {
 }
 
 /**
- * Revokes the host's agent, and DevSync's row of it: the state the move leaves an agent DevSync
- * revoked before it, the one revoke DevSync's own queries see.
+ * Revokes the host's agent, and DevSync's row of it. That models only a revoke made before the
+ * move (DevSync revoked its own agent, and the move kept the revoke on both sides): the one revoke
+ * DevSync's own queries see. A revoke on the dashboard after the move leaves DevSync's row
+ * unrevoked (docs/host.md, MCP for coding agents); to model one, set only the host's `revokedAt`.
  */
 export async function revokeHostAgent(host: FakeHost, agentId: string): Promise<void> {
   const now = host.clock.now();

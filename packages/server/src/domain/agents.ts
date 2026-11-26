@@ -31,10 +31,11 @@ export function hashToken(token: string): string {
 }
 
 /** DevSync's kinds as the host names them, and back. */
-const HOST_KIND = { CLAUDE: "claude", CODEX: "codex", OTHER: "other" } as const satisfies Record<
-  AgentKind,
-  AgentRef["kind"]
->;
+export const HOST_KIND = {
+  CLAUDE: "claude",
+  CODEX: "codex",
+  OTHER: "other",
+} as const satisfies Record<AgentKind, AgentRef["kind"]>;
 const KIND_OF = { claude: "CLAUDE", codex: "CODEX", other: "OTHER" } as const satisfies Record<
   AgentRef["kind"],
   AgentKind
@@ -88,15 +89,15 @@ function ownAgent(row: AgentRow, now: Date): Agent {
 
 /**
  * One of the host's agents, with when DevSync's row of it (if it has one: the agent has connected)
- * was made and last seen. The host lists only the agents that may reach DevSync, so none is
- * revoked or expired.
+ * was made and last seen. The host's list doesn't say which of its agents are revoked or expired;
+ * DevSync's row says it of one DevSync revoked before its move.
  */
 function hostsAgent(ref: AgentRef, row: AgentRow | undefined, now: Date): Agent {
   return {
     id: ref.agentId,
     name: ref.name,
     kind: KIND_OF[ref.kind],
-    status: presence(row?.lastSeenAt, now),
+    status: row?.revokedAt ? "Revoked" : presence(row?.lastSeenAt, now),
     expiresAt: null,
     lastSeenAt: row?.lastSeenAt?.toISOString() ?? null,
     createdAt: row?.createdAt.toISOString() ?? null,
@@ -104,8 +105,8 @@ function hostsAgent(ref: AgentRef, row: AgentRow | undefined, now: Date): Agent 
 }
 
 /**
- * `GET /agents`: the agents that may reach DevSync in the project. The host's first, in its order,
- * then DevSync's own not yet moved, newest first, with their statuses.
+ * `GET /agents`: the project's agents. The host's first (`host.agents.list`), in its order, then
+ * DevSync's own not yet moved, newest first, with their statuses.
  */
 export async function listAgents(host: DevSyncHost, ctx: ProjectContext): Promise<AgentList> {
   const { projectId, workspaceId } = ctx.project;
@@ -138,17 +139,23 @@ const forbidden = () => new DevSyncError("forbidden", REFUSAL.devSyncOff);
 /**
  * The agent a bearer token belongs to, and its project as the host answers it now. The host's
  * `agents.verify` is asked first, on every request; then DevSync's own rows not yet moved to the
- * host. Refused alike (`unauthenticated`) when neither knows a live agent for the token (a host's
- * agent revoked or expired is refused, whatever DevSync's row of it holds), and `forbidden` when
- * the token is live but its project is gone or has DevSync off. Records when the agent was last
- * seen.
+ * host; then the host once more, as the token's move may have committed in between. Refused alike
+ * (`unauthenticated`) when none knows a live agent for the token (a host's agent revoked or expired
+ * is refused, whatever DevSync's row of it holds), and `forbidden` when the token is live but its
+ * project is gone or has DevSync off. Records when the agent was last seen.
  */
 export async function authenticateAgent(host: DevSyncHost, token: string): Promise<AgentActor> {
-  if (typeof token !== "string" || token === "") {
-    throw new DevSyncError("unauthenticated", REFUSAL.unauthenticated);
-  }
+  const refused = new DevSyncError("unauthenticated", REFUSAL.unauthenticated);
+  if (typeof token !== "string" || token === "") throw refused;
   const ref = await host.agents.verify(token);
-  return ref ? hostsActor(host, hostAgent(ref)) : ownActor(host, token);
+  if (ref) return hostsActor(host, hostAgent(ref));
+  // Only DevSync's own tokens have this shape.
+  if (!TOKEN_SHAPE.test(token)) throw refused;
+  const own = await ownActor(host, token);
+  if (own) return own;
+  const moved = await host.agents.verify(token);
+  if (moved) return hostsActor(host, hostAgent(moved));
+  throw refused;
 }
 
 /**
@@ -183,10 +190,11 @@ async function hostsActor(host: DevSyncHost, ref: AgentRef): Promise<AgentActor>
   return { kind: "agent", agentId: row.id, name: row.name, project };
 }
 
-/** One of DevSync's own agents, not yet moved to the host, as the actor. */
-async function ownActor(host: DevSyncHost, token: string): Promise<AgentActor> {
-  const refused = () => new DevSyncError("unauthenticated", REFUSAL.unauthenticated);
-  if (!TOKEN_SHAPE.test(token)) throw refused();
+/**
+ * One of DevSync's own agents, not yet moved to the host, as the actor; null when DevSync has no
+ * live row with the token (unknown, expired, revoked, or moved meanwhile).
+ */
+async function ownActor(host: DevSyncHost, token: string): Promise<AgentActor | null> {
   const now = host.clock.now();
   const live = and(
     eq(agent.tokenHash, hashToken(token)),
@@ -197,7 +205,7 @@ async function ownActor(host: DevSyncHost, token: string): Promise<AgentActor> {
     .select({ id: agent.id, workspaceId: agent.workspaceId, projectId: agent.projectId })
     .from(agent)
     .where(live);
-  if (!found) throw refused();
+  if (!found) return null;
   const project = await host.project(found.projectId);
   if (
     !project ||
@@ -211,8 +219,7 @@ async function ownActor(host: DevSyncHost, token: string): Promise<AgentActor> {
     .set({ lastSeenAt: now })
     .where(and(eq(agent.id, found.id), live))
     .returning({ id: agent.id, name: agent.name });
-  if (!seen) throw refused();
-  return { kind: "agent", agentId: seen.id, name: seen.name, project };
+  return seen ? { kind: "agent", agentId: seen.id, name: seen.name, project } : null;
 }
 
 /**
@@ -242,28 +249,26 @@ export async function moveAgents(host: DevSyncHost): Promise<number> {
               eq(agent.projectId, projectId),
               eq(agent.workspaceId, project.workspaceId),
               isNotNull(agent.tokenHash),
+              isNotNull(agent.expiresAt),
             ),
           )
           .orderBy(asc(agent.createdAt), asc(agent.id))
           .for("update");
-        const adopted = rows.flatMap((row): AdoptedAgent[] =>
-          row.tokenHash && row.expiresAt
-            ? [
-                {
-                  agentId: row.id,
-                  workspaceId: row.workspaceId,
-                  projectId: row.projectId,
-                  name: row.name,
-                  kind: HOST_KIND[row.kind],
-                  tokenHash: row.tokenHash,
-                  expiresAt: row.expiresAt,
-                  revokedAt: row.revokedAt,
-                  lastSeenAt: row.lastSeenAt,
-                  registeredBy: row.registeredByUserId,
-                  createdAt: row.createdAt,
-                },
-              ]
-            : [],
+        // The `where` holds both token columns: neither is null here.
+        const adopted = rows.map(
+          (row): AdoptedAgent => ({
+            agentId: row.id,
+            workspaceId: row.workspaceId,
+            projectId: row.projectId,
+            name: row.name,
+            kind: HOST_KIND[row.kind],
+            tokenHash: row.tokenHash as string,
+            expiresAt: row.expiresAt as Date,
+            revokedAt: row.revokedAt,
+            lastSeenAt: row.lastSeenAt,
+            registeredBy: row.registeredByUserId,
+            createdAt: row.createdAt,
+          }),
         );
         if (adopted.length === 0) return 0;
         await host.agents.adopt(tx, adopted);
