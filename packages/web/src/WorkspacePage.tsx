@@ -25,10 +25,10 @@ export function WorkspacePage({ taskHref }: WorkspacePageProps) {
   const members = useMembers().data?.members;
 
   const projects = new Map<string, string>();
-  for (const task of [...(open.data?.tasks ?? []), ...(tasks.data?.tasks ?? [])]) {
+  for (const task of [...open.tasks, ...tasks.tasks]) {
     projects.set(task.projectId, task.projectName);
   }
-  const list = tasks.data?.tasks ?? [];
+  const list = tasks.tasks;
 
   return (
     <section className="card bordered" aria-labelledby={heading}>
@@ -37,7 +37,7 @@ export function WorkspacePage({ taskHref }: WorkspacePageProps) {
           <Icon name="kanban" />
           {status ? `${STATUS_LABEL[status]} tasks` : "Open tasks"}
         </h3>
-        <span className="chip">{list.length}</span>
+        <span className="chip">{`${list.length}${tasks.hasNextPage ? "+" : ""}`}</span>
       </div>
       <div className={styles.filters}>
         <Field label="Project">
@@ -80,6 +80,12 @@ export function WorkspacePage({ taskHref }: WorkspacePageProps) {
           Assigned to me
         </label>
       </div>
+      {(open.hasNextPage || tasks.hasNextPage) && (
+        <p className="sub">
+          The projects to filter by are those of the tasks loaded so far: "Show more tasks" loads
+          more.
+        </p>
+      )}
       <Problem error={tasks.error} />
       {tasks.isSuccess && list.length === 0 && (
         <EmptyState icon="check-circle" title={filtered ? "No tasks match" : "No open tasks"}>
@@ -105,6 +111,18 @@ export function WorkspacePage({ taskHref }: WorkspacePageProps) {
             </li>
           ))}
         </ul>
+      )}
+      {tasks.hasNextPage && (
+        <div className={styles.buttons}>
+          <button
+            className="btn btn-sm btn-secondary bordered"
+            type="button"
+            disabled={tasks.isFetchingNextPage}
+            onClick={() => tasks.fetchNextPage()}
+          >
+            Show more tasks
+          </button>
+        </div>
       )}
     </section>
   );

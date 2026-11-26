@@ -30,7 +30,8 @@ afterAll(async () => {
  * The most characters the actions' list (names as the host lists them, descriptions and input
  * JSON schemas, as JSON) may take: the size P7 reached (14,096: P6's 13,956 with a managed run's
  * own-task rule in the project-wide reads; P4's was 11,960, P3's 9,384), rounded up to the next
- * 1,000. Raise it only with a reason: every agent reads the whole list.
+ * 1,000. P8 reaches 14,479 with `list_tasks`' pages and the bounded task's lists, within it. Raise
+ * it only with a reason: every agent reads the whole list.
  */
 const ACTIONS_BUDGET = 15_000;
 
@@ -242,7 +243,17 @@ describe("a member calling an action", () => {
     const mine = await s.result("list_tasks", s.asMember(developer), { assignee: "me" });
     expect(mine.tasks.map((t: { id: string }) => t.id)).toEqual([task.id]);
     const ownersOwn = await s.result("list_tasks", s.asMember(), { assignee: "me" });
-    expect(ownersOwn.tasks).toEqual([]);
+    expect(ownersOwn).toEqual({ tasks: [], nextCursor: null });
+    // Paged as `GET /tasks`: a page of `limit`, and the next from its cursor.
+    const other = await s.readyTask("Another");
+    const page = await s.result("list_tasks", s.asCodex, { limit: 1 });
+    expect(page.tasks).toHaveLength(1);
+    const next = await s.result("list_tasks", s.asCodex, { limit: 1, cursor: page.nextCursor });
+    expect(next.nextCursor).toBeNull();
+    expect([...page.tasks, ...next.tasks].map((t: { id: string }) => t.id).sort()).toEqual(
+      [task.id, other.id].sort(),
+    );
+    expect((await s.refused("list_tasks", s.asCodex, { cursor: "eA" })).code).toBe("invalid");
 
     const read = await s.result("get_task", s.asMember(), { taskId: task.id });
     expect(read).toEqual({ task: await getTask(s.host, s.memberCtx(), task.id), latestRun: null });
@@ -607,6 +618,26 @@ describe("a managed run calling an action", () => {
       expect(await s.refused(name, s.asRun(), sampleInput(name, task.id))).toEqual({
         code: "forbidden",
         message,
+      });
+    }
+    expect(await getTask(s.host, s.memberCtx(), task.id)).toMatchObject({
+      status: "READY",
+      version: task.version,
+    });
+  });
+});
+
+describe("a caller of a kind no action names", () => {
+  it("is refused every action, a read too, changing nothing", async () => {
+    const s = await setup();
+    const task = await s.readyTask();
+    // A kind a later contract might add: DevSync decides about it before it reads or writes.
+    const system = { kind: "system", module: "devsync" } as unknown as Caller;
+    for (const name of Object.keys(KINDS) as (keyof typeof KINDS)[]) {
+      expect(await s.refused(name, system, sampleInput(name, task.id)), name).toEqual({
+        code: "forbidden",
+        message:
+          "DevSync's actions take a member, a coding agent or a managed run, and this caller is none of them.",
       });
     }
     expect(await getTask(s.host, s.memberCtx(), task.id)).toMatchObject({

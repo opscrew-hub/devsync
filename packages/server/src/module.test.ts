@@ -462,9 +462,11 @@ describe("serverModule", () => {
       "devsync.agents-move",
       "devsync.github",
       "devsync.outbox",
+      "devsync.retention",
       "devsync.runs",
     ]);
     expect(serverModule.jobs["devsync.outbox"].cron).toBe("* * * * *");
+    expect(serverModule.jobs["devsync.retention"].cron).toBe("0 3 * * *");
     expect(serverModule.jobs["devsync.runs"].cron).toBe("*/10 * * * *");
     expect(serverModule.jobs["devsync.agents-move"].cron).toBe("0 * * * *");
     for (const job of Object.values(serverModule.jobs)) {

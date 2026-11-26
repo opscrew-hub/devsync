@@ -900,7 +900,7 @@ describe.skipIf(!tools)("the Install Codex step, run (needs bash)", () => {
   it("leaves no profile when the sandbox falls back to the runner's /proc", () => {
     const run = install();
     expect(run.status).toBe(0);
-    expect(run.npm).toBe("install --global @openai/codex@0.171.0\n");
+    expect(run.npm).toBe("install --global --ignore-scripts @openai/codex@0.171.0\n");
     expect(run.sysctl).toContain("-q -w kernel.apparmor_restrict_unprivileged_userns=0");
     // The probe ran through the sandbox with the run's own profile.
     expect(run.sandbox?.split("\n").slice(0, 10)).toEqual([

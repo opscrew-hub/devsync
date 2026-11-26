@@ -12,6 +12,7 @@ import {
   TaskDetail,
   TaskFields,
   TaskInput,
+  TaskList,
   TaskListQuery,
   TaskUpdate,
   WorkspaceTaskList,
@@ -259,6 +260,23 @@ describe("the list queries", () => {
     expect(TaskListQuery.safeParse({ status: "ready" }).success).toBe(false);
   });
 
+  it("take a page: a limit of 1 to 100 (a query string's number too), and a cursor", () => {
+    for (const limit of [1, 100, "25"]) {
+      expect(TaskListQuery.safeParse({ limit }).success, String(limit)).toBe(true);
+    }
+    expect(TaskListQuery.parse({ limit: "25" }).limit).toBe(25);
+    for (const limit of [0, 101, 1.5, "", "ten", -1]) {
+      expect(TaskListQuery.safeParse({ limit }).success, String(limit)).toBe(false);
+    }
+    expect(TaskListQuery.safeParse({ cursor: "MjAyNi0wMy0wMVQxMDowMDowMC4wMDBa" }).success).toBe(
+      true,
+    );
+    for (const cursor of ["", "not a cursor", "x".repeat(201)]) {
+      expect(TaskListQuery.safeParse({ cursor }).success).toBe(false);
+    }
+    expect(WorkspaceTaskListQuery.safeParse({ limit: "5", cursor: "abc" }).success).toBe(true);
+  });
+
   it("take a project on the workspace's list", () => {
     expect(WorkspaceTaskListQuery.safeParse({ project: randomUUID() }).success).toBe(true);
     expect(WorkspaceTaskListQuery.safeParse({ project: "x" }).success).toBe(false);
@@ -308,6 +326,10 @@ describe("the answers", () => {
         },
       ],
       answeredNotShown: 3,
+      revisionsNotShown: 0,
+      commentsNotShown: 120,
+      timelineNotShown: 4,
+      overlapsNotShown: 0,
       timeline: [
         {
           id: randomUUID(),
@@ -351,8 +373,17 @@ describe("the answers", () => {
     expect(TaskDetail.safeParse({ ...detail, usage: { agents: null } }).success).toBe(false);
     expect(TaskDetail.safeParse({ ...detail, questions: undefined }).success).toBe(false);
     // How many older answered questions the detail leaves out: a whole number, never negative.
-    for (const answeredNotShown of [undefined, -1, 1.5]) {
-      expect(TaskDetail.safeParse({ ...detail, answeredNotShown }).success).toBe(false);
+    // How many older revisions, comments and events, and later overlaps, it leaves out too.
+    for (const key of [
+      "answeredNotShown",
+      "revisionsNotShown",
+      "commentsNotShown",
+      "timelineNotShown",
+      "overlapsNotShown",
+    ]) {
+      for (const count of [undefined, -1, 1.5]) {
+        expect(TaskDetail.safeParse({ ...detail, [key]: count }).success, key).toBe(false);
+      }
     }
     expect(
       TaskDetail.safeParse({
@@ -364,9 +395,16 @@ describe("the answers", () => {
 
   it("parse the workspace's tasks with their project's name", () => {
     expect(
-      WorkspaceTaskList.safeParse({ tasks: [{ ...task(), projectName: "shop" }] }).success,
+      WorkspaceTaskList.safeParse({ tasks: [{ ...task(), projectName: "shop" }], nextCursor: null })
+        .success,
     ).toBe(true);
-    expect(WorkspaceTaskList.safeParse({ tasks: [task()] }).success).toBe(false);
+    expect(WorkspaceTaskList.safeParse({ tasks: [task()], nextCursor: null }).success).toBe(false);
+  });
+
+  it("parse a page of tasks with the next page's cursor, or null for the last", () => {
+    expect(TaskList.safeParse({ tasks: [task()], nextCursor: "abc" }).success).toBe(true);
+    expect(TaskList.safeParse({ tasks: [], nextCursor: null }).success).toBe(true);
+    expect(TaskList.safeParse({ tasks: [] }).success).toBe(false);
   });
 
   it("parse pull requests", () => {

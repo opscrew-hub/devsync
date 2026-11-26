@@ -57,6 +57,20 @@
       "when": 1795696839283,
       "tag": "0007_questions",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795704569891,
+      "tag": "0008_agent_task_writes",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795707080918,
+      "tag": "0009_enum_checks",
+      "breakpoints": true
     }
   ]
 }

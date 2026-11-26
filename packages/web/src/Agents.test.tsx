@@ -29,7 +29,7 @@ function show(
   return renderWith(<ProjectTab selectedTaskId={null} onSelectTask={() => {}} />, {
     role,
     routes: {
-      "GET /tasks": { body: { tasks } },
+      "GET /tasks": { body: { tasks, nextCursor: null } },
       "GET /members": { body: { members } },
       "GET /agents": { body: { agents: [agent] } },
       ...extra,

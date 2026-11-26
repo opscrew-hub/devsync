@@ -5,14 +5,22 @@
  * transaction, then calls `outbox.wake(host, projectId)` once: the host runs the queue after the
  * commit, and never if the change rolls back.
  *
- * The same record emits DevSync's host events (docs/platform.md, Events) with `host.emit`, in the
- * same transaction: `hostEvents` maps a timeline kind and its record's facts to them, the one place
- * they are made. A change with no timeline event (a claim, a release, a pull request linked or
- * merged) emits its own with `outbox.emit`, through the same mapping.
+ * The same record emits DevSync's host events (docs/platform.md, Events) with `host.emit`, and
+ * writes its entries in the host's audit log with `host.audit`, in the same transaction:
+ * `hostEvents` and `auditEntries` map a timeline kind and its record's facts to them, the one
+ * place they are made. A change with no timeline event (a claim, a release, a pull request linked or
+ * merged) emits its own with `outbox.emit`, through the same mappings.
  */
 import type { AgentUsage, RunFailure, TaskStatus } from "@devsync/schemas";
 import { type OutboxEventRow, outboxEvent, type RunRow } from "../db";
-import type { DevSyncDb, DevSyncEvent, DevSyncHost, EventData } from "../host";
+import type {
+  AuditActor,
+  AuditEntry,
+  DevSyncDb,
+  DevSyncEvent,
+  DevSyncHost,
+  EventData,
+} from "../host";
 
 /** Who caused an event: a member, an agent, or the host (a GitHub fact). */
 export type OutboxActor = { userId: string } | { agentId: string } | null;
@@ -28,6 +36,8 @@ export interface EventFacts {
   claimed?: string;
   /** The agent whose claim on the task the change ended without a review request. */
   released?: string;
+  /** The member the change assigned the task to, or null when it unassigned it. */
+  assigned?: string | null;
   /** The pull request the change linked to the task. */
   linked?: number;
   /** The task's pull request, which GitHub merged. */
@@ -60,17 +70,18 @@ export interface OutboxRecord {
   facts?: EventFacts;
 }
 
-/** A change with host events but no timeline event: its task and what it did. */
+/** A change with host events but no timeline event: its task, who made it and what it did. */
 export interface EventChange {
   workspaceId: string;
   projectId: string;
   taskId: string;
+  actor: OutboxActor;
   facts: EventFacts;
 }
 
-/** What the mapping reads of a change: an `OutboxRecord`, or an `EventChange` (no kind). */
-type Change = Pick<OutboxRecord, "workspaceId" | "projectId" | "taskId" | "facts"> &
-  Partial<Pick<OutboxRecord, "kind" | "actor" | "reviewRequestId" | "payload">>;
+/** What the mappings read of a change: an `OutboxRecord`, or an `EventChange` (no kind). */
+type Change = Pick<OutboxRecord, "workspaceId" | "projectId" | "taskId" | "facts" | "actor"> &
+  Partial<Pick<OutboxRecord, "kind" | "reviewRequestId" | "payload">>;
 
 /** A host event before the project's ids are added. */
 type HostEvent = Pick<DevSyncEvent, "type" | "data">;
@@ -145,10 +156,71 @@ function hostEvents(change: Change): HostEvent[] {
   return events;
 }
 
-/** Emits the change's host events in `tx`, the transaction making it. */
+/** An audit entry before the project's ids are added, with who made the change. */
+type HostAudit = { actor: AuditActor } & Pick<AuditEntry, "action" | "detail">;
+
+/**
+ * The change's entries in the host's audit log (docs/host.md, Audit): a task created, its
+ * requirements changed, a question asked or answered, a review requested or decided, an
+ * assignment, a move of its status, and an agent's own claim starting or ending, each with names and ids only, never a text. A member's are
+ * theirs (`{ userId }`); an agent's and the queues' are the host's, an agent's with its id in the
+ * detail. A claim another's change ended (a member's cancel, a takeover of an expired claim) is in
+ * that change's own entry, the move or the new claim.
+ */
+function auditEntries(change: Change): HostAudit[] {
+  const { taskId, facts = {}, actor } = change;
+  if (!taskId) return [];
+  const agentId = actor && "agentId" in actor ? actor.agentId : null;
+  const by: AuditActor = actor && "userId" in actor ? { userId: actor.userId } : "host";
+  const entries: HostAudit[] = [];
+  const add = (action: AuditEntry["action"], detail: AuditEntry["detail"] = {}) =>
+    entries.push({
+      actor: by,
+      action,
+      detail: { taskId, ...detail, ...(agentId ? { agentId } : {}) },
+    });
+  switch (change.kind) {
+    case "task.created":
+      add("devsync.task.created", { status: required(change, facts.status, "status").to });
+      break;
+    case "requirements.changed":
+      add("devsync.task.requirements_changed", { revision: payloadId(change, "revision") });
+      break;
+    case "review.requested":
+      // The requesting agent's id is the detail's, as every agent's entry has it.
+      required(change, agentId, "agent");
+      add("devsync.review.requested");
+      break;
+    case "review.approved":
+    case "review.changes_requested":
+      add(`devsync.${change.kind}`, {
+        reviewRequestId: required(change, change.reviewRequestId, "review request"),
+      });
+      break;
+    case "question.asked":
+    case "question.answered":
+      add(`devsync.${change.kind}`, { questionId: payloadId(change, "questionId") });
+      break;
+  }
+  if (facts.released && facts.released === agentId) add("devsync.task.released");
+  const { status } = facts;
+  if (status?.from && status.from !== status.to) {
+    add("devsync.task.moved", { from: status.from, to: status.to });
+  }
+  if (facts.claimed && facts.claimed === agentId) add("devsync.task.claimed");
+  if (facts.assigned !== undefined)
+    add("devsync.task.assigned", { assigneeUserId: facts.assigned });
+  return entries;
+}
+
+/** Emits the change's host events and writes its audit entries in `tx`, the transaction making it. */
 async function emitEvents(host: DevSyncHost, tx: DevSyncDb, change: Change): Promise<void> {
+  const { workspaceId, projectId } = change;
   for (const event of hostEvents(change)) {
-    await host.emit(tx, { workspaceId: change.workspaceId, projectId: change.projectId, ...event });
+    await host.emit(tx, { workspaceId, projectId, ...event });
+  }
+  for (const { actor, ...entry } of auditEntries(change)) {
+    await host.audit(tx, actor, { workspaceId, projectId, ...entry });
   }
 }
 
@@ -188,7 +260,7 @@ function wakeOutbox(host: DevSyncHost, projectId: string): Promise<void> {
 
 /**
  * The outbox: `record` in the change's transaction, `wake` once after it; `emit`, in its
- * transaction, the host events of a change with no timeline event.
+ * transaction, the host events and audit entries of a change with no timeline event.
  */
 export const outbox = {
   record: recordOutboxEvent,

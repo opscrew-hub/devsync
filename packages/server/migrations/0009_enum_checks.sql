@@ -1,0 +1,6 @@
+ALTER TABLE "devsync"."agent" ADD CONSTRAINT "agent_kind_check" CHECK ("devsync"."agent"."kind" in ('CLAUDE', 'CODEX', 'OTHER'));--> statement-breakpoint
+ALTER TABLE "devsync"."pull_request" ADD CONSTRAINT "pull_request_state_check" CHECK ("devsync"."pull_request"."state" in ('open', 'closed', 'merged'));--> statement-breakpoint
+ALTER TABLE "devsync"."run" ADD CONSTRAINT "run_status_check" CHECK ("devsync"."run"."status" in ('REQUESTED', 'QUEUED', 'RUNNING', 'SUCCEEDED', 'FAILED', 'REJECTED', 'CANCELLED'));--> statement-breakpoint
+ALTER TABLE "devsync"."run" ADD CONSTRAINT "run_failure_check" CHECK ("devsync"."run"."failure" in ('no-key', 'no-credits', 'agent-failed', 'budget', 'turns', 'no-changes', 'patch-did-not-apply', 'patch-touches-workflows', 'push-failed', 'pull-request-not-allowed', 'not-found', 'unavailable', 'workflow-missing', 'workflow-disabled', 'forbidden', 'bad-result', 'no-result', 'cancelled'));--> statement-breakpoint
+ALTER TABLE "devsync"."run" ADD CONSTRAINT "run_provider_check" CHECK ("devsync"."run"."provider" in ('anthropic', 'openrouter', 'openai', 'opscrew'));--> statement-breakpoint
+ALTER TABLE "devsync"."task" ADD CONSTRAINT "task_status_check" CHECK ("devsync"."task"."status" in ('BACKLOG', 'READY', 'CLAIMED', 'IN_PROGRESS', 'BLOCKED', 'REVIEW', 'DONE', 'CANCELLED'));

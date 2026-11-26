@@ -6,6 +6,8 @@
  * (which also checks DevSync is still on for the agent's project), then answered by a fresh MCP
  * server whose tools are DevSync's actions (actions.ts), called as that agent, so this endpoint
  * and the host's `/mcp` never differ. Its tools keep their names, without the host's `devsync_`.
+ * Before a token seen valid is verified again, a rate limit (rate-limit.ts): 120 requests a minute
+ * per token. A token not seen valid yet is verified as before.
  */
 
 import {
@@ -15,7 +17,7 @@ import {
 } from "@modelcontextprotocol/server";
 import { type Context, Hono } from "hono";
 import { actions, isRefused, MCP_INSTRUCTIONS } from "../actions";
-import { authenticateAgent } from "../domain/agents";
+import { authenticateAgent, hashToken } from "../domain/agents";
 import {
   type AgentActor,
   type DevSyncAction,
@@ -25,15 +27,25 @@ import {
   ERROR_STATUS,
 } from "../host";
 import { describeError, errorHandler, INTERNAL_MESSAGE, noStore, refusalBody } from "./errors";
+import { TOKEN_REQUESTS_PER_MINUTE, TokenBuckets } from "./rate-limit";
 
 const FOREIGN_ORIGIN =
   "This request's origin isn't DevSync's, so it was refused. Connect your agent to the MCP endpoint directly, not from a web page.";
 
 /** A refusal before the MCP server runs: an agent's client reads `WWW-Authenticate` on a 401. */
-function refuse(c: Context, error: DevSyncError): Response {
+function refuse(c: Context, error: DevSyncError, extra: Record<string, string> = {}): Response {
   const headers: Record<string, string> =
-    error.code === "unauthenticated" ? { "WWW-Authenticate": "Bearer" } : {};
+    error.code === "unauthenticated" ? { "WWW-Authenticate": "Bearer", ...extra } : extra;
   return c.json(refusalBody(error), ERROR_STATUS[error.code], headers);
+}
+
+/** "1 second", "3 seconds". */
+const seconds = (n: number) => `${n} ${n === 1 ? "second" : "seconds"}`;
+
+/** A token's request past its limit: answered 429 with `Retry-After`, the token unverified. */
+function rateLimited(c: Context, wait: number): Response {
+  const message = `This agent sent ${TOKEN_REQUESTS_PER_MINUTE} requests to DevSync's MCP endpoint in the last minute, the most it may. Try again in ${seconds(wait)}.`;
+  return refuse(c, new DevSyncError("rate-limited", message), { "Retry-After": String(wait) });
 }
 
 /**
@@ -85,6 +97,8 @@ export function publicRoutes(host: DevSyncHost): Hono {
   const app = new Hono();
   app.onError(errorHandler(host));
   app.use(noStore);
+  // By the SHA-256 of each token seen valid, never the token itself.
+  const tokens = new TokenBuckets(TOKEN_REQUESTS_PER_MINUTE, () => host.clock.now().getTime());
 
   app.post("/mcp", async (c) => {
     const origin = c.req.header("origin");
@@ -92,6 +106,14 @@ export function publicRoutes(host: DevSyncHost): Hono {
       return refuse(c, new DevSyncError("forbidden", FOREIGN_ORIGIN));
     }
     const token = /^Bearer (\S+)$/i.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+    // A token seen valid takes from its own bucket before it is verified again; any other is
+    // verified as before, its first valid request then starting its bucket.
+    const key = token === "" ? null : hashToken(token);
+    const known = key !== null && tokens.has(key);
+    if (known) {
+      const wait = tokens.take(key);
+      if (wait > 0) return rateLimited(c, wait);
+    }
     let actor: AgentActor;
     try {
       actor = await authenticateAgent(host, token);
@@ -99,6 +121,7 @@ export function publicRoutes(host: DevSyncHost): Hono {
       if (error instanceof DevSyncError) return refuse(c, error);
       throw error;
     }
+    if (key !== null && !known) tokens.take(key);
 
     const server = mcpServer(host, actor);
     const transport = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });

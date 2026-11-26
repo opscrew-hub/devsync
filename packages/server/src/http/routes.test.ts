@@ -28,7 +28,7 @@ import type {
   WorkspaceContext,
   WorkspaceEnv,
 } from "../host";
-import { devsyncAgent, hostAgent, sampleFinding } from "../test/helpers";
+import { devsyncAgent, hostAgent, sampleFinding, setClock } from "../test/helpers";
 import { createTestDb, FAKE_NOW, type FakeHost, fakeHost, type TestDb } from "../testing";
 import { projectRoutes, workspaceRoutes } from "./index";
 
@@ -73,14 +73,17 @@ async function send(fetch: Fetch, method: string, url: string, body?: unknown) {
   };
 }
 
-/** The project's routes mounted as the host mounts them, its guard setting `ctx` first. */
-function projectClient(host: FakeHost, ctx: ProjectContext): Send {
+/**
+ * The project's routes mounted as the host mounts them, its guard setting `ctx` first: the host's
+ * one mount of them, `routes`, when given.
+ */
+function projectClient(host: FakeHost, ctx: ProjectContext, routes = projectRoutes(host)): Send {
   const app = new Hono<ProjectEnv>();
   app.use(`${PROJECT_MOUNT}/*`, async (c, next) => {
     c.set("module", ctx);
     await next();
   });
-  app.route(PROJECT_MOUNT, projectRoutes(host));
+  app.route(PROJECT_MOUNT, routes);
   const base = `/api/w/${ctx.project.workspaceId}/projects/${ctx.project.projectId}/m/devsync`;
   return (method, path, body) =>
     send((url, init) => app.request(url, init), method, `${base}${path}`, body);
@@ -176,7 +179,10 @@ describe("project routes", () => {
     const listed = await developer("GET", "/tasks");
     expect(listed.status).toBe(200);
     expect(TaskList.parse(listed.body).tasks).toEqual([task]);
-    expect((await developer("GET", "/tasks?status=READY")).body).toEqual({ tasks: [] });
+    expect((await developer("GET", "/tasks?status=READY")).body).toEqual({
+      tasks: [],
+      nextCursor: null,
+    });
 
     const { userId } = member("developer");
     const edited = await developer("PATCH", `/tasks/${task.id}`, {
@@ -195,8 +201,14 @@ describe("project routes", () => {
     expect(TaskList.parse((await developer("GET", "/tasks?assignee=me")).body).tasks).toHaveLength(
       1,
     );
-    expect((await as("owner")("GET", "/tasks?assignee=me")).body).toEqual({ tasks: [] });
-    expect((await developer("GET", `/tasks?assignee=none`)).body).toEqual({ tasks: [] });
+    expect((await as("owner")("GET", "/tasks?assignee=me")).body).toEqual({
+      tasks: [],
+      nextCursor: null,
+    });
+    expect((await developer("GET", `/tasks?assignee=none`)).body).toEqual({
+      tasks: [],
+      nextCursor: null,
+    });
     expect(
       TaskList.parse((await developer("GET", `/tasks?status=READY&assignee=${userId}`)).body).tasks,
     ).toHaveLength(1);
@@ -310,6 +322,64 @@ describe("project routes", () => {
       expect((await routes.request(path, { method })).status, `${method} ${path}`).toBe(404);
     }
     expect(AgentList.parse((await as("owner")("GET", "/agents")).body).agents).toHaveLength(2);
+  });
+
+  it("page the tasks by `limit` and `cursor`, refusing a bad one by its field", async () => {
+    const { ctx, host, as } = setup();
+    const created = [];
+    for (const title of ["One", "Two", "Three"]) {
+      created.push(await createTask(host, ctx("owner"), { ...newTask, title }));
+    }
+    const member = as("developer");
+    const first = TaskList.parse((await member("GET", "/tasks?limit=2")).body);
+    expect(first.tasks).toHaveLength(2);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const next = await member("GET", `/tasks?limit=2&cursor=${first.nextCursor}`);
+    const rest = TaskList.parse(next.body);
+    expect(rest).toMatchObject({ nextCursor: null });
+    expect([...first.tasks, ...rest.tasks].map((t) => t.id).sort()).toEqual(
+      created.map((t) => t.id).sort(),
+    );
+    for (const [query, field] of [
+      ["limit=0", "limit"],
+      ["limit=101", "limit"],
+      ["limit=ten", "limit"],
+      ["cursor=bm90IGEgY3Vyc29y", "cursor"],
+    ]) {
+      expect(refusal(await member("GET", `/tasks?${query}`), 422, "invalid").fields).toEqual([
+        field,
+      ]);
+    }
+  });
+
+  it("refuse a change to a Cancelled task's requirements, 409", async () => {
+    const { ctx, host, as } = setup();
+    const task = await createTask(host, ctx("owner"), newTask);
+    await updateTask(host, ctx("owner"), task.id, { version: 1, status: "CANCELLED" });
+    const error = refusal(
+      await as("developer")("PATCH", `/tasks/${task.id}`, { version: 2, title: "Renamed" }),
+      409,
+      "conflict",
+    );
+    expect(error.message).toMatch(/^This task is Cancelled, which is final/);
+  });
+
+  it("refuse a message to an agent on a read-only project, as every other change there", async () => {
+    const { host, project, as } = setup();
+    const agent = await hostAgent(host, project, { name: "Codex", kind: "CODEX" });
+    const frozen = as("owner", { ...project, readOnly: true });
+    const message = {
+      kind: "system.warning",
+      message: "A message on a project past its plan",
+      idempotencyKey: crypto.randomUUID(),
+    };
+    const error = refusal(
+      await frozen("POST", `/agents/${agent.id}/messages`, message),
+      403,
+      "forbidden",
+    );
+    expect(error.message).toMatch(/read-only/);
+    refusal(await frozen("POST", "/tasks", newTask), 403, "forbidden");
   });
 
   describe.each(ROLES)("a member who is %s", (role) => {
@@ -485,7 +555,7 @@ describe("project routes", () => {
     expect(host.errors).toHaveLength(2);
     expect(host.errors[1]).toContain("The events are unavailable.");
     expect(host.errors[1]).not.toContain("Secret title");
-    expect((await as("owner")("GET", "/tasks")).body).toEqual({ tasks: [] });
+    expect((await as("owner")("GET", "/tasks")).body).toEqual({ tasks: [], nextCursor: null });
   });
 });
 
@@ -600,6 +670,45 @@ describe("project run routes", () => {
     expect(RunList.parse(listed.body).runs.map((r) => [r.id, r.status])).toEqual([
       [run.id, "QUEUED"],
     ]);
+  });
+
+  it("answer the setup from a minute's cache per project, so GitHub is asked once a minute", async () => {
+    const s = setup();
+    const asked: string[] = [];
+    const setupOf = s.host.github.setup;
+    s.host.github.setup = async (projectId, workflow) => {
+      asked.push(projectId);
+      return setupOf(projectId, workflow);
+    };
+    const start = Date.parse(FAKE_NOW);
+    const routes = projectRoutes(s.host);
+    const here = projectClient(s.host, s.ctx("developer"), routes);
+    const there = projectClient(s.host, s.ctx("developer", s.other), routes);
+    const complete = { workflow: true, secret: true, missing: [] };
+
+    expect((await here("GET", "/runs/setup")).body).toEqual(complete);
+    expect((await here("GET", "/runs/setup")).body).toEqual(complete);
+    expect(asked).toEqual([s.project.projectId]);
+    expect((await there("GET", "/runs/setup")).body).toEqual(complete);
+    expect(asked).toEqual([s.project.projectId, s.other.projectId]);
+
+    // The workflow removed meanwhile: the same answer for the rest of the minute, then the new.
+    s.host.github.repository = { workflow: false, secrets: [] };
+    setClock(s.host, start + 59_999);
+    expect((await here("GET", "/runs/setup")).body).toEqual(complete);
+    setClock(s.host, start + 60_000);
+    const fresh = RunSetup.parse((await here("GET", "/runs/setup")).body);
+    expect(fresh).toMatchObject({ workflow: false, secret: false });
+    expect(asked).toHaveLength(3);
+
+    // A refusal isn't kept: the next request asks again.
+    setClock(s.host, start + 120_000);
+    s.host.github.fail.setup = "unavailable";
+    refusal(await here("GET", "/runs/setup"), 409, "conflict");
+    refusal(await here("GET", "/runs/setup"), 409, "conflict");
+    delete s.host.github.fail.setup;
+    expect(RunSetup.parse((await here("GET", "/runs/setup")).body).workflow).toBe(false);
+    expect(asked).toHaveLength(6);
   });
 
   it("answer 409 with the setup's words while the repository lacks the workflow", async () => {
@@ -738,7 +847,7 @@ describe("project finding routes", () => {
       finding: { fingerprint: moved.fingerprint },
     });
     expect(refusal(create, 404, "not-found").message).toBe(gone.message);
-    expect((await owner("GET", "/tasks")).body).toEqual({ tasks: [] });
+    expect((await owner("GET", "/tasks")).body).toEqual({ tasks: [], nextCursor: null });
   });
 });
 
@@ -780,7 +889,10 @@ describe("workspace routes", () => {
     expect(WorkspaceTaskList.parse(mine.body).tasks).toEqual([
       { ...assigned, projectName: "acme/other" },
     ]);
-    expect((await as("owner")("GET", "/tasks?assignee=me")).body).toEqual({ tasks: [] });
+    expect((await as("owner")("GET", "/tasks?assignee=me")).body).toEqual({
+      tasks: [],
+      nextCursor: null,
+    });
     expect(
       WorkspaceTaskList.parse(
         (await as("owner")("GET", `/tasks?project=${other.projectId}&assignee=none`)).body,

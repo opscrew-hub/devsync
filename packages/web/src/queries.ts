@@ -5,12 +5,13 @@ import {
   PullRequestList,
   RunList,
   RunSetup,
+  type Task,
   TaskDetail,
   TaskList,
   type TaskStatus,
   WorkspaceTaskList,
 } from "@devsync/schemas";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { z } from "zod";
 import { DevSyncRequestError } from "./client";
 import { useDevSync } from "./provider";
@@ -31,7 +32,35 @@ function useLive<S extends z.ZodType>(path: string, schema: S) {
   });
 }
 
-export const useTasks = () => useLive("/tasks", TaskList);
+/**
+ * A list of tasks page by page: `GET path`, then with each page's `nextCursor` as `cursor` when
+ * the page asks for more (`fetchNextPage`; `hasNextPage` says there is more), every page read so
+ * far refreshed while the page is visible. `tasks` is them all, each task once.
+ */
+function useTaskPages<T extends Task>(
+  path: string,
+  schema: z.ZodType<{ tasks: T[]; nextCursor: string | null }>,
+) {
+  const { api, apiBase } = useDevSync();
+  const query = useInfiniteQuery({
+    queryKey: ["devsync", apiBase, path],
+    queryFn: ({ pageParam }) => {
+      const cursor = pageParam && new URLSearchParams({ cursor: pageParam });
+      return api.get(cursor ? `${path}${path.includes("?") ? "&" : "?"}${cursor}` : path, schema);
+    },
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+    ...LIVE,
+  });
+  const tasks = new Map<string, T>();
+  for (const page of query.data?.pages ?? []) {
+    for (const task of page.tasks) if (!tasks.has(task.id)) tasks.set(task.id, task);
+  }
+  return { ...query, tasks: [...tasks.values()] };
+}
+
+/** The project's tasks, most recently updated first, 100 a page. */
+export const useTasks = () => useTaskPages("/tasks", TaskList);
 export const useMembers = () => useLive("/members", MemberList);
 export const useAgents = () => useLive("/agents", AgentList);
 export const usePullRequests = () => useLive("/pull-requests", PullRequestList);
@@ -87,7 +116,7 @@ export function useWorkspaceTasks(filters: {
   if (filters.project) query.set("project", filters.project);
   if (filters.status) query.set("status", filters.status);
   if (filters.mine) query.set("assignee", "me");
-  return useLive(query.size > 0 ? `/tasks?${query}` : "/tasks", WorkspaceTaskList);
+  return useTaskPages(query.size > 0 ? `/tasks?${query}` : "/tasks", WorkspaceTaskList);
 }
 
 const INVALID = "Fill in the required fields and keep each within its limit, then try again.";

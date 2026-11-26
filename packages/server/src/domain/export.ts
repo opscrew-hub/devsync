@@ -3,7 +3,9 @@
  * project, read through the host's read-only transaction only: its tasks with their revisions,
  * comments, questions (with their answers) and the tasks they wait for (`dependsOn`, beside their
  * paths, labels and branch), its runs, its pull requests and its timeline (the outbox's events, with the usage agents reported).
- * The agents are the host's to export; the timeline names them by id.
+ * The agents are the host's to export; the timeline names them by id. Every row is read by the
+ * project alone: the host gives its id only, and the host's project ids are unique, so no other
+ * workspace's row has it.
  */
 import { asc, eq } from "drizzle-orm";
 import {

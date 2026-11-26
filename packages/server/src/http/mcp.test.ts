@@ -516,3 +516,54 @@ describe("the MCP endpoint", () => {
     expect((await data(claude.token, "create_task", input)).title).toBe("Agent task");
   });
 });
+
+describe("the MCP endpoint's rate limit", () => {
+  /** How many times the host was asked to verify a token: the work a flood would cost it. */
+  function countVerifies(host: ReturnType<typeof fakeHost>) {
+    const verify = host.agents.verify;
+    const counted = { calls: 0 };
+    host.agents.verify = async (token) => {
+      counted.calls++;
+      return verify(token);
+    };
+    return counted;
+  }
+
+  it("takes 120 requests a minute per token, then 429 with Retry-After, before verifying", async () => {
+    const { host, codex, claude, call } = await setup();
+    const verified = countVerifies(host);
+    const list = (token: string) => call(token, "tools/list", {});
+    for (let i = 0; i < 120; i++) expect((await list(codex.token)).status).toBe(200);
+    const limited = await list(codex.token);
+    const error = await refusedWith(limited, 429, "rate-limited");
+    expect(error.message).toBe(
+      "This agent sent 120 requests to DevSync's MCP endpoint in the last minute, the most it may. Try again in 1 second.",
+    );
+    expect(limited.headers.get("retry-after")).toBe("1");
+    expect(verified.calls).toBe(120);
+    // Another agent's token has its own.
+    expect((await list(claude.token)).status).toBe(200);
+    // Two requests a second come back.
+    setClock(host, Date.parse(FAKE_NOW) + 1000);
+    expect((await list(codex.token)).status).toBe(200);
+    expect((await list(codex.token)).status).toBe(200);
+    await refusedWith(await list(codex.token), 429, "rate-limited");
+  });
+
+  it("never holds back a valid token's first request, however many bad ones came before", async () => {
+    const { host, project, call, post } = await setup();
+    const verified = countVerifies(host);
+    const bare = () => post({}, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+    // Bad and missing tokens are verified as before, each refused 401, none 429: limiting them by
+    // the visitor's address is the host's, which knows its proxies.
+    for (let i = 0; i < 60; i++) {
+      await refusedWith(await call(fakeToken(), "tools/list", {}), 401, "unauthenticated");
+      await refusedWith(await bare(), 401, "unauthenticated");
+    }
+    // Each unknown token twice: the host is asked again once DevSync's own rows don't have it.
+    expect(verified.calls).toBe(120);
+    // An agent registered meanwhile, or one whose bucket a restart emptied: its first request goes.
+    const fresh = await hostAgent(host, project, { name: "Fresh", kind: "CODEX" });
+    expect((await call(fresh.token, "tools/list", {})).status).toBe(200);
+  });
+});

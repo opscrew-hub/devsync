@@ -20,7 +20,7 @@ afterEach(cleanup);
 
 function routes(task: TaskDetail = detail, extra: Record<string, Reply> = {}) {
   return {
-    "GET /tasks": { body: { tasks } },
+    "GET /tasks": { body: { tasks, nextCursor: null } },
     "GET /members": { body: { members } },
     "GET /agents": { body: { agents: [agent] } },
     "GET /pull-requests": { body: { pullRequests } },
@@ -271,6 +271,19 @@ describe("the task panel", () => {
     expect(within(plain.panel).getByText("No paths given.")).toBeTruthy();
   });
 
+  it("says the tasks it may wait for are those loaded so far, while there are more", async () => {
+    const note = 'These are the tasks loaded so far: "Show more tasks" loads older ones.';
+    const more = await open(detail, { "GET /tasks": { body: { tasks, nextCursor: "page-2" } } });
+    await userEvent.click(within(more.panel).getByRole("button", { name: "Edit the fields" }));
+    const form = within(more.panel).getByRole("form", { name: "Edit the fields" });
+    expect(await within(form).findByText(note)).toBeTruthy();
+    cleanup();
+    const all = await open(detail);
+    await userEvent.click(within(all.panel).getByRole("button", { name: "Edit the fields" }));
+    await within(all.panel).findByRole("option", { name: "Send the welcome email (Ready)" });
+    expect(within(all.panel).queryByText(note)).toBeNull();
+  });
+
   it("edits the fields: paths one per line, the tasks it waits for, labels and branch", async () => {
     const { panel, sent } = await open(detail, {
       [`PATCH /tasks/${detail.id}`]: { body: tasks[0] },
@@ -457,6 +470,31 @@ describe("the task panel", () => {
     expect(within(one.panel).getByText("1 older answered question isn't shown.")).toBeTruthy();
   });
 
+  it("says how many older revisions, comments and events, and later overlaps, it doesn't show", async () => {
+    const overlap = {
+      task: { id: id(13), title: "Fix the checkout total", status: "CLAIMED" as const },
+      paths: ["src/checkout/total.ts"],
+    };
+    const { panel } = await open({
+      ...detail,
+      owns: ["src/"],
+      overlaps: [overlap],
+      revisionsNotShown: 48,
+      commentsNotShown: 1,
+      timelineNotShown: 7,
+      overlapsNotShown: 3,
+    });
+    expect(within(panel).getByText("48 older revisions aren't shown.")).toBeTruthy();
+    expect(within(panel).getByText("1 older comment isn't shown.")).toBeTruthy();
+    expect(within(panel).getByText("7 older events aren't shown.")).toBeTruthy();
+    const fields = within(panel).getByRole("region", { name: "Paths and dependencies" });
+    expect(within(fields).getByText("Shares paths with 4 other open tasks:")).toBeTruthy();
+    expect(within(fields).getByText("3 more tasks aren't shown.")).toBeTruthy();
+    cleanup();
+    const plain = await open(detail);
+    expect(within(plain.panel).queryByText(/aren't shown|isn't shown/)).toBeNull();
+  });
+
   it("answers an open question and asks one, each checked before it is sent", async () => {
     const asked: Question = {
       id: id(41),
@@ -536,6 +574,16 @@ describe("the task panel", () => {
     expect(within(done.panel).getByText("A Done task takes no more questions.")).toBeTruthy();
     // Its open questions can still be answered.
     expect(button("Post the answer", done.panel).disabled).toBe(false);
+  });
+
+  it("locks editing a Done or Cancelled task's requirements, saying why, but not its fields", async () => {
+    for (const status of ["DONE", "CANCELLED"] as const) {
+      const { panel } = await open({ ...detail, status });
+      expect(button("Edit the requirements", panel).disabled).toBe(true);
+      expect(within(panel).getByText(/its requirements stay as they are/)).toBeTruthy();
+      expect(button("Edit the fields", panel).disabled).toBe(false);
+      cleanup();
+    }
   });
 
   it("locks editing the fields on a read-only project", async () => {

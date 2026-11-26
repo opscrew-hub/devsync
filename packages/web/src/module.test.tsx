@@ -92,7 +92,7 @@ function projectTab(query: string, readOnly = false, routes: Record<string, Repl
     setQuery,
   };
   const fake = host(<webModule.ProjectTab {...props} />, PROJECT_API, {
-    "GET /tasks": { body: { tasks } },
+    "GET /tasks": { body: { tasks, nextCursor: null } },
     "GET /members": { body: { members } },
     "GET /agents": { body: { agents: [agent] } },
     "GET /pull-requests": { body: { pullRequests } },
@@ -176,7 +176,7 @@ describe("webModule.ProjectTab", () => {
         />,
         PROJECT_API,
         {
-          "GET /tasks": { body: { tasks } },
+          "GET /tasks": { body: { tasks, nextCursor: null } },
           "GET /members": { body: { members } },
           "GET /agents": { body: { agents: [agent] } },
         },
@@ -224,7 +224,7 @@ describe("webModule.WorkspacePage", () => {
       projectHref,
     };
     host(<WorkspacePage {...props} />, WORKSPACE_API, {
-      "GET /tasks": { body: { tasks: open } },
+      "GET /tasks": { body: { tasks: open, nextCursor: null } },
       "GET /members": { body: { members } },
     });
 

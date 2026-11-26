@@ -4,7 +4,7 @@
  * characters of JSON.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { question } from "../db";
+import { question, task } from "../db";
 import type { ContextEntry, Member, ProjectContext, ProjectRef } from "../host";
 import { hostAgent, setClock } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "../testing";
@@ -103,7 +103,7 @@ describe("a task's briefing", () => {
         },
       ],
       context: { instructions: [instruction], facts: [fact] },
-      omitted: { contextEntries: 0, answeredQuestions: 0, openQuestions: 0 },
+      omitted: { contextEntries: 0, answeredQuestions: 0, openQuestions: 0, overlaps: 0 },
     });
     expect(s.host.contextAsked).toEqual([
       {
@@ -139,7 +139,12 @@ describe("a task's briefing", () => {
     expect(JSON.stringify(first).length).toBeLessThanOrEqual(BRIEFING_LIMIT);
     expect(first.context).toEqual({ instructions: [instructions[0]], facts: [] });
     expect(first.answeredQuestions).toEqual(answered);
-    expect(first.omitted).toEqual({ contextEntries: 3, answeredQuestions: 0, openQuestions: 0 });
+    expect(first.omitted).toEqual({
+      contextEntries: 3,
+      answeredQuestions: 0,
+      openQuestions: 0,
+      overlaps: 0,
+    });
 
     // Four more answers: past 8,000 without any context, so the oldest answers go, as few as fit.
     for (const n of [4, 5, 6, 7]) answered.push(await s.ask(`Question ${n}?`, "b".repeat(1000)));
@@ -187,7 +192,52 @@ describe("a task's briefing", () => {
     expect(briefing.openQuestions).toEqual([]);
     expect(briefing.answeredQuestions).toEqual([]);
     expect(briefing.context).toEqual({ instructions: [], facts: [] });
-    expect(briefing.omitted).toEqual({ contextEntries: 1, answeredQuestions: 1, openQuestions: 1 });
+    expect(briefing.overlaps).toEqual([]);
+    expect(briefing.omitted).toEqual({
+      contextEntries: 1,
+      answeredQuestions: 1,
+      openQuestions: 1,
+      overlaps: 1,
+    });
+  });
+
+  it("cuts the newest overlaps before the open questions, counting those the detail leaves out", async () => {
+    const s = await setup();
+    await s.ask("Which card network first?");
+    // 25 more open tasks inside its folder, each sharing a long path: 21 overlaps listed, of some
+    // 450 characters each, far past 8,000.
+    await testDb.db.insert(task).values(
+      Array.from({ length: 25 }, (_, n) => ({
+        workspaceId: s.project.workspaceId,
+        projectId: s.project.projectId,
+        title: `Neighbour ${n + 1}`,
+        description: "",
+        acceptanceCriteria: "",
+        owns: [`src/checkout/${String(n + 1).padStart(2, "0")}-${"p".repeat(360)}.ts`],
+        createdAt: new Date(Date.parse(FAKE_NOW) + (n + 1) * 1000),
+        updatedAt: new Date(Date.parse(FAKE_NOW) + (n + 1) * 1000),
+      })),
+    );
+    const detail = await getTask(s.host, s.ctx, s.task.id);
+    expect(detail.overlaps).toHaveLength(20);
+    expect(detail.overlapsNotShown).toBe(6);
+
+    const briefing = await getBriefing(s.host, s.codex.actor, s.task.id);
+    expect(JSON.stringify(briefing).length).toBeLessThanOrEqual(BRIEFING_LIMIT);
+    const shared = briefing.overlaps.length;
+    expect(shared).toBeGreaterThan(0);
+    expect(shared).toBeLessThan(20);
+    // The oldest kept, the open question too.
+    expect(briefing.overlaps).toEqual(detail.overlaps.slice(0, shared));
+    expect(briefing.openQuestions).toHaveLength(1);
+    expect(briefing.omitted).toEqual({
+      contextEntries: 0,
+      answeredQuestions: 0,
+      openQuestions: 0,
+      overlaps: 26 - shared,
+    });
+    const oneMore = { ...briefing, overlaps: detail.overlaps.slice(0, shared + 1) };
+    expect(JSON.stringify(oneMore).length).toBeGreaterThan(BRIEFING_LIMIT);
   });
 
   it("briefs a task with 50 open and 500 answered questions quickly, within 8,000 characters", async () => {
@@ -222,12 +272,14 @@ describe("a task's briefing", () => {
     const took = performance.now() - started;
     expect(took).toBeLessThan(200);
     expect(JSON.stringify(briefing).length).toBeLessThanOrEqual(BRIEFING_LIMIT);
-    // No context and no answer fits beside the open questions: those are cut from the newest.
+    // No context, no answer and no overlap fits beside the open questions: those are cut from the
+    // newest.
     const cut = briefing.omitted.openQuestions;
     expect(briefing.omitted).toEqual({
       contextEntries: 40,
       answeredQuestions: 500,
       openQuestions: cut,
+      overlaps: 1,
     });
     expect(briefing.answeredQuestions).toEqual([]);
     expect(briefing.openQuestions.map((q) => q.text.split(":")[0])).toEqual(
@@ -280,9 +332,10 @@ describe("a task's briefing", () => {
       const open = detail.questions.filter((q) => q.status === "OPEN");
       const answered = detail.questions.filter((q) => q.status === "ANSWERED");
       const all = context.instructions.length + context.facts.length;
-      const fits = (kept: number, answers: number, asked: number) =>
+      const fits = (kept: number, answers: number, asked: number, shared: number) =>
         JSON.stringify({
           ...briefing,
+          overlaps: detail.overlaps.slice(0, shared),
           openQuestions: open.slice(0, asked),
           answeredQuestions: answered.slice(answered.length - answers),
           context: {
@@ -293,19 +346,23 @@ describe("a task's briefing", () => {
             contextEntries: all - kept,
             answeredQuestions: detail.answeredNotShown + answered.length - answers,
             openQuestions: open.length - asked,
+            overlaps: detail.overlapsNotShown + detail.overlaps.length - shared,
           },
         }).length <= BRIEFING_LIMIT;
       let kept = all;
       let answers = answered.length;
       let asked = open.length;
-      while (kept > 0 && !fits(kept, answers, asked)) kept--;
-      while (answers > 0 && !fits(kept, answers, asked)) answers--;
-      while (asked > 0 && !fits(kept, answers, asked)) asked--;
+      let shared = detail.overlaps.length;
+      while (kept > 0 && !fits(kept, answers, asked, shared)) kept--;
+      while (answers > 0 && !fits(kept, answers, asked, shared)) answers--;
+      while (shared > 0 && !fits(kept, answers, asked, shared)) shared--;
+      while (asked > 0 && !fits(kept, answers, asked, shared)) asked--;
 
       expect(briefing.omitted).toEqual({
         contextEntries: all - kept,
         answeredQuestions: detail.answeredNotShown + answered.length - answers,
         openQuestions: open.length - asked,
+        overlaps: detail.overlapsNotShown + detail.overlaps.length - shared,
       });
       expect(JSON.stringify(briefing).length).toBeLessThanOrEqual(BRIEFING_LIMIT);
     },
@@ -340,6 +397,7 @@ describe("a task's briefing", () => {
       contextEntries: 0,
       answeredQuestions: 60 - kept,
       openQuestions: 0,
+      overlaps: 0,
     });
   });
 

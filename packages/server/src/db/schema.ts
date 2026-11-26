@@ -3,13 +3,15 @@
  * (workspaces, projects, users) as plain uuids, with no foreign key into the host's tables: the
  * host's removal hooks delete DevSync's rows. Every table has `workspace_id` and `project_id`, and
  * every query filters by them. drizzle-kit reads this file (drizzle.config.ts), so it imports
- * nothing but Drizzle.
+ * nothing but Drizzle. Each text column holding one of a closed list of values has a `CHECK` of
+ * that list, so the database refuses a value no schema knows, whoever writes it.
  */
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
   bigint,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -52,6 +54,39 @@ export const runStatuses = [
   "REJECTED",
   "CANCELLED",
 ] as const;
+
+/**
+ * Why a run failed (`RunFailure` in `@devsync/schemas`): the workflow's reasons, GitHub's refusals
+ * to start it, and DevSync's own.
+ */
+export const runFailures = [
+  "no-key",
+  "no-credits",
+  "agent-failed",
+  "budget",
+  "turns",
+  "no-changes",
+  "patch-did-not-apply",
+  "patch-touches-workflows",
+  "push-failed",
+  "pull-request-not-allowed",
+  "not-found",
+  "unavailable",
+  "workflow-missing",
+  "workflow-disabled",
+  "forbidden",
+  "bad-result",
+  "no-result",
+  "cancelled",
+] as const;
+
+/** Who paid for a run (`RunProvider` in `@devsync/schemas`). */
+export const runProviders = ["anthropic", "openrouter", "openai", "opscrew"] as const;
+
+/** `column` holds one of `values` (or null, when the column takes null): a `CHECK`'s condition. */
+function oneOf(column: AnyPgColumn, values: readonly string[]) {
+  return sql`${column} in (${sql.raw(values.map((value) => `'${value}'`).join(", "))})`;
+}
 
 /** A `timestamptz` column, read and written as `Date`. */
 function tstz(name: string) {
@@ -122,6 +157,7 @@ export const task = devsyncSchema.table(
     index().on(t.projectId, t.assigneeUserId),
     unique().on(t.projectId, t.creatorAgentId, t.createRequestId),
     unique().on(t.projectId, t.creatorUserId, t.createRequestId),
+    check("task_status_check", oneOf(t.status, taskStatuses)),
   ],
 );
 
@@ -224,9 +260,14 @@ export const agent = devsyncSchema.table(
     revokedAt: tstz("revoked_at"),
     lastSeenAt: tstz("last_seen_at"),
     registeredByUserId: uuid("registered_by_user_id"),
+    /**
+     * When, in milliseconds since the epoch, the agent created or edited a task within the last
+     * minute: those count against its 20 signals a minute, beside its signals, questions and answers.
+     */
+    taskWrites: jsonb("task_writes").$type<number[]>().notNull().default(sql`'[]'::jsonb`),
     createdAt: createdAt(),
   },
-  (t) => [index().on(t.projectId)],
+  (t) => [index().on(t.projectId), check("agent_kind_check", oneOf(t.kind, agentKinds))],
 );
 
 /** A message in an agent's inbox: from a member, a peer agent or a GitHub delivery. */
@@ -312,7 +353,10 @@ export const pullRequest = devsyncSchema.table(
     sourceUpdatedAt: tstz("source_updated_at").notNull(),
     createdAt: createdAt(),
   },
-  (t) => [unique().on(t.projectId, t.number)],
+  (t) => [
+    unique().on(t.projectId, t.number),
+    check("pull_request_state_check", oneOf(t.state, pullRequestStates)),
+  ],
 );
 
 /** A GitHub delivery already applied to the project, so a redelivery changes nothing. */
@@ -371,6 +415,9 @@ export const run = devsyncSchema.table(
       .on(t.taskId)
       .where(sql`${t.status} in ('REQUESTED', 'QUEUED', 'RUNNING')`),
     unique().on(t.projectId, t.githubRunId),
+    check("run_status_check", oneOf(t.status, runStatuses)),
+    check("run_failure_check", oneOf(t.failure, runFailures)),
+    check("run_provider_check", oneOf(t.provider, runProviders)),
   ],
 );
 

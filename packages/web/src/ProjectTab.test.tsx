@@ -19,7 +19,7 @@ import {
 afterEach(cleanup);
 
 const base: Record<string, Reply> = {
-  "GET /tasks": { body: { tasks } },
+  "GET /tasks": { body: { tasks, nextCursor: null } },
   "GET /members": { body: { members } },
   "GET /agents": { body: { agents: [agent] } },
   "GET /pull-requests": { body: { pullRequests } },
@@ -48,11 +48,31 @@ describe("ProjectTab: the task list", () => {
 
   it("offers the first task on a project without any", async () => {
     renderWith(<ProjectTab selectedTaskId={null} onSelectTask={() => {}} />, {
-      routes: { ...base, "GET /tasks": { body: { tasks: [] } } },
+      routes: { ...base, "GET /tasks": { body: { tasks: [], nextCursor: null } } },
     });
     const empty = (await screen.findByText("No tasks yet")).parentElement as HTMLElement;
     expect(screen.getAllByRole("button", { name: "New task" })).toHaveLength(1);
     expect(within(empty).getByRole("button", { name: "New task" })).toBeTruthy();
+  });
+
+  it("reads more tasks a page at a time, from the last page's cursor", async () => {
+    const older = task(20, { title: "Older work", status: "READY" });
+    const { sent } = renderWith(<ProjectTab selectedTaskId={null} onSelectTask={() => {}} />, {
+      routes: {
+        ...base,
+        "GET /tasks": { body: { tasks, nextCursor: "page-2" } },
+        "GET /tasks?cursor=page-2": { body: { tasks: [older, tasks[0]], nextCursor: null } },
+      },
+    });
+    const more = await screen.findByRole("button", { name: "Show more tasks" });
+    expect(screen.queryByText("Older work")).toBeNull();
+    await userEvent.click(more);
+    expect(await screen.findByText("Older work")).toBeTruthy();
+    expect(sent.map((s) => s.path)).toContain("/tasks?cursor=page-2");
+    // A task on both pages shows once; the last page offers no more.
+    const ready = screen.getByRole("region", { name: "Ready" });
+    expect(within(ready).getAllByRole("button")).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: "Show more tasks" })).toBeNull();
   });
 
   it("offers a new task once, in the card's header, on a project with tasks", async () => {

@@ -91,7 +91,8 @@ async function emitMerged(
     )
     .orderBy(asc(task.createdAt), asc(task.id));
   for (const { id } of linked) {
-    await outbox.emit(host, tx, { workspaceId, projectId, taskId: id, facts: { merged: number } });
+    const merged = { workspaceId, projectId, taskId: id, actor: null, facts: { merged: number } };
+    await outbox.emit(host, tx, merged);
   }
 }
 
@@ -156,12 +157,19 @@ async function upsertPullRequest(
 
 /**
  * `devsync.github`: applies one GitHub fact to the project, once per delivery. A project that is
- * gone or has DevSync off gets nothing. Signals go to the project's agents that are neither
- * revoked nor expired, each carrying the delivery's id, with no sender.
+ * gone or has DevSync off gets nothing, and so does a job naming another workspace than the
+ * project's (the host's fault, logged by its ids). Signals go to the project's agents that are
+ * neither revoked nor expired, each carrying the delivery's id, with no sender.
  */
 export async function applyGithubFact(host: DevSyncHost, job: GithubJob): Promise<void> {
   const project = await host.project(job.projectId);
   if (!project) return;
+  if (project.workspaceId !== job.workspaceId) {
+    host.log.error(
+      `DevSync's devsync.github job names workspace ${job.workspaceId}, not project ${project.projectId}'s, so its fact was ignored.`,
+    );
+    return;
+  }
   const { fact } = job;
   if (fact.kind === "workflow_run") return applyWorkflowRun(host, project, fact);
   const now = host.clock.now();
@@ -223,7 +231,12 @@ export async function listPullRequests(
   const rows = await host.db
     .select()
     .from(pullRequest)
-    .where(eq(pullRequest.projectId, ctx.project.projectId))
+    .where(
+      and(
+        eq(pullRequest.projectId, ctx.project.projectId),
+        eq(pullRequest.workspaceId, ctx.project.workspaceId),
+      ),
+    )
     .orderBy(desc(pullRequest.sourceUpdatedAt), desc(pullRequest.number))
     .limit(PAGE);
   return { pullRequests: rows.map(toPullRequest) };

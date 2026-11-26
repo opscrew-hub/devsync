@@ -5,8 +5,10 @@
  * creator's `requestId` idempotency, an agent's requirements through the host's redactor, and an
  * outbox event per change recorded (with its host events) in its transaction. A task's fields
  * beyond its requirements (its paths, the tasks it waits for, its labels and branch) change with no
- * revision; the tasks it waits for are the project's, never itself, and never in a circle. Every
- * query filters by the project.
+ * revision; the tasks it waits for are the project's, never itself, and never in a circle. A task
+ * holds at most 200 revisions and 500 comments, its detail lists the newest of its histories with a
+ * count of the rest, the lists answer pages of 100 at most, and an agent's creates and edits count
+ * against its 20 a minute. Every query filters by the project.
  */
 import {
   AgentTaskInput,
@@ -22,6 +24,7 @@ import {
   type Revision,
   RunUsage,
   STATUS_LABEL,
+  TASK_PAGE,
   type Task,
   type TaskDetail,
   TaskFields,
@@ -32,6 +35,7 @@ import {
   type TaskSummary,
   TaskUpdate,
   type TimelineEvent,
+  Timestamp,
   TRANSITIONS,
   type UsageTotal,
   type WorkspaceTaskList,
@@ -40,11 +44,13 @@ import {
 import {
   and,
   asc,
+  count,
   desc,
   eq,
   inArray,
   isNotNull,
   isNull,
+  lt,
   ne,
   notInArray,
   or,
@@ -76,6 +82,7 @@ import {
 } from "../host";
 import {
   authorOf,
+  countTaskWrite,
   hostFinding,
   lockAgentRow,
   type Names,
@@ -100,6 +107,16 @@ export type TaskReader = TaskActor | Pick<TaskActor, "project">;
 const TASK_CHANGED = "This task changed. Reload it and try again.";
 /** How many of a task's latest events its timeline shows. */
 const TIMELINE_LIMIT = 100;
+/** How many of a task's newest requirements revisions its detail lists. */
+const REVISIONS_LISTED = 50;
+/** How many of a task's newest comments its detail lists. */
+const COMMENTS_LISTED = 100;
+/** How many of the open tasks sharing a task's paths its detail lists: the oldest. */
+export const OVERLAPS_LISTED = 20;
+/** The most requirements revisions a task holds: a change past them is refused. */
+const REVISION_LIMIT = 200;
+/** The most comments a task holds: one more is refused. */
+const COMMENT_LIMIT = 500;
 
 /** A member's task: `POST /tasks`' body, or `create_task`'s with its `requestId`. */
 const MemberTaskInput = TaskInput.extend({ requestId: Id.optional() });
@@ -264,6 +281,36 @@ export function selectTasks(db: DevSyncDb, where: SQL | undefined) {
     .orderBy(desc(task.updatedAt), desc(task.id));
 }
 
+/**
+ * A page's cursor: its last task's `updatedAt` and id, base64url, which the next page starts after
+ * in `selectTasks`' order.
+ */
+function cursorOf(row: TaskRow): string {
+  return Buffer.from(`${row.updatedAt.toISOString()}_${row.id}`).toString("base64url");
+}
+
+/** The tasks after `cursor` in `selectTasks`' order; one DevSync didn't give is refused. */
+function afterCursor(cursor: string | undefined): SQL | undefined {
+  if (cursor === undefined) return undefined;
+  const [at = "", id = "", ...rest] = Buffer.from(cursor, "base64url").toString("utf8").split("_");
+  if (rest.length > 0 || !Timestamp.safeParse(at).success || !Id.safeParse(id).success) {
+    throw new DevSyncError(
+      "invalid",
+      "This cursor isn't one DevSync gave. Read the list again from its first page.",
+      ["cursor"],
+    );
+  }
+  const when = new Date(at);
+  return or(lt(task.updatedAt, when), and(eq(task.updatedAt, when), lt(task.id, id)));
+}
+
+/** A page of `limit` of `rows` (read with one more), and the next page's cursor, or null. */
+function pageOf(rows: SelectedTask[], limit: number) {
+  const shown = rows.slice(0, limit);
+  const last = shown.at(-1);
+  return { shown, nextCursor: rows.length > limit && last ? cursorOf(last.task) : null };
+}
+
 async function loadTask(db: DevSyncDb, project: ProjectRef, taskId: string): Promise<Task> {
   const [row] = await selectTasks(db, taskIn(project, taskId));
   if (!row) throw noSuchTask();
@@ -319,15 +366,16 @@ function assigneeFilter(
 }
 
 /**
- * `GET /tasks` and `list_tasks`: the project's tasks, most recently updated first, by status and
- * assignee (`me` for a member only).
+ * `GET /tasks` and `list_tasks`: a page of the project's tasks (`limit`, 100 at most and by
+ * default), most recently updated first, by status and assignee (`me` for a member only), from a
+ * page's `nextCursor`.
  */
 export async function listTasks(
   host: DevSyncHost,
   actor: TaskReader,
   query: TaskListQuery = {},
 ): Promise<TaskList> {
-  const { status, assignee } = parse(TaskListQuery, query);
+  const { status, assignee, limit = TASK_PAGE, cursor } = parse(TaskListQuery, query);
   const rows = await selectTasks(
     host.db,
     and(
@@ -335,21 +383,30 @@ export async function listTasks(
       eq(task.workspaceId, actor.project.workspaceId),
       status ? eq(task.status, status) : undefined,
       assigneeFilter(actor, assignee),
+      afterCursor(cursor),
     ),
-  );
-  return { tasks: rows.map(toTask) };
+  ).limit(limit + 1);
+  const { shown, nextCursor } = pageOf(rows, limit);
+  return { tasks: shown.map(toTask), nextCursor };
 }
 
 /**
- * The workspace's `GET /tasks`: the tasks of its projects with DevSync on (or of one of them),
- * by status (the open ones without it) and assignee, each with its project's name.
+ * The workspace's `GET /tasks`: a page of the tasks of its projects with DevSync on (or of one of
+ * them), by status (the open ones without it) and assignee, each with its project's name, paged as
+ * `listTasks`.
  */
 export async function listWorkspaceTasks(
   host: DevSyncHost,
   ctx: WorkspaceContext,
   query: WorkspaceTaskListQuery = {},
 ): Promise<WorkspaceTaskList> {
-  const { project, status, assignee } = parse(WorkspaceTaskListQuery, query);
+  const {
+    project,
+    status,
+    assignee,
+    limit = TASK_PAGE,
+    cursor,
+  } = parse(WorkspaceTaskListQuery, query);
   const projects = ctx.projects.filter(
     (p) => p.workspaceId === ctx.workspaceId && (!project || p.projectId === project),
   );
@@ -359,7 +416,7 @@ export async function listWorkspaceTasks(
       "There's no such project with DevSync on in this workspace. Pick one from the list.",
     );
   }
-  if (projects.length === 0) return { tasks: [] };
+  if (projects.length === 0) return { tasks: [], nextCursor: null };
   const names = new Map(projects.map((p) => [p.projectId, p.fullName]));
   const rows = await selectTasks(
     host.db,
@@ -368,13 +425,16 @@ export async function listWorkspaceTasks(
       inArray(task.projectId, [...names.keys()]),
       status ? eq(task.status, status) : notInArray(task.status, ["DONE", "CANCELLED"]),
       assigneeFilter(ctx, assignee),
+      afterCursor(cursor),
     ),
-  );
+  ).limit(limit + 1);
+  const { shown, nextCursor } = pageOf(rows, limit);
   return {
-    tasks: rows.map((row) => ({
+    tasks: shown.map((row) => ({
       ...toTask(row),
       projectName: names.get(row.task.projectId) ?? "",
     })),
+    nextCursor,
   };
 }
 
@@ -524,11 +584,12 @@ async function usageOf(
 }
 
 /**
- * `GET /tasks/:taskId` and `get_task`: the task with its requirements, creator, revisions and
- * comments (newest first), its questions (every open one, then its 50 most recently asked answered
- * ones, with how many older ones it leaves out), its timeline (its latest outbox events, oldest
- * first), its linked pull request, the tasks it waits for, the open tasks whose paths overlap its
- * own, and its usage.
+ * `GET /tasks/:taskId` and `get_task`: the task with its requirements, creator, 50 newest
+ * revisions and 100 newest comments (newest first), its questions (every open one, then its 50 most
+ * recently asked answered ones), its timeline (its 100 latest outbox events, oldest first), its
+ * linked pull request, the tasks it waits for, the 20 oldest open tasks whose paths overlap its own,
+ * and its usage; with how many older answered questions, revisions, comments and events, and later
+ * overlaps, it leaves out, so its size is bounded whatever the task's history.
  * It depends on the project only, so every reader reads the same.
  */
 export async function getTask(
@@ -540,41 +601,73 @@ export async function getTask(
   const [found] = await selectTasks(host.db, taskIn(project, taskIdOf(taskId)));
   if (!found) throw noSuchTask();
   const row = found.task;
-  const [revisions, comments, events, pull, members, dependencies, overlaps, usage, questions] =
-    await Promise.all([
-      host.db
-        .select()
-        .from(taskRevision)
-        .where(and(eq(taskRevision.taskId, row.id), eq(taskRevision.projectId, project.projectId)))
-        .orderBy(desc(taskRevision.number)),
-      host.db
-        .select()
-        .from(taskComment)
-        .where(and(eq(taskComment.taskId, row.id), eq(taskComment.projectId, project.projectId)))
-        .orderBy(desc(taskComment.createdAt), desc(taskComment.id)),
-      host.db
-        .select()
-        .from(outboxEvent)
-        .where(and(eq(outboxEvent.taskId, row.id), eq(outboxEvent.projectId, project.projectId)))
-        .orderBy(desc(outboxEvent.createdAt), desc(outboxEvent.id))
-        .limit(TIMELINE_LIMIT),
-      row.pullRequestNumber === null
-        ? Promise.resolve([])
-        : host.db
-            .select()
-            .from(pullRequest)
-            .where(
-              and(
-                eq(pullRequest.projectId, project.projectId),
-                eq(pullRequest.number, row.pullRequestNumber),
-              ),
+  const ofRevisions = and(
+    eq(taskRevision.taskId, row.id),
+    eq(taskRevision.projectId, project.projectId),
+  );
+  const ofComments = and(
+    eq(taskComment.taskId, row.id),
+    eq(taskComment.projectId, project.projectId),
+  );
+  const ofEvents = and(
+    eq(outboxEvent.taskId, row.id),
+    eq(outboxEvent.projectId, project.projectId),
+  );
+  const [
+    revisions,
+    comments,
+    events,
+    pull,
+    members,
+    dependencies,
+    overlaps,
+    usage,
+    questions,
+    counts,
+  ] = await Promise.all([
+    host.db
+      .select()
+      .from(taskRevision)
+      .where(ofRevisions)
+      .orderBy(desc(taskRevision.number))
+      .limit(REVISIONS_LISTED),
+    host.db
+      .select()
+      .from(taskComment)
+      .where(ofComments)
+      .orderBy(desc(taskComment.createdAt), desc(taskComment.id))
+      .limit(COMMENTS_LISTED),
+    host.db
+      .select()
+      .from(outboxEvent)
+      .where(ofEvents)
+      .orderBy(desc(outboxEvent.createdAt), desc(outboxEvent.id))
+      .limit(TIMELINE_LIMIT),
+    row.pullRequestNumber === null
+      ? Promise.resolve([])
+      : host.db
+          .select()
+          .from(pullRequest)
+          .where(
+            and(
+              eq(pullRequest.projectId, project.projectId),
+              eq(pullRequest.number, row.pullRequestNumber),
             ),
-      host.members(project.workspaceId),
-      dependenciesOf(host.db, project, row.id),
-      overlapsOf(host.db, project, row),
-      usageOf(host.db, project, row.id),
-      taskQuestions(host.db, project, row.id),
-    ]);
+          ),
+    host.members(project.workspaceId),
+    dependenciesOf(host.db, project, row.id),
+    overlapsOf(host.db, project, row),
+    usageOf(host.db, project, row.id),
+    taskQuestions(host.db, project, row.id),
+    Promise.all([
+      host.db.select({ n: count() }).from(taskRevision).where(ofRevisions),
+      host.db.select({ n: count() }).from(taskComment).where(ofComments),
+      host.db.select({ n: count() }).from(outboxEvent).where(ofEvents),
+    ]),
+  ]);
+  const [[revisionCount], [commentCount], [eventCount]] = counts;
+  const rest = (total: { n: number } | undefined, shown: number) =>
+    Math.max(0, (total?.n ?? 0) - shown);
 
   const agentIds = new Set<string>();
   for (const id of [
@@ -620,8 +713,11 @@ export async function getTask(
         createdAt: c.createdAt.toISOString(),
       }),
     ),
+    revisionsNotShown: rest(revisionCount, revisions.length),
+    commentsNotShown: rest(commentCount, comments.length),
     questions: questions.rows.map((q) => toQuestion(q, names)),
     answeredNotShown: questions.answeredNotShown,
+    timelineNotShown: rest(eventCount, events.length),
     timeline: events.reverse().map((e): TimelineEvent => {
       const payload = (e.payload ?? {}) as Record<string, unknown>;
       return {
@@ -638,7 +734,8 @@ export async function getTask(
     }),
     pullRequest: pull[0] ? toPullRequest(pull[0]) : null,
     dependencies,
-    overlaps,
+    overlaps: overlaps.slice(0, OVERLAPS_LISTED),
+    overlapsNotShown: Math.max(0, overlaps.length - OVERLAPS_LISTED),
     usage,
   };
 }
@@ -676,7 +773,7 @@ async function projectTaskTitles(
  * two edits made at once can't close a circle that neither sees alone.
  */
 async function lockDependencies(tx: DevSyncDb, project: ProjectRef): Promise<void> {
-  const key = `devsync.task_dependency:${project.projectId}`;
+  const key = `devsync.task_dependency:${project.workspaceId}:${project.projectId}`;
   await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
 }
 
@@ -807,10 +904,11 @@ export async function createTask(
   const creator = actorIds(actor);
 
   const result = await host.db.transaction(async (tx) => {
+    // One create per agent at a time: a retry finds what the first attempt saved, and the count of
+    // its 20 a minute below can't be raced. A member's two at once under one request id: the
+    // database keeps the first, and the second fails.
+    if (agentActor) await lockAgentRow(tx, agentActor);
     if (requestId) {
-      // One create per agent at a time, so a retry finds what the first attempt saved. A member's
-      // two at once under one request id: the database keeps the first, and the second fails.
-      if (agentActor) await lockAgentRow(tx, agentActor);
       const [existing] = await selectTasks(
         tx,
         and(
@@ -841,6 +939,9 @@ export async function createTask(
         return { task: toTask(existing), created: false };
       }
     }
+    // An agent's new task counts against its 20 a minute, its row locked above; its retry above
+    // doesn't count.
+    if (agentActor) await countTaskWrite(tx, agentActor, at);
     // One open task per finding (R-10); two creates at the same instant may both pass, accepted.
     const linked = finding ? await linkedTask(tx, project, finding) : null;
     if (linked) {
@@ -939,8 +1040,9 @@ async function claimHolds(tx: DevSyncDb, row: TaskRow, now: Date): Promise<boole
  * `PATCH /tasks/:taskId` (a member, `TaskUpdate`) and `update_task` (an agent, its fields without
  * `taskId`): checks the version read, the lifecycle and a claim's hold on the status; keeps a new
  * revision when the requirements change, and none for its paths, the tasks it waits for, its labels
- * or its branch. An agent edits only the tasks it created, moves them to Backlog or Ready only, and
- * never assigns them. An assignee is a member of the workspace.
+ * or its branch. A Done or Cancelled task's requirements no longer change (its other fields may). An
+ * agent edits only the tasks it created, moves them to Backlog or Ready only, and never assigns
+ * them. An assignee is a member of the workspace.
  */
 export async function updateTask(
   host: DevSyncHost,
@@ -973,6 +1075,11 @@ export async function updateTask(
   const at = host.clock.now();
 
   const result = await host.db.transaction(async (tx) => {
+    // An agent's edit counts against its 20 a minute, its row locked before the task's.
+    if (agentActor) {
+      await lockAgentRow(tx, agentActor);
+      await countTaskWrite(tx, agentActor, at);
+    }
     // `no key update`, not `update`: a dependency on this task written meanwhile under
     // `lockDependencies` locks it `key share`, and mustn't wait for this edit.
     const [current] = await tx.select().from(task).where(taskIn(project, id)).for("no key update");
@@ -1011,6 +1118,19 @@ export async function updateTask(
       fields.title !== current.title ||
       fields.description !== current.description ||
       fields.acceptanceCriteria !== current.acceptanceCriteria;
+    // What was asked of a closed task stays the record of it: its requirements no longer change.
+    if (revised && CLOSED.includes(current.status)) {
+      throw new DevSyncError(
+        "conflict",
+        `This task is ${STATUS_LABEL[current.status]}, which is final: its requirements stay as they are. Create a new task for further work.`,
+      );
+    }
+    if (revised && current.revision >= REVISION_LIMIT) {
+      throw new DevSyncError(
+        "conflict",
+        `This task has ${REVISION_LIMIT} revisions of its requirements, the most a task keeps. Create a new task for further changes.`,
+      );
+    }
 
     const [saved] = await tx
       .update(task)
@@ -1072,6 +1192,9 @@ export async function updateTask(
         facts: {
           status: { from: current.status, to: saved.status },
           ...(released ? { released } : {}),
+          ...(saved.assigneeUserId !== current.assigneeUserId
+            ? { assigned: saved.assigneeUserId }
+            : {}),
         },
       });
     }
@@ -1081,7 +1204,10 @@ export async function updateTask(
   return result.task;
 }
 
-/** `POST /tasks/:taskId/comments`: a member's comment, newest first on the task. */
+/**
+ * `POST /tasks/:taskId/comments`: a member's comment, newest first on the task, which holds 500 at
+ * most: they are counted with the task's row locked, so two at once can't both take the last place.
+ */
 export async function commentOnTask(
   host: DevSyncHost,
   ctx: ProjectContext,
@@ -1092,20 +1218,47 @@ export async function commentOnTask(
   const { body } = parse(CommentInput, input);
   const { project, member } = ctx;
   const id = taskIdOf(taskId);
-  const [found] = await host.db.select({ id: task.id }).from(task).where(taskIn(project, id));
-  if (!found) throw noSuchTask();
-  const [row] = await host.db
-    .insert(taskComment)
-    .values({
-      workspaceId: project.workspaceId,
-      projectId: project.projectId,
-      taskId: id,
-      authorUserId: member.userId,
-      body,
-      createdAt: host.clock.now(),
-    })
-    .returning();
-  if (!row) throw new Error("The comment wasn't saved.");
+  const row = await host.db.transaction(async (tx) => {
+    const [found] = await tx
+      .select({ id: task.id })
+      .from(task)
+      .where(taskIn(project, id))
+      .for("no key update");
+    if (!found) throw noSuchTask();
+    const [held] = await tx
+      .select({ n: count() })
+      .from(taskComment)
+      .where(and(eq(taskComment.taskId, id), eq(taskComment.projectId, project.projectId)));
+    if ((held?.n ?? 0) >= COMMENT_LIMIT) {
+      throw new DevSyncError(
+        "conflict",
+        `This task has ${COMMENT_LIMIT} comments, the most a task keeps. Go on in a new task.`,
+      );
+    }
+    const [saved] = await tx
+      .insert(taskComment)
+      .values({
+        workspaceId: project.workspaceId,
+        projectId: project.projectId,
+        taskId: id,
+        authorUserId: member.userId,
+        body,
+        createdAt: host.clock.now(),
+      })
+      .returning();
+    if (!saved) throw new Error("The comment wasn't saved.");
+    await host.audit(
+      tx,
+      { userId: member.userId },
+      {
+        workspaceId: project.workspaceId,
+        projectId: project.projectId,
+        action: "devsync.task.comment_added",
+        detail: { taskId: id, commentId: saved.id },
+      },
+    );
+    return saved;
+  });
   return {
     id: row.id,
     author: { kind: "member", userId: member.userId, name: member.name },
@@ -1187,6 +1340,13 @@ export async function writePullRequestLink(
   });
   if (number !== null) {
     const { workspaceId, projectId } = project;
-    await outbox.emit(host, tx, { workspaceId, projectId, taskId, facts: { linked: number } });
+    const by = actor === "host" ? null : actor;
+    await outbox.emit(host, tx, {
+      workspaceId,
+      projectId,
+      taskId,
+      actor: by,
+      facts: { linked: number },
+    });
   }
 }

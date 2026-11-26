@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Task, TaskDetail, WorkspaceTaskList } from "@devsync/schemas";
-import { and, eq } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { agent, outboxEvent, pullRequest, task, taskRevision } from "../db";
+import { agent, outboxEvent, pullRequest, task, taskComment, taskRevision } from "../db";
 import type { AgentActor, Member, ProjectContext, ProjectRef } from "../host";
 import { refusal, sampleFinding } from "../test/helpers";
 import { createTestDb, type FakeHost, fakeHost, fakeToken, type TestDb } from "../testing";
@@ -667,6 +667,53 @@ describe("updateTask", () => {
     expect(final.message).toBe("This task is Cancelled, which is final: it can't move to Ready.");
   });
 
+  it("keeps a Done or Cancelled task's requirements as they are, a member's and an agent's edit", async () => {
+    const builder = await seedAgent(projectA);
+    const cancelled = await createTask(host, builder, {
+      ...fields,
+      title: "Delivered",
+      requestId: randomUUID(),
+    });
+    await updateTask(host, as(owner), cancelled.id, { version: 1, status: "CANCELLED" });
+    const changes = [
+      { title: "Renamed" },
+      { description: "Rewritten after the work was closed" },
+      { acceptanceCriteria: "Something else" },
+    ];
+    for (const change of changes) {
+      const error = await refusal(
+        updateTask(host, as(owner), cancelled.id, { version: 2, ...change }),
+        "conflict",
+      );
+      expect(error.message).toBe(
+        "This task is Cancelled, which is final: its requirements stay as they are. Create a new task for further work.",
+      );
+      await refusal(updateTask(host, builder, cancelled.id, { version: 2, ...change }), "conflict");
+    }
+
+    // Done too, reached from Review as a member marks it.
+    const done = await createTask(host, as(owner), fields);
+    await testDb.db.update(task).set({ status: "REVIEW" }).where(eq(task.id, done.id));
+    await updateTask(host, as(owner), done.id, { version: 1, status: "DONE" });
+    const error = await refusal(
+      updateTask(host, as(admin), done.id, { version: 2, title: "Renamed" }),
+      "conflict",
+    );
+    expect(error.message).toMatch(/^This task is Done, which is final/);
+
+    // The same requirements, the task's fields and its assignee may still be given.
+    const kept = await updateTask(host, as(owner), done.id, {
+      version: 2,
+      ...fields,
+      labels: ["shipped"],
+      assigneeUserId: admin.userId,
+    });
+    expect(kept).toMatchObject({ status: "DONE", revision: 1, version: 3, labels: ["shipped"] });
+    const detail = await getTask(host, as(owner), cancelled.id);
+    expect(detail).toMatchObject({ status: "CANCELLED", revision: 1, version: 2 });
+    expect(detail.revisions).toHaveLength(1);
+  });
+
   it("changes a claimed task's status only by its claim or by cancelling it, which ends the claim", async () => {
     const builder = await seedAgent(projectA);
     const created = await createTask(host, as(owner), fields);
@@ -915,6 +962,7 @@ describe("linkPullRequest", () => {
   it("links a pull request seen on the project, audited, and unlinks it", async () => {
     await seedPullRequest(projectA, 7);
     const created = await createTask(host, as(owner), fields);
+    host.audits.length = 0; // its creation's entry: outbox.test.ts
     const linked = await linkPullRequest(host, as(developer), created.id, { number: 7 });
     expect(linked).toMatchObject({ pullRequestNumber: 7, version: 2 });
     expect(host.audits).toEqual([
@@ -944,6 +992,7 @@ describe("linkPullRequest", () => {
   it("refuses a pull request not seen on this project, and another project's task", async () => {
     await seedPullRequest(projectB, 7);
     const created = await createTask(host, as(owner), fields);
+    host.audits.length = 0; // its creation's entry: outbox.test.ts
     const error = await refusal(linkPullRequest(host, as(owner), created.id, { number: 7 }));
     expect(error.code).toBe("not-found");
     expect(error.message).toBe(
@@ -967,4 +1016,230 @@ it("never lets a workspace's project reach another workspace's task", async () =
   const created = await createTask(host, as(owner), fields);
   expect((await refusal(getTask(host, as(owner, foreign), created.id))).code).toBe("not-found");
   expect((await listTasks(host, as(owner, foreign))).tasks).toEqual([]);
+});
+
+describe("a task's bounded history", () => {
+  /** A task of project A with `n` revisions, `comments` comments and `extra` more timeline events. */
+  async function longTask(n: number, comments: number, extra: number) {
+    const created = await createTask(host, as(owner), fields);
+    const scope = { workspaceId, projectId: projectA.projectId, taskId: created.id };
+    const at = (i: number) => new Date(clock + (i + 1) * 1000);
+    if (n > 1) {
+      await testDb.db.insert(taskRevision).values(
+        Array.from({ length: n - 1 }, (_, i) => ({
+          ...scope,
+          number: i + 2,
+          ...fields,
+          title: `Revision ${i + 2}`,
+          authorUserId: owner.userId,
+          createdAt: at(i),
+        })),
+      );
+      await testDb.db.update(task).set({ revision: n }).where(eq(task.id, created.id));
+    }
+    if (comments > 0) {
+      await testDb.db.insert(taskComment).values(
+        Array.from({ length: comments }, (_, i) => ({
+          ...scope,
+          authorUserId: owner.userId,
+          body: `Comment ${i + 1}`,
+          createdAt: at(i),
+        })),
+      );
+    }
+    if (extra > 0) {
+      await testDb.db.insert(outboxEvent).values(
+        Array.from({ length: extra }, (_, i) => ({
+          ...scope,
+          actorUserId: owner.userId,
+          kind: "task.updated",
+          payload: { taskId: created.id, message: `Event ${i + 1}` },
+          createdAt: at(i),
+        })),
+      );
+    }
+    return created;
+  }
+
+  it("lists the 50 newest revisions, 100 newest comments and 100 latest events, counting the rest", async () => {
+    const created = await longTask(55, 105, 104);
+    const detail = await getTask(host, as(owner), created.id);
+    expect(TaskDetail.parse(detail)).toEqual(detail);
+    expect(detail.revisions).toHaveLength(50);
+    expect(detail.revisions[0]?.number).toBe(55);
+    expect(detail.revisions.at(-1)?.number).toBe(6);
+    expect(detail.revisionsNotShown).toBe(5);
+    expect(detail.comments).toHaveLength(100);
+    expect(detail.comments[0]?.body).toBe("Comment 105");
+    expect(detail.commentsNotShown).toBe(5);
+    // Its task.created and 104 more: the latest 100, oldest first.
+    expect(detail.timeline).toHaveLength(100);
+    expect(detail.timeline.at(-1)?.message).toBe("Event 104");
+    expect(detail.timelineNotShown).toBe(5);
+
+    const short = await getTask(host, as(owner), (await longTask(1, 0, 0)).id);
+    expect(short).toMatchObject({
+      revisionsNotShown: 0,
+      commentsNotShown: 0,
+      timelineNotShown: 0,
+      overlapsNotShown: 0,
+    });
+  });
+
+  it("lists the 20 oldest of the open tasks sharing its paths, counting the rest", async () => {
+    const created = await createTask(host, as(owner), { ...fields, owns: ["src/"] });
+    await testDb.db.insert(task).values(
+      Array.from({ length: 23 }, (_, i) => ({
+        workspaceId,
+        projectId: projectA.projectId,
+        title: `Neighbour ${i + 1}`,
+        description: "",
+        acceptanceCriteria: "",
+        owns: [`src/part-${i + 1}.ts`],
+        createdAt: new Date(clock + (i + 1) * 1000),
+        updatedAt: new Date(clock + (i + 1) * 1000),
+      })),
+    );
+    const detail = await getTask(host, as(owner), created.id);
+    expect(detail.overlaps).toHaveLength(20);
+    expect(detail.overlaps[0]?.task.title).toBe("Neighbour 1");
+    expect(detail.overlapsNotShown).toBe(3);
+  });
+
+  it("holds at most 200 revisions of a task's requirements, its other fields still changing", async () => {
+    const created = await longTask(199, 0, 0);
+    const v200 = await updateTask(host, as(owner), created.id, { version: 1, title: "The 200th" });
+    expect(v200.revision).toBe(200);
+    const error = await refusal(
+      updateTask(host, as(owner), created.id, { version: v200.version, title: "The 201st" }),
+      "conflict",
+    );
+    expect(error.message).toBe(
+      "This task has 200 revisions of its requirements, the most a task keeps. Create a new task for further changes.",
+    );
+    const moved = await updateTask(host, as(owner), created.id, {
+      version: v200.version,
+      title: "The 200th",
+      status: "READY",
+      labels: ["long"],
+    });
+    expect(moved).toMatchObject({ revision: 200, status: "READY", labels: ["long"] });
+  });
+
+  it("holds at most 500 comments on a task", async () => {
+    const created = await longTask(1, 499, 0);
+    await commentOnTask(host, as(developer), created.id, { body: "The 500th" });
+    const error = await refusal(
+      commentOnTask(host, as(developer), created.id, { body: "The 501st" }),
+      "conflict",
+    );
+    expect(error.message).toBe(
+      "This task has 500 comments, the most a task keeps. Go on in a new task.",
+    );
+    const [counted] = await testDb.db
+      .select({ n: count() })
+      .from(taskComment)
+      .where(eq(taskComment.taskId, created.id));
+    expect(counted?.n).toBe(500);
+  });
+});
+
+describe("the paged task lists", () => {
+  /** `n` Backlog tasks of `project` updated at the same instant, so only their ids order them. */
+  async function manyTasks(n: number, project: ProjectRef = projectA) {
+    const at = new Date(clock);
+    const rows = await testDb.db
+      .insert(task)
+      .values(
+        Array.from({ length: n }, (_, i) => ({
+          workspaceId: project.workspaceId,
+          projectId: project.projectId,
+          title: `Task ${i + 1}`,
+          description: "",
+          acceptanceCriteria: "",
+          creatorUserId: owner.userId,
+          createdAt: at,
+          updatedAt: at,
+        })),
+      )
+      .returning({ id: task.id });
+    return rows.map((row) => row.id);
+  }
+
+  it("answers 100 tasks a page, or `limit`, and each next page from its cursor, none twice", async () => {
+    const ids = await manyTasks(105);
+    tick();
+    const newest = await createTask(host, as(owner), { ...fields, title: "Newest" });
+
+    const first = await listTasks(host, as(owner));
+    expect(first.tasks).toHaveLength(100);
+    expect(first.tasks[0]?.id).toBe(newest.id);
+    expect(first.nextCursor).toEqual(expect.any(String));
+    const rest = await listTasks(host, as(owner), { cursor: first.nextCursor ?? "" });
+    expect(rest.tasks).toHaveLength(6);
+    expect(rest.nextCursor).toBeNull();
+    const seen = [...first.tasks, ...rest.tasks].map((t) => t.id);
+    expect(new Set(seen).size).toBe(106);
+    expect(seen.slice(1)).toEqual([...ids].sort().reverse());
+
+    // Smaller pages, filtered, walk the same order.
+    const walked: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await listTasks(host, as(owner), { status: "BACKLOG", limit: 40, cursor });
+      expect(page.tasks.length).toBeLessThanOrEqual(40);
+      walked.push(...page.tasks.map((t) => t.id));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(walked).toEqual(seen);
+  });
+
+  it("refuses a cursor that isn't one, by its field", async () => {
+    for (const cursor of ["bm90IGEgY3Vyc29y", "x", "not a cursor"]) {
+      const error = await refusal(listTasks(host, as(owner), { cursor }), "invalid");
+      expect(error.fields).toEqual(["cursor"]);
+    }
+    const limit = await refusal(listTasks(host, as(owner), { limit: 101 }), "invalid");
+    expect(limit.fields).toEqual(["limit"]);
+  });
+
+  it("pages the workspace's tasks too", async () => {
+    await manyTasks(3);
+    await manyTasks(2, projectB);
+    const ctx = { workspaceId, member: owner, projects: [projectA, projectB] };
+    const first = await listWorkspaceTasks(host, ctx, { limit: 4 });
+    expect(first.tasks).toHaveLength(4);
+    const rest = await listWorkspaceTasks(host, ctx, { limit: 4, cursor: first.nextCursor ?? "" });
+    expect(rest).toMatchObject({ nextCursor: null });
+    expect(new Set([...first.tasks, ...rest.tasks].map((t) => t.id)).size).toBe(5);
+  });
+});
+
+describe("an agent's task creates and edits", () => {
+  it("count against its 20 signals, questions and answers a minute", async () => {
+    const builder = await seedAgent(projectA);
+    const create = (requestId: string = randomUUID()) =>
+      createTask(host, builder, { ...fields, requestId });
+    const first = await create();
+    const requestId = randomUUID();
+    await create(requestId);
+    for (let i = 0; i < 17; i++) await create();
+    const edited = await updateTask(host, builder, first.id, { version: 1, title: "Edited" });
+    // 20 in the minute: one more of either is refused, and saves nothing.
+    const error = await refusal(create(), "rate-limited");
+    expect(error.message).toBe(
+      "You sent 20 signals, questions, answers and task changes in the last minute, the most an agent may. Wait a minute and try again.",
+    );
+    await refusal(
+      updateTask(host, builder, first.id, { version: edited.version, title: "Again" }),
+      "rate-limited",
+    );
+    // A retry of a task it created is no new task.
+    expect((await create(requestId)).title).toBe(fields.title);
+    expect((await listTasks(host, as(owner))).tasks).toHaveLength(19);
+    // A minute later, it may go on; members aren't counted.
+    clock += 60_001;
+    await updateTask(host, builder, first.id, { version: edited.version, title: "Again" });
+    for (let i = 0; i < 25; i++) await createTask(host, as(owner), fields);
+  });
 });

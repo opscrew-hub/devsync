@@ -83,7 +83,8 @@ export type QueueName =
   | "devsync.outbox"
   | "devsync.github"
   | "devsync.runs"
-  | "devsync.agents-move";
+  | "devsync.agents-move"
+  | "devsync.retention";
 
 /**
  * One GitHub delivery for a project with DevSync on, as the host forwards it on `devsync.github`

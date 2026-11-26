@@ -83,6 +83,17 @@ shows its turns beside its tokens.
 The models, turn cap and budget cap are in the workflow file, which the user may edit: Claude
 Code's model, turn cap and budget cap, and Codex's model with its prices.
 
+What the workflow runs is pinned, so a moved tag or a new release can't change a run:
+
+- every action is pinned to a full commit, its release in a comment beside it, as DevSync's own
+  CI does (`actions/checkout` v7.0.1, `actions/upload-artifact` v7.0.2,
+  `actions/download-artifact` v8.0.2); to update one, take the commit its new release's tag points
+  at;
+- the two CLIs are installed from npm at pinned versions. Codex's packages have no install script,
+  so it is installed with `--ignore-scripts`. Claude Code keeps its one: its `postinstall` puts the
+  runner's native binary (from its platform's optional package) in place of the `claude` stub,
+  which without it only says the binary is missing.
+
 ## Setup
 
 The task panel's runs section asks the host's `github.setup` for `devsync.yml` and the secrets'

@@ -34,11 +34,12 @@ async function setup() {
 }
 
 describe("jobs", () => {
-  it("names DevSync's four queues with their schedules and retries", () => {
+  it("names DevSync's five queues with their schedules and retries", () => {
     expect(Object.keys(jobs).sort()).toEqual([
       "devsync.agents-move",
       "devsync.github",
       "devsync.outbox",
+      "devsync.retention",
       "devsync.runs",
     ]);
     expect(jobs["devsync.outbox"].cron).toBe("* * * * *");
@@ -49,6 +50,7 @@ describe("jobs", () => {
     expect(jobs["devsync.runs"].retryLimit).toBeGreaterThan(0);
     expect(jobs["devsync.agents-move"].cron).toBe("0 * * * *");
     expect(jobs["devsync.agents-move"].retryLimit).toBeGreaterThan(0);
+    expect(jobs["devsync.retention"].retryLimit).toBeGreaterThan(0);
   });
 });
 
@@ -204,5 +206,72 @@ describe("devsync.runs", () => {
     expect(host.github.dispatches.map((d) => d.inputs.run_id)).toEqual([asked.id]);
     const [row] = await testDb.db.select().from(run).where(eq(run.id, asked.id));
     expect(row?.status).toBe("RUNNING");
+  });
+});
+
+describe("devsync.retention", () => {
+  it("deletes the signals acknowledged over 30 days ago, daily, and keeps every other", async () => {
+    const { host, project, agentId } = await setup();
+    const { id: peerId } = await hostAgent(host, project, { name: "Claude", kind: "CLAUDE" });
+    const now = Date.parse(FAKE_NOW);
+    const day = 24 * 60 * 60 * 1000;
+    const scope = { workspaceId: project.workspaceId, projectId: project.projectId };
+    /** A signal to `recipient`, acknowledged `ackedDaysAgo` days ago (null: not yet). */
+    const add = async (
+      ackedDaysAgo: number | null,
+      fields: { recipient?: string; sender?: string; replyToId?: string; hopCount?: number } = {},
+    ) => {
+      const [row] = await testDb.db
+        .insert(signal)
+        .values({
+          ...scope,
+          recipientAgentId: fields.recipient ?? agentId,
+          senderAgentId: fields.sender ?? null,
+          replyToId: fields.replyToId ?? null,
+          hopCount: fields.hopCount ?? 0,
+          kind: "system.warning",
+          payload: { message: "Hi" },
+          idempotencyKey: crypto.randomUUID(),
+          createdAt: new Date(now - 40 * day),
+          acknowledgedAt: ackedDaysAgo === null ? null : new Date(now - ackedDaysAgo * day),
+        })
+        .returning({ id: signal.id });
+      if (!row) throw new Error("no signal");
+      return row.id;
+    };
+    const old = await add(31);
+    const recent = await add(29);
+    const pending = await add(null);
+    // An old conversation goes whole; one whose last reply is still pending stays whole, since
+    // deleting a signal deletes its replies.
+    const chain = [await add(35, { recipient: peerId, sender: agentId })];
+    for (let hop = 1; hop <= 4; hop++) {
+      const to = hop % 2 === 1 ? agentId : peerId;
+      const from = hop % 2 === 1 ? peerId : agentId;
+      chain.push(
+        await add(32, { recipient: to, sender: from, replyToId: chain.at(-1), hopCount: hop }),
+      );
+    }
+    const kept = [await add(40, { recipient: peerId, sender: agentId })];
+    kept.push(await add(35, { sender: peerId, replyToId: kept[0], hopCount: 1 }));
+    kept.push(
+      await add(null, { recipient: peerId, sender: agentId, replyToId: kept[1], hopCount: 2 }),
+    );
+
+    await jobs["devsync.retention"].handler({}, host);
+    await jobs["devsync.retention"].handler(null, host);
+    const left = (await testDb.db.select({ id: signal.id }).from(signal)).map((s) => s.id);
+    expect(left.sort()).toEqual([recent, pending, ...kept].sort());
+    expect(left).not.toContain(old);
+    for (const id of chain) expect(left).not.toContain(id);
+    expect(host.errors).toEqual([]);
+  });
+
+  it("runs daily and refuses a payload that isn't the schedule's", async () => {
+    const { host } = await setup();
+    expect(jobs["devsync.retention"].cron).toBe("0 3 * * *");
+    await expect(jobs["devsync.retention"].handler("now", host)).rejects.toThrow(
+      "DevSync's devsync.retention job has an invalid payload: payload.",
+    );
   });
 });
