@@ -2,9 +2,8 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { task } from "../db";
 import type { AgentActor, DevSyncError, ProjectRef } from "../host";
-import { refusal, setClock } from "../test/helpers";
+import { hostAgent, refusal, setClock } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "../testing";
-import { authenticateAgent, registerAgent } from "./agents";
 import { claimTask, releaseTask, renewTaskClaim } from "./claims";
 
 const MINUTE = 60 * 1000;
@@ -34,17 +33,8 @@ async function setup() {
     members: { [project.workspaceId]: [owner] },
     projects: [project, other],
   });
-  const register = async (name: string, on = project) => {
-    const { token } = await registerAgent(
-      host,
-      { project: on, member: owner },
-      {
-        name,
-        kind: "CODEX",
-      },
-    );
-    return authenticateAgent(host, token);
-  };
+  const register = async (name: string, on = project) =>
+    (await hostAgent(host, on, { name, kind: "CODEX" })).actor;
   const agents = [await register("Codex"), await register("Claude")] as const;
   const outsider = await register("Outsider", other);
   const [created] = await testDb.db

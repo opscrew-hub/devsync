@@ -162,11 +162,32 @@ describe("webModule.ProjectTab", () => {
     ).toBe("https://github.com/acme/shop/settings/secrets/actions");
   });
 
-  it("gives the member's role to DevSync: a developer can't register agents", async () => {
-    projectTab("");
-    expect(
-      (await screen.findByRole("button", { name: /Register an agent/ })).hasAttribute("disabled"),
-    ).toBe(true);
+  it("points every role to the host's Agents button, and registers no agent itself", async () => {
+    for (const role of ["owner", "admin", "approver", "developer"] as const) {
+      host(
+        <webModule.ProjectTab
+          apiBase={PROJECT_API}
+          userId={ME}
+          role={role}
+          ui={ui}
+          project={{ id: PROJECT, fullName: "acme/shop", defaultBranch: "main", readOnly: false }}
+          query={new URLSearchParams()}
+          setQuery={() => {}}
+        />,
+        PROJECT_API,
+        {
+          "GET /tasks": { body: { tasks } },
+          "GET /members": { body: { members } },
+          "GET /agents": { body: { agents: [agent] } },
+        },
+      );
+      const agents = await screen.findByRole("region", { name: "Agents" });
+      expect(
+        within(agents).getByText(/from the Agents button at the top of this project's page\.$/),
+      ).toBeTruthy();
+      expect(within(agents).queryByRole("button", { name: /Register/ })).toBeNull();
+      cleanup();
+    }
   });
 
   it("locks every change on a read-only project", async () => {

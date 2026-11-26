@@ -17,8 +17,9 @@ and their developers plan the work in DevSync, their coding agents do it, and Op
   Review to Done (or Cancelled), and can be assigned to any member of the workspace.
 - **Comments and a timeline** on every task: people's comments, and the agents' progress, blockers,
   review requests and review decisions.
-- **Coding agents through MCP.** An Owner or Admin registers an agent (Claude Code or Codex, on a
-  developer's computer) and gives it a token. The agent connects to DevSync's MCP endpoint, reads
+- **Coding agents through MCP.** An Owner or Admin registers an agent (Claude Code, Codex or
+  another, on a developer's computer) from the project's **Agents** button, once for every module,
+  and gives it its token. The agent connects to DevSync's MCP endpoint, reads
   the project's tasks and its inbox, claims a Ready task, reports progress or a blocker and asks
   for review; a peer agent approves or requests changes, and a person marks the task done.
   Messages reach agents exactly once, even across disconnections.
@@ -50,9 +51,10 @@ and their developers plan the work in DevSync, their coding agents do it, and Op
 1. In OpsCrew's dashboard, an Owner or Admin opens **Modules** and switches DevSync on for the
    workspace, then for a project (also from the project's **Modules** button).
 2. The project gains a **DevSync** tab: create tasks, move them to Ready, assign them, comment.
-3. To let a coding agent work, register it under **Agents** on that tab and copy its token (shown
-   once; valid 24 hours, rotate it from the same place). Then set `DEVSYNC_AGENT_TOKEN` in the
-   agent's environment and add the server. For Claude Code:
+3. To let a coding agent work, register it from the project's **Agents** button, at the top of the
+   project's page, and copy its token (shown once; rotate or revoke it from the same place). The
+   tab's Agents section lists the agents that may reach DevSync. Then set `DEVSYNC_AGENT_TOKEN` in
+   the agent's environment and add the server. For Claude Code:
 
    ```json
    {

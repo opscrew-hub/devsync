@@ -1,13 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import {
-  Agent,
-  AgentInput,
-  AgentList,
-  AgentMessage,
-  AgentMessageReceipt,
-  AgentWithToken,
-} from "./agents";
+import { Agent, AgentKind, AgentList, AgentMessage, AgentMessageReceipt } from "./agents";
 import { MemberList } from "./members";
 
 const text = (length: number) => "a".repeat(length);
@@ -23,13 +16,9 @@ const agent = {
   createdAt: now,
 };
 
-describe("AgentInput", () => {
-  it("takes a name of 1 to 80 characters and a kind", () => {
-    expect(AgentInput.safeParse({ name: text(80), kind: "CODEX" }).success).toBe(true);
-    expect(AgentInput.safeParse({ name: text(81), kind: "CODEX" }).success).toBe(false);
-    expect(AgentInput.safeParse({ name: "", kind: "CODEX" }).success).toBe(false);
-    expect(AgentInput.safeParse({ name: "Bot", kind: "GEMINI" }).success).toBe(false);
-    expect(AgentInput.safeParse({ name: "Bot", type: "CODEX" }).success).toBe(false);
+describe("AgentKind", () => {
+  it("is Claude Code, Codex, or another agent the host registered", () => {
+    expect(AgentKind.options).toEqual(["CLAUDE", "CODEX", "OTHER"]);
   });
 });
 
@@ -51,11 +40,13 @@ describe("AgentMessage", () => {
 });
 
 describe("the answers", () => {
-  it("parse agents, an agent with its token and a message's receipt", () => {
+  it("parse agents, DevSync's own and the host's, and a message's receipt", () => {
     expect(AgentList.safeParse({ agents: [agent] }).success).toBe(true);
+    // The host's: its token is the host's, and DevSync has no row of it before it connects.
+    const hosts = { ...agent, kind: "OTHER", expiresAt: null, createdAt: null };
+    expect(AgentList.safeParse({ agents: [hosts] }).success).toBe(true);
     expect(Agent.safeParse({ ...agent, status: "Online" }).success).toBe(false);
-    expect(AgentWithToken.safeParse({ agent, token: "t" }).success).toBe(true);
-    expect(AgentWithToken.safeParse({ agent, token: "" }).success).toBe(false);
+    expect(Agent.safeParse({ ...agent, kind: "GEMINI" }).success).toBe(false);
     expect(
       AgentMessageReceipt.safeParse({ id: randomUUID(), kind: "system.warning", createdAt: now })
         .success,

@@ -1,3 +1,4 @@
+import type { Agent } from "@devsync/schemas";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,8 +8,19 @@ import { agent, members, tasks } from "./test/samples";
 
 afterEach(cleanup);
 
-// Generated at run time: never a token-shaped literal in the repository.
-const token = () => `ds_${crypto.randomUUID()}`;
+const POINTER =
+  "Agents are registered, and their tokens rotated and revoked, from the Agents button at the top of this project's page.";
+
+/** One of the host's agents that hasn't connected to DevSync yet. */
+const fresh: Agent = {
+  id: id(32),
+  name: "Helper",
+  kind: "OTHER",
+  status: "Offline",
+  expiresAt: null,
+  lastSeenAt: null,
+  createdAt: null,
+};
 
 function show(
   role: "owner" | "admin" | "approver" | "developer",
@@ -26,70 +38,59 @@ function show(
 }
 
 describe("the Agents card", () => {
-  it("offers registering once: in the empty state without agents, in the header with some", async () => {
-    show("admin", { "GET /agents": { body: { agents: [] } } });
+  it("points every role to the project's Agents button, and registers, rotates and revokes none", async () => {
+    for (const role of ["owner", "admin", "approver", "developer"] as const) {
+      show(role);
+      const actions = await screen.findByRole("group", { name: "Builder" });
+      const card = screen.getByRole("region", { name: "Agents" });
+      expect(within(card).getByText(POINTER)).toBeTruthy();
+      for (const name of [/Register/, /Rotate/, /Revoke/]) {
+        expect(within(card).queryByRole("button", { name })).toBeNull();
+      }
+      expect(
+        within(actions)
+          .getAllByRole("button")
+          .map((b) => b.textContent),
+      ).toEqual(["Send a message"]);
+      cleanup();
+    }
+  });
+
+  it("says where to register the first agent when there is none", async () => {
+    show("owner", { "GET /agents": { body: { agents: [] } } });
     const empty = (await screen.findByText("No agents yet")).parentElement as HTMLElement;
-    expect(screen.getAllByRole("button", { name: "Register an agent" })).toHaveLength(1);
-    expect(within(empty).getByRole("button", { name: "Register an agent" })).toBeTruthy();
-    cleanup();
-
-    show("admin");
-    await screen.findByRole("list", { name: "Agents" });
-    expect(screen.getAllByRole("button", { name: "Register an agent" })).toHaveLength(1);
+    expect(
+      within(empty).getByText(/the Agents button at the top of this project's page/),
+    ).toBeTruthy();
+    expect(screen.queryAllByRole("button", { name: /Register/ })).toEqual([]);
   });
 
-  it("registers an agent and shows its token once, with a copy button", async () => {
-    const user = userEvent.setup();
-    const secret = token();
-    const created = { ...agent, id: id(31), name: "Reviewer", kind: "CODEX" };
-    const { sent } = show("admin", {
-      "POST /agents": { status: 201, body: { agent: created, token: secret } },
+  it("shows the host's agents, and the token's end only for DevSync's own", async () => {
+    show("developer", {
+      "GET /agents": {
+        body: {
+          agents: [
+            { ...agent, id: id(33), name: "Reviewer", expiresAt: null },
+            fresh,
+            agent,
+            // The host's, which DevSync revoked before its move.
+            { ...agent, id: id(34), name: "Gone", status: "Revoked", expiresAt: null },
+          ],
+        },
+      },
     });
-
-    await user.click(await screen.findByRole("button", { name: "Register an agent" }));
-    const dialog = screen.getByRole("dialog", { name: "Register an agent" });
-    await user.type(within(dialog).getByLabelText("Name"), "Reviewer");
-    await user.selectOptions(within(dialog).getByLabelText("Agent"), "Codex");
-    await user.click(button("Register", dialog));
-
-    const shown = await screen.findByRole("dialog", { name: "Reviewer's token" });
-    expect(sent.find((s) => s.method === "POST")?.body).toEqual({
-      name: "Reviewer",
-      kind: "CODEX",
-    });
-    expect(within(shown).getByText(secret)).toBeTruthy();
-    await user.click(button("Copy the token", shown));
-    expect(await navigator.clipboard.readText()).toBe(secret);
-    expect(button("Copied", shown)).toBeTruthy();
-
-    await user.click(button("Done", shown));
-    expect(screen.queryByText(secret)).toBeNull();
-  });
-
-  it("rotates an agent's token and shows the new one", async () => {
-    const secret = token();
-    const { sent } = show("owner", {
-      [`POST /agents/${agent.id}/rotate`]: { body: { agent, token: secret } },
-    });
-    const actions = await screen.findByRole("group", { name: "Builder" });
-    await userEvent.click(button("Rotate the token", actions));
-    const shown = await screen.findByRole("dialog", { name: "Builder's token" });
-    expect(within(shown).getByText(secret)).toBeTruthy();
-    expect(sent.some((s) => s.method === "POST" && s.path === `/agents/${agent.id}/rotate`)).toBe(
-      true,
+    const list = await screen.findByRole("list", { name: "Agents" });
+    const [hosts, waiting, own, gone] = within(list).getAllByRole("listitem");
+    expect(gone?.textContent).toContain("Revoked");
+    expect(button("Send a message", gone as HTMLElement).disabled).toBe(true);
+    expect(hosts?.textContent).not.toContain("token valid until");
+    expect(own?.textContent).toContain("token valid until");
+    expect(waiting?.textContent).toContain("Other agent");
+    expect(waiting?.textContent).toContain(
+      "Not connected yet: it can get messages once it has connected to DevSync",
     );
-  });
-
-  it("revokes an agent once confirmed", async () => {
-    const { sent } = show("owner", { [`DELETE /agents/${agent.id}`]: { status: 204 } });
-    const actions = await screen.findByRole("group", { name: "Builder" });
-    await userEvent.click(button("Revoke", actions));
-    const dialog = screen.getByRole("dialog", { name: "Revoke Builder" });
-    await userEvent.click(button("Revoke", dialog));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(sent.filter((s) => s.method === "DELETE").map((s) => s.path)).toEqual([
-      `/agents/${agent.id}`,
-    ]);
+    expect(button("Send a message", waiting as HTMLElement).disabled).toBe(true);
+    expect(button("Send a message", hosts as HTMLElement).disabled).toBe(false);
   });
 
   it("sends an agent a message with one idempotency key", async () => {
@@ -109,17 +110,5 @@ describe("the Agents card", () => {
     const body = sent.find((s) => s.method === "POST")?.body as Record<string, string>;
     expect(body).toMatchObject({ kind: "clarification.answered", message: "Use the blue button." });
     expect(body.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
-  });
-
-  it("locks registering, rotating and revoking for an Approver or a Developer", async () => {
-    show("approver");
-    const actions = await screen.findByRole("group", { name: "Builder" });
-    expect(button("Register an agent").disabled).toBe(true);
-    expect(button("Rotate the token", actions).disabled).toBe(true);
-    expect(button("Revoke", actions).disabled).toBe(true);
-    expect(button("Send a message", actions).disabled).toBe(false);
-    expect(
-      screen.getByText("An Owner or Admin registers, rotates and revokes agents."),
-    ).toBeTruthy();
   });
 });

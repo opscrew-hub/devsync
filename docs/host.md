@@ -97,12 +97,12 @@ The host's roles are OpsCrew's: Owner, Admin, Approver, Developer. `can(role, ac
 |---|---|---|---|---|
 | read anything (every GET) | yes | yes | yes | yes |
 | `task.write`: create, edit, move, assign, comment, link a pull request, message an agent | yes | yes | yes | yes |
-| `agent.manage`: register, rotate, revoke an agent | yes | yes | no | no |
 | `run.request`: ask for a managed run | yes | yes | yes | yes |
 | `run.decide`: approve or reject a managed run | yes | yes | yes | no |
 
 A member who asked for a run may cancel it while it waits for approval, whatever their role; so may
-anyone with `run.decide`.
+anyone with `run.decide`. Registering, rotating and revoking agents is the host's, with its own
+permission (see MCP for coding agents).
 
 ## Mount points
 
@@ -135,11 +135,8 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 | `GET /findings?fingerprint=` | read | | `FindingAnswer` (see Security findings) |
 | `GET /pull-requests` | read | | `{ pullRequests: PullRequest[] }`, the 50 most recently updated |
 | `GET /members` | read | | `{ members: Member[] }` |
-| `GET /agents` | read | | `{ agents: Agent[] }` |
-| `POST /agents` | `agent.manage` | `AgentInput` | 201 `{ agent: Agent, token: string }` |
-| `POST /agents/:agentId/rotate` | `agent.manage` | | `{ agent: Agent, token: string }` |
-| `DELETE /agents/:agentId` | `agent.manage` | | 204 |
-| `POST /agents/:agentId/messages` | `task.write` | `AgentMessage` | 201 `{ id, kind, createdAt }`, idempotent by its key |
+| `GET /agents` | read | | `{ agents: Agent[] }`: the host's agents that may reach DevSync (`host.agents.list`), then DevSync's own not yet moved, newest first |
+| `POST /agents/:agentId/messages` | `task.write` | `AgentMessage` | 201 `{ id, kind, createdAt }`, idempotent by its key; an agent that hasn't connected to DevSync yet is refused 404 |
 | `GET /tasks/:taskId/runs` | read | | `{ runs: Run[] }`, the task's 50 latest, newest first |
 | `POST /tasks/:taskId/runs` | `run.request` | | 201 `Run`, waiting for approval |
 | `GET /runs/setup` | read | | `RunSetup` |
@@ -173,9 +170,13 @@ Ids are UUIDs, times ISO 8601. Bodies and answers are the zod schemas of `@devsy
 - `CommentInput`: `body` (1–4000). `PullRequestLink`: `number` (a positive integer, or null).
 - `PullRequest`: `number`, `title`, `state` (`open`, `closed`, `merged`), `url`, `updatedAt`.
 - `Member`: `userId`, `name`, `role`.
-- `AgentInput`: `name` (1–80), `kind` (`CLAUDE` or `CODEX`). `Agent`: `id`, `name`, `kind`,
-  `status` (`Recently active`, `Offline`, `Expired`, `Revoked`), `expiresAt`, `lastSeenAt`,
-  `createdAt`.
+- `Agent`: `id`, `name`, `kind` (`CLAUDE`, `CODEX` or `OTHER`: the host's `claude`, `codex` and
+  `other`), `status` (`Recently active`, `Offline`, `Expired`, `Revoked`), `expiresAt` (when
+  DevSync's own token expires; null for the host's agents, whose tokens the host shows),
+  `lastSeenAt` (last seen by DevSync) and `createdAt` (when DevSync first had the agent; null for
+  one of the host's that hasn't connected yet). The host's list doesn't say which of its agents are
+  revoked or expired, so the host's agents are `Recently active` or `Offline`, or `Revoked` for one
+  DevSync revoked before its move.
 - `AgentMessage`: `kind` (`clarification.requested`, `clarification.answered`, `review.requested`,
   `system.warning`), `message` (1–4000), `idempotencyKey` (a UUID).
 - `Run`: `id`, `taskId`, `revision` (the requirements revision it runs on), `status` (`REQUESTED`,
@@ -203,13 +204,40 @@ and try again." when another came first.
 
 ## MCP for coding agents
 
-`POST /m/devsync/mcp`: a stateless Streamable HTTP MCP endpoint with JSON responses. An Owner or
-Admin registers an agent on the project's DevSync tab and copies its token once; the token is a
-bearer token for that agent and project only, expires after 24 hours, and can be rotated or
-revoked. DevSync keeps only its SHA-256 hash. A missing, invalid, expired or revoked token is
-refused 401 with `WWW-Authenticate: Bearer`; a valid token whose project is gone, disconnected or
-has DevSync off is refused 403 ("DevSync is off for this project"), as is a request with an origin
-other than the host's. Every answer carries `Cache-Control: no-store`.
+`POST /m/devsync/mcp`: a stateless Streamable HTTP MCP endpoint with JSON responses.
+
+The host registers a project's agents once for every module. An Owner or Admin registers one from
+the host's Agents dialog (the **Agents** button at the top of the project's page), which shows its
+token once with the host's `/mcp` address and the snippets below pointed at it, and rotates or
+revokes it there. DevSync's own tab lists the agents and registers none. DevSync's endpoint still
+accepts their tokens: each request asks `host.agents.verify(token)` first, never cached, so a token
+revoked on the dashboard is refused from the next request. An agent the host verifies for the first
+time gets a DevSync row with no token, so its inbox (which starts then: a member can message it from
+its first connection), claims and timeline point at its id; the row takes the host's name on each
+request.
+
+The agents DevSync registered itself, before the host had any, move to the host with their tokens:
+the hourly `devsync.agents-move` (see Queues) gives each row that still has a token to
+`host.agents.adopt`, keeping its id and token hash, and nulls the row's token in the same
+transaction. Until then such a token (a bearer token for that agent and project only, valid 24
+hours, of which DevSync keeps only the SHA-256 hash) is checked against DevSync's own row, after
+the host. When that row has no live token, the host is asked once more, as the token's move may
+have committed in between, so a token never fails while it moves.
+
+A missing, invalid, expired or revoked token is refused 401 with `WWW-Authenticate: Bearer`, as is
+the host's agent's token while DevSync is off for its project (the host verifies none then).
+DevSync's own token whose project is gone, disconnected or has DevSync off is refused 403 ("DevSync
+is off for this project"), as is a request with an origin other than the host's. Every answer
+carries `Cache-Control: no-store`.
+
+An agent revoked on the dashboard is refused at once. DevSync's row of it isn't marked revoked,
+though (only a revoke DevSync made before the move is), so until a later release reads the host's
+revokes, a revoke on the dashboard after the move leaves the agent:
+
+- listed in `get_project_state` and in the Agents section;
+- messaged by members and peers, asked for reviews, and sent GitHub signals, all into an inbox it
+  can no longer read;
+- holding any task it had claimed until the claim expires, 15 minutes at most.
 
 | Tool | Input | What it does |
 |---|---|---|
@@ -273,6 +301,11 @@ The host's worker runs DevSync's queues (`jobs` from `@devsync/server`):
   recorded, without dispatching it again; and it reads a run still in GitHub six hours after its
   dispatch once more, ending it `FAILED` (`no-result`) without a result (while GitHub doesn't
   answer, it tries again at each sweep until a day after the dispatch).
+- `devsync.agents-move`: every hour (`0 * * * *`), with an empty payload, moves DevSync's own
+  agents to the host (see MCP for coding agents): for each project the host answers, one
+  transaction gives `host.agents.adopt` its rows that still have a token and nulls their
+  `token_hash` and `expires_at`. A project with DevSync off waits for the next hour; one whose move
+  fails is logged (the error's name only) and tried again then.
 
 ## Events
 

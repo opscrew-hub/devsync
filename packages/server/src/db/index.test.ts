@@ -46,7 +46,7 @@ describe("the devsync schema's migration", () => {
 
   it("applies twice, each migration journaled once in devsync.__drizzle_migrations", async () => {
     await testDb.migrate();
-    expect(await testDb.db.select().from(journal)).toHaveLength(4);
+    expect(await testDb.db.select().from(journal)).toHaveLength(5);
     const tables = await testDb.db
       .select({ name: catalog.tableName })
       .from(catalog)
@@ -168,6 +168,19 @@ describe("the devsync schema's migration", () => {
     // An agent's signals go with it.
     await db.delete(agent).where(sql`${agent.id} = ${a.id}`);
     expect(await db.select().from(signal)).toEqual([]);
+  });
+
+  it("takes agents with no token (the host's), and a token's hash only once", async () => {
+    const { db } = testDb;
+    const row = { workspaceId, projectId, name: "builder", kind: "OTHER" as const };
+    await db.insert(agent).values([row, row]);
+    expect((await db.select().from(agent)).map((a) => [a.kind, a.tokenHash, a.expiresAt])).toEqual([
+      ["OTHER", null, null],
+      ["OTHER", null, null],
+    ]);
+    const tokenHash = fakeToken();
+    await db.insert(agent).values({ ...row, tokenHash, expiresAt: at });
+    await expect(db.insert(agent).values({ ...row, tokenHash, expiresAt: at })).rejects.toThrow();
   });
 
   it("refuses a second pull request with the same number in a project", async () => {

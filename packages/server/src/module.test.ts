@@ -394,12 +394,14 @@ describe("the opscrewModule manifest", () => {
 describe("serverModule", () => {
   it("has its jobs, routes and removal hooks", () => {
     expect(Object.keys(serverModule.jobs).sort()).toEqual([
+      "devsync.agents-move",
       "devsync.github",
       "devsync.outbox",
       "devsync.runs",
     ]);
     expect(serverModule.jobs["devsync.outbox"].cron).toBe("* * * * *");
     expect(serverModule.jobs["devsync.runs"].cron).toBe("*/10 * * * *");
+    expect(serverModule.jobs["devsync.agents-move"].cron).toBe("0 * * * *");
     for (const job of Object.values(serverModule.jobs)) {
       expect(typeof job.handler).toBe("function");
       expect(job.retryLimit).toBeGreaterThan(0);

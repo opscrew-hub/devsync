@@ -5,12 +5,11 @@
 import { ErrorAnswer, type Role } from "@devsync/schemas";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { registerAgent, revokeAgent } from "../domain/agents";
 import { deliverDue } from "../domain/delivery";
 import { pendingSignals, publishSignal } from "../domain/signals";
 import { createTask, getTask, updateTask } from "../domain/tasks";
-import type { AgentActor, Member, ProjectContext, ProjectRef } from "../host";
-import { setClock } from "../test/helpers";
+import type { Member, ProjectContext, ProjectRef } from "../host";
+import { devsyncAgent, hostAgent, revokeHostAgent, setClock } from "../test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, fakeToken, type TestDb } from "../testing";
 import { publicRoutes } from "./index";
 
@@ -46,7 +45,10 @@ interface ToolResult {
   isError?: boolean;
 }
 
-/** A project with DevSync on, its owner, and two agents; another project with its own agent. */
+/**
+ * A project with DevSync on, its owner, and two of the host's agents; another project with one of
+ * the host's agents and one of DevSync's own.
+ */
 async function setup() {
   const project: ProjectRef = {
     workspaceId: crypto.randomUUID(),
@@ -61,14 +63,11 @@ async function setup() {
     projects: [project, other],
   });
   const member = (on: ProjectRef = project): ProjectContext => ({ project: on, member: owner });
-  const register = async (name: string, kind: "CLAUDE" | "CODEX", on = project) => {
-    const { agent, token } = await registerAgent(host, member(on), { name, kind });
-    const actor: AgentActor = { kind: "agent", agentId: agent.id, name, project: on };
-    return { id: agent.id, token, actor };
-  };
-  const codex = await register("Codex", "CODEX");
-  const claude = await register("Claude", "CLAUDE");
-  const outsider = await register("Outside", "CLAUDE", other);
+  const codex = await hostAgent(host, project, { name: "Codex", kind: "CODEX" });
+  const claude = await hostAgent(host, project, { name: "Claude", kind: "CLAUDE" });
+  const outsider = await hostAgent(host, other, { name: "Outside", kind: "CLAUDE" });
+  // One of DevSync's own, registered before the host had agents and not yet moved.
+  const own = await devsyncAgent(host, other, { name: "Own", kind: "CODEX" });
 
   const app = new Hono();
   app.route("/m/devsync", publicRoutes(host));
@@ -116,6 +115,7 @@ async function setup() {
     codex,
     claude,
     outsider,
+    own,
     call,
     post,
     tool,
@@ -136,7 +136,7 @@ async function refusedWith(response: Response, status: number, code: string) {
 
 describe("the MCP endpoint", () => {
   it("refuses a missing, malformed, unknown or revoked token, a foreign origin, and DevSync off", async () => {
-    const { host, other, member, codex, outsider, call, post, app } = await setup();
+    const { host, other, codex, outsider, own, call, post, app } = await setup();
     const list = (token: string, headers = {}) => call(token, "tools/list", {}, headers);
     const unauthenticated = await refusedWith(
       await post({}, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
@@ -164,15 +164,19 @@ describe("the MCP endpoint", () => {
     expect(foreign.message).toContain("origin");
     expect((await list(codex.token, { Origin: "http://localhost" })).status).toBe(200);
     expect((await list(codex.token)).status).toBe(200);
+    expect((await list(own.token)).status).toBe(200);
 
     host.directory.projects = host.directory.projects.filter(
       (p) => p.projectId !== other.projectId,
     );
-    const off = await refusedWith(await list(outsider.token), 403, "forbidden");
+    // DevSync's own token is DevSync's to check: its project has DevSync off.
+    const off = await refusedWith(await list(own.token), 403, "forbidden");
     expect(off.message).toBe(
       "DevSync is off for this project. Ask an Owner or Admin to switch it on.",
     );
-    await revokeAgent(host, member(), codex.id);
+    // The host verifies no agent of a project with DevSync off.
+    await refusedWith(await list(outsider.token), 401, "unauthenticated");
+    await revokeHostAgent(host, codex.id);
     await refusedWith(await list(codex.token), 401, "unauthenticated");
 
     for (const method of ["GET", "DELETE"]) {

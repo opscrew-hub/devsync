@@ -1,11 +1,12 @@
 import { eq, isNull } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { outboxEvent, pullRequest, run, signal } from "./db";
-import { registerAgent } from "./domain/agents";
+import { agent, outboxEvent, pullRequest, run, signal } from "./db";
+import { authenticateAgent } from "./domain/agents";
 import { approveRun, requestRun } from "./domain/runs";
 import { createTask, updateTask } from "./domain/tasks";
 import type { ProjectRef } from "./host";
 import { jobs } from "./jobs";
+import { devsyncAgent, hostAgent } from "./test/helpers";
 import { createTestDb, FAKE_NOW, fakeHost, type TestDb } from "./testing";
 
 let testDb: TestDb;
@@ -28,23 +29,54 @@ async function setup() {
   };
   const owner = { userId: crypto.randomUUID(), name: "Owner", role: "owner" as const };
   const host = fakeHost(testDb.db, { projects: [project] });
-  const { agent } = await registerAgent(
-    host,
-    { project, member: owner },
-    { name: "Codex", kind: "CODEX" },
-  );
-  return { host, project, owner, agentId: agent.id };
+  const { id } = await hostAgent(host, project, { name: "Codex", kind: "CODEX" });
+  return { host, project, owner, agentId: id };
 }
 
 describe("jobs", () => {
-  it("names DevSync's three queues with their schedules and retries", () => {
-    expect(Object.keys(jobs).sort()).toEqual(["devsync.github", "devsync.outbox", "devsync.runs"]);
+  it("names DevSync's four queues with their schedules and retries", () => {
+    expect(Object.keys(jobs).sort()).toEqual([
+      "devsync.agents-move",
+      "devsync.github",
+      "devsync.outbox",
+      "devsync.runs",
+    ]);
     expect(jobs["devsync.outbox"].cron).toBe("* * * * *");
     expect(jobs["devsync.outbox"].retryLimit).toBeGreaterThan(0);
     expect("cron" in jobs["devsync.github"]).toBe(false);
     expect(jobs["devsync.github"].retryLimit).toBeGreaterThan(0);
     expect(jobs["devsync.runs"].cron).toBe("*/10 * * * *");
     expect(jobs["devsync.runs"].retryLimit).toBeGreaterThan(0);
+    expect(jobs["devsync.agents-move"].cron).toBe("0 * * * *");
+    expect(jobs["devsync.agents-move"].retryLimit).toBeGreaterThan(0);
+  });
+});
+
+describe("devsync.agents-move", () => {
+  it("moves DevSync's own agents to the host on its schedule, once", async () => {
+    const { host, project, agentId } = await setup();
+    const own = await devsyncAgent(host, project, { name: "Own", kind: "CLAUDE" });
+
+    await jobs["devsync.agents-move"].handler({}, host);
+    await jobs["devsync.agents-move"].handler(null, host);
+    expect(host.agents.adopted.map((call) => call.agents.map((a) => a.agentId))).toEqual([
+      [own.id],
+    ]);
+    expect((await testDb.db.select().from(agent)).map((a) => [a.id, a.tokenHash]).sort()).toEqual(
+      [
+        [agentId, null],
+        [own.id, null],
+      ].sort(),
+    );
+    expect((await authenticateAgent(host, own.token)).agentId).toBe(own.id);
+    expect(host.errors).toEqual([]);
+  });
+
+  it("refuses a payload that isn't the schedule's", async () => {
+    const { host } = await setup();
+    await expect(jobs["devsync.agents-move"].handler("now", host)).rejects.toThrow(
+      "DevSync's devsync.agents-move job has an invalid payload: payload.",
+    );
   });
 });
 
