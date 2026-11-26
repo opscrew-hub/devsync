@@ -125,6 +125,7 @@ function resultOf(runId: string, overrides: Record<string, unknown> = {}) {
     },
     models: ["claude-sonnet-5-5"],
     provider: "anthropic",
+    turns: 9,
     pullRequestUrl: "https://github.com/Acme/Shop/pull/12",
     branch: `devsync/${runId}`,
     ...overrides,
@@ -292,6 +293,7 @@ describe("requestRun", () => {
       missing: [],
     });
 
+    // Without a key the run pays with the workspace's AI credits: only the workflow is missing.
     github.repository = { workflow: false, secrets: ["OTHER"] };
     const lacking = await runSetup(s.host, s.ctx("developer"));
     expect(lacking).toEqual({
@@ -299,7 +301,6 @@ describe("requestRun", () => {
       secret: false,
       missing: [
         "Add .github/workflows/devsync.yml from the runs section to the repository's default branch.",
-        "Add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization.",
       ],
     });
     await expect(requestRun(s.host, s.ctx("developer"), ready.id)).rejects.toMatchObject({
@@ -307,12 +308,13 @@ describe("requestRun", () => {
       message: lacking.missing.join(" "),
     });
 
+    // Any of the keys will do, in any case, or several, or none.
     github.repository = { workflow: true, secrets: [] };
-    await expect(requestRun(s.host, s.ctx("developer"), ready.id)).rejects.toMatchObject({
-      code: "conflict",
-      message: SETUP_STEP.secret,
+    expect(await runSetup(s.host, s.ctx("developer"))).toEqual({
+      workflow: true,
+      secret: false,
+      missing: [],
     });
-    // Any of the keys will do, in any case, or several.
     for (const secrets of [
       ["OPENROUTER_API_KEY"],
       ["openrouter_api_key", "OTHER"],
@@ -349,6 +351,13 @@ describe("requestRun", () => {
     }
     expect((await listRuns(s.host, s.ctx("developer"), ready.id)).runs).toEqual([]);
     expect(auditsOf(s.host, "devsync.run.requested")).toEqual([]);
+  });
+
+  it("asks for a run in a repository without a key: it pays with the workspace's AI credits", async () => {
+    const s = setup();
+    s.host.github.repository = { workflow: true, secrets: [] };
+    const ready = await readyTask(s);
+    expect((await requestRun(s.host, s.ctx("developer"), ready.id)).status).toBe("REQUESTED");
   });
 
   it("refuses every change to a read-only project", async () => {
@@ -517,10 +526,21 @@ describe("dispatchRun (devsync.runs)", () => {
       {
         projectId: s.project.projectId,
         workflow: "devsync.yml",
-        inputs: { run_id: asked.id, task: JSON.stringify(requirements) },
+        inputs: {
+          run_id: asked.id,
+          task: JSON.stringify(requirements),
+          // The host's reference for the run's MCP token and AI credits.
+          opscrew_origin: "https://host.example",
+          opscrew_request: "fake-run-request",
+        },
         githubRunId: expect.any(Number),
       },
     ]);
+    expect(s.host.ai.asked).toContainEqual({
+      projectId: s.project.projectId,
+      runRef: asked.id,
+      workflow: "devsync.yml",
+    });
     const githubRunId = s.host.github.dispatches[0]?.githubRunId;
     const [listed] = (await listRuns(s.host, s.ctx("developer"), ready.id)).runs;
     expect(listed).toMatchObject({
@@ -534,6 +554,70 @@ describe("dispatchRun (devsync.runs)", () => {
       { actor: null, message: "Managed run started in GitHub Actions", revision: 1 },
     ]);
     expect(auditsOf(s.host, "devsync.run.finished")).toEqual([]);
+  });
+
+  it("dispatches with only the run's inputs when the host gives no reference for it", async () => {
+    const s = setup();
+    s.host.ai.allowRun = async () => null;
+    const asked = await requestRun(s.host, s.ctx("developer"), (await readyTask(s)).id);
+    await approveRun(s.host, s.ctx("approver"), asked.id);
+    await jobs["devsync.runs"].handler({ projectId: s.project.projectId, runId: asked.id }, s.host);
+    expect(s.host.github.dispatches.map((d) => d.inputs)).toEqual([
+      { run_id: asked.id, task: JSON.stringify(requirements) },
+    ]);
+    expect((await rowOf(asked.id)).status).toBe("RUNNING");
+  });
+
+  it.each([
+    ["an origin that isn't https", { request: "fake-run-request", origin: "http://host.example" }],
+    ["an origin with a path", { request: "fake-run-request", origin: "https://host.example/x" }],
+    ["an empty request", { request: "", origin: "https://host.example" }],
+    ["no object at all", "fake-run-request"],
+  ])(
+    "dispatches without the host's reference, logging it, when the host answers %s",
+    async (_, answer) => {
+      const s = setup();
+      s.host.ai.allowRun = async () => answer as never;
+      const asked = await requestRun(s.host, s.ctx("developer"), (await readyTask(s)).id);
+      await approveRun(s.host, s.ctx("approver"), asked.id);
+      const job = { projectId: s.project.projectId, runId: asked.id };
+      await jobs["devsync.runs"].handler(job, s.host);
+      expect(s.host.github.dispatches.map((d) => Object.keys(d.inputs))).toEqual([
+        ["run_id", "task"],
+      ]);
+      expect(s.host.errors).toEqual([
+        `The host's AI answered something DevSync can't use for run ${asked.id}, so it starts without OpsCrew's MCP or AI credits.`,
+      ]);
+    },
+  );
+
+  it("asks the host for the run's reference before claiming it, outside any transaction", async () => {
+    const s = setup();
+    const asked = await requestRun(s.host, s.ctx("developer"), (await readyTask(s)).id);
+    await approveRun(s.host, s.ctx("owner"), asked.id);
+    const allowRun = s.host.ai.allowRun.bind(s.host.ai);
+    const seen: Pick<RunRow, "status" | "startedAt">[] = [];
+    s.host.ai.allowRun = async (input) => {
+      // Read through the database itself: PGlite would wait here for a transaction left open.
+      const { status, startedAt } = await rowOf(asked.id);
+      seen.push({ status, startedAt });
+      return allowRun(input);
+    };
+    await jobs["devsync.runs"].handler({ projectId: s.project.projectId, runId: asked.id }, s.host);
+    expect(seen).toEqual([{ status: "QUEUED", startedAt: null }]);
+
+    // When the host fails, the run isn't claimed, so its retried job dispatches it.
+    const other = await requestRun(s.host, s.ctx("developer"), (await readyTask(s)).id);
+    await approveRun(s.host, s.ctx("owner"), other.id);
+    s.host.ai.allowRun = async () => {
+      throw new Error("The host's signing failed.");
+    };
+    const job = { projectId: s.project.projectId, runId: other.id };
+    await expect(jobs["devsync.runs"].handler(job, s.host)).rejects.toThrow("signing failed");
+    expect(await rowOf(other.id)).toMatchObject({ status: "QUEUED", startedAt: null });
+    s.host.ai.allowRun = allowRun;
+    await jobs["devsync.runs"].handler(job, s.host);
+    expect((await rowOf(other.id)).status).toBe("RUNNING");
   });
 
   it("doesn't dispatch another project's run", async () => {
@@ -643,6 +727,7 @@ describe("a workflow_run fact (devsync.github)", () => {
         cacheReadInputTokens: 9_000,
         costUsd: 0.37,
         models: ["claude-sonnet-5-5"],
+        turns: 9,
       },
       provider: "anthropic",
       draftPullRequestUrl: "https://github.com/Acme/Shop/pull/12",
@@ -688,6 +773,7 @@ describe("a workflow_run fact (devsync.github)", () => {
             cacheCreationInputTokens: 400,
             cacheReadInputTokens: 9_000,
             costUsd: 0.37,
+            turns: 9,
           },
         },
       },
@@ -766,6 +852,54 @@ describe("a workflow_run fact (devsync.github)", () => {
     expect(failureMessage("no-changes", failed.id, "openai")).toMatch(/^Codex changed no file\./);
     expect(failureMessage("agent-failed", failed.id, "openrouter")).toMatch(/^Claude Code /);
     expect(failureMessage("agent-failed", failed.id)).toMatch(/^Claude Code /);
+  });
+
+  it("keeps a run paid with the workspace's AI credits, and says what to do when they were refused", async () => {
+    const s = setup();
+    const ready = await readyTask(s);
+    const paid = await startedRun(s, ready.id);
+    const credits = { provider: "opscrew", models: ["claude-haiku-5-5"], turns: null };
+    await complete(s, paid, { result: resultOf(paid.id, credits) });
+    const [kept] = (await listRuns(s.host, s.ctx("developer"), ready.id)).runs;
+    expect(kept).toMatchObject({
+      status: "SUCCEEDED",
+      provider: "opscrew",
+      usage: { models: ["claude-haiku-5-5"], turns: null },
+    });
+
+    const other = await readyTask(s);
+    const refused = await startedRun(s, other.id);
+    const result = resultOf(refused.id, {
+      ...credits,
+      status: "failed",
+      failure: "no-credits",
+      changedFiles: [],
+      models: [],
+      pullRequestUrl: null,
+      branch: null,
+    });
+    await complete(s, refused, { result, conclusion: "success" });
+    const [ended] = (await listRuns(s.host, s.ctx("developer"), other.id)).runs;
+    expect(ended).toMatchObject({
+      status: "FAILED",
+      provider: "opscrew",
+      failure: {
+        code: "no-credits",
+        message:
+          "OpsCrew didn't let this run use the workspace's AI credits: they are switched off, used up or at their cap. Buy AI credits on the dashboard's Billing page, or add a key of your own as the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret of the repository or its organization, then ask for a new run.",
+      },
+    });
+    expect(failureMessage("agent-failed", refused.id, "opscrew")).toMatch(/^Claude Code /);
+  });
+
+  it("keeps a result from a workflow that counts no turns", async () => {
+    const s = setup();
+    const ready = await readyTask(s);
+    const started = await startedRun(s, ready.id);
+    const { turns: _, ...uncounted } = resultOf(started.id);
+    await complete(s, started, { result: uncounted });
+    const [kept] = (await listRuns(s.host, s.ctx("developer"), ready.id)).runs;
+    expect(kept).toMatchObject({ status: "SUCCEEDED", usage: { turns: null } });
   });
 
   it("fails no-key for a run without any key, in the setup's words, with no provider", async () => {

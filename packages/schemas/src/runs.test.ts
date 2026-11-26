@@ -29,6 +29,7 @@ function result(overrides: Record<string, unknown> = {}) {
     },
     models: ["claude-sonnet-5-5"],
     provider: "anthropic",
+    turns: 7,
     pullRequestUrl: "https://github.com/acme/shop/pull/12",
     branch: `devsync/${runId}`,
     ...overrides,
@@ -65,6 +66,40 @@ describe("checkRunResult", () => {
       result: { failure: "no-key", provider: null },
     });
     expect(check({ ...noKey, failure: "agent-failed" }).ok).toBe(true);
+  });
+
+  it("takes a run paid with the workspace's AI credits, and one they refused", () => {
+    const check = (fields: Record<string, unknown>) =>
+      checkRunResult(result(fields), { runId, fullName });
+    const credits = { provider: "opscrew", models: ["claude-haiku-5-5"] };
+    expect(check(credits)).toMatchObject({ ok: true, result: credits });
+    const refused = {
+      status: "failed",
+      failure: "no-credits",
+      provider: "opscrew",
+      pullRequestUrl: null,
+    };
+    expect(check(refused)).toMatchObject({
+      ok: true,
+      result: { failure: "no-credits", provider: "opscrew" },
+    });
+    expect(check({ provider: "OpsCrew" }).ok).toBe(false);
+  });
+
+  it("takes the agent's turns, none when it gave none, and refuses a count that isn't one", () => {
+    const check = (fields: Record<string, unknown>) =>
+      checkRunResult(result(fields), { runId, fullName });
+    expect(check({ turns: 0 })).toMatchObject({ ok: true, result: { turns: 0 } });
+    expect(check({ turns: null })).toMatchObject({ ok: true, result: { turns: null } });
+    // Schema version 1 without the field: the count is unknown.
+    const { turns: _, ...withoutTurns } = result();
+    expect(checkRunResult(withoutTurns, { runId, fullName })).toMatchObject({
+      ok: true,
+      result: { turns: null },
+    });
+    for (const turns of [-1, 2.5, "7", Number.POSITIVE_INFINITY, true]) {
+      expect(check({ turns }).ok, String(turns)).toBe(false);
+    }
   });
 
   it("refuses an unknown or missing provider, and a succeeded run without one", () => {
@@ -199,6 +234,7 @@ describe("RunFailure", () => {
       expect.arrayContaining(["bad-result", "no-result", "cancelled", "workflow-missing"]),
     );
     expect(WorkflowFailure.options).toContain("no-key");
+    expect(WorkflowFailure.options).toContain("no-credits");
   });
 });
 
@@ -219,7 +255,7 @@ describe("Run and RunSetup", () => {
       finishedAt: at,
       failure: null,
       changedFiles: ["src/app.ts"],
-      usage: { ...result().usage, models: ["claude-sonnet-5-5"] },
+      usage: { ...result().usage, models: ["claude-sonnet-5-5"], turns: 7 },
       provider: "openrouter",
       draftPullRequestUrl: "https://github.com/acme/shop/pull/12",
       githubRunUrl: "https://github.com/acme/shop/actions/runs/1",
@@ -229,6 +265,12 @@ describe("Run and RunSetup", () => {
     expect(Run.safeParse({ ...run, status: "DONE" }).success).toBe(false);
     expect(Run.parse({ ...run, provider: "openai" }).provider).toBe("openai");
     expect(Run.safeParse({ ...run, provider: "codex" }).success).toBe(false);
+    expect(Run.parse({ ...run, provider: "opscrew" }).provider).toBe("opscrew");
+    const unknownTurns = { ...run, usage: { ...run.usage, turns: null } };
+    expect(Run.parse(unknownTurns).usage?.turns).toBeNull();
+    const { turns: _, ...counted } = run.usage ?? {};
+    expect(Run.parse({ ...run, usage: counted }).usage?.turns).toBeNull();
+    expect(Run.safeParse({ ...run, usage: { ...run.usage, turns: -1 } }).success).toBe(false);
     expect(RunSetup.parse({ workflow: true, secret: false, missing: ["Add it."] })).toEqual({
       workflow: true,
       secret: false,

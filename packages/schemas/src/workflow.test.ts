@@ -11,6 +11,7 @@ import {
 
 const FAILURES = [
   "no-key",
+  "no-credits",
   "agent-failed",
   "budget",
   "turns",
@@ -47,12 +48,18 @@ function keys(mapping: string[]): string[] {
 
 const job = (name: string) => under(lines, new RegExp(`^ {2}${name}:$`));
 
-/** A job's steps, each as its lines from its `- ` on. */
+/**
+ * A job's steps, each as its lines from its `- ` on, without the comment that introduces the
+ * next one.
+ */
 function steps(name: string): string[][] {
   const result: string[][] = [];
   for (const line of job(name)) {
     if (/^ {6}- /.test(line)) result.push([line]);
     else result.at(-1)?.push(line);
+  }
+  for (const found of result) {
+    while (/^( {6}#.*|\s*)$/.test(found.at(-1) ?? "x")) found.pop();
   }
   return result;
 }
@@ -77,17 +84,41 @@ const text = (block: string[]) => block.join("\n");
 const expression = (inner: string) => `\${{ ${inner} }}`;
 
 describe("the managed runs' workflow file", () => {
-  it("is devsync.yml, dispatched with exactly the two string inputs", () => {
+  it("is devsync.yml, dispatched with the run's two inputs and OpsCrew's two optional ones", () => {
     expect(WORKFLOW_FILE).toBe("devsync.yml");
     expect(WORKFLOW_PATH).toBe(".github/workflows/devsync.yml");
     expect(keys(under(lines, /^on:$/))).toEqual(["workflow_dispatch"]);
     const inputs = under(lines, /^ {4}inputs:$/);
-    expect(keys(inputs)).toEqual(["run_id", "task"]);
+    expect(keys(inputs)).toEqual(["run_id", "task", "opscrew_origin", "opscrew_request"]);
+    const fields = (input: string) =>
+      under(inputs, new RegExp(`^ {6}${input}:$`)).map((line) => line.trim());
     for (const input of ["run_id", "task"]) {
-      const fields = under(inputs, new RegExp(`^ {6}${input}:$`)).map((line) => line.trim());
-      expect(fields).toContain("required: true");
-      expect(fields).toContain("type: string");
+      expect(fields(input)).toContain("required: true");
+      expect(fields(input)).toContain("type: string");
     }
+    for (const input of ["opscrew_origin", "opscrew_request"]) {
+      expect(fields(input)).toContain("required: false");
+      expect(fields(input)).toContain("type: string");
+      expect(fields(input)).toContain('default: ""');
+    }
+  });
+
+  it("checks OpsCrew's origin before it goes into any address, when OpsCrew sent a request", () => {
+    const read = text(step("agent", "Read the inputs"));
+    expect(read).toContain("origin='^https://[A-Za-z0-9.-]+(:[0-9]+)?$'");
+    expect(read).toContain(
+      [
+        'if [ -n "$OPSCREW_REQUEST" ] && ! [[ $OPSCREW_ORIGIN =~ $origin ]]; then',
+        '  echo "::error::The opscrew_origin input is not the address DevSync sends."',
+        "  exit 1",
+        "fi",
+      ]
+        .map((line) => `          ${line}`)
+        .join("\n"),
+    );
+    const at = (title: string) =>
+      steps("agent").findIndex((s) => s[0] === `      - name: ${title}`);
+    expect(at("Read the inputs")).toBeLessThan(at("Ask OpsCrew for the run's MCP token"));
   });
 
   it("runs one run id at a time", () => {
@@ -101,7 +132,10 @@ describe("the managed runs' workflow file", () => {
     expect(keys(under(lines, /^jobs:$/))).toEqual(["agent", "publish", "report"]);
     expect(under(job("agent"), /^ {4}permissions:$/).map((line) => line.trim())).toEqual([
       "contents: read",
+      "id-token: write",
     ]);
+    // Only the agent job may ask GitHub for an OIDC token.
+    expect(WORKFLOW.match(/id-token/g)).toHaveLength(1);
     expect(under(job("publish"), /^ {4}permissions:$/).map((line) => line.trim())).toEqual([
       "contents: write",
       "pull-requests: write",
@@ -120,11 +154,14 @@ describe("the managed runs' workflow file", () => {
       `          ANTHROPIC_API_KEY: ${expression("secrets.ANTHROPIC_API_KEY")}`,
       `          OPENROUTER_API_KEY: ${expression("secrets.OPENROUTER_API_KEY")}`,
       `          OPENAI_API_KEY: ${expression("secrets.OPENAI_API_KEY")}`,
+      `          OPSCREW_ORIGIN: ${expression("inputs.opscrew_origin")}`,
+      `          OPSCREW_REQUEST: ${expression("inputs.opscrew_request")}`,
     ]);
     expect(WORKFLOW.match(/secrets\./g)).toHaveLength(3);
-    // The keys' names, and what carries a key to Claude Code or Codex: in that step and no other.
+    // The keys' names, the run's MCP token and AI credential, and what carries a key or the
+    // credential to Claude Code or Codex: in that step and no other.
     const keys =
-      /ANTHROPIC_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CODEX_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_BASE_URL/g;
+      /ANTHROPIC_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CODEX_API_KEY|ANTHROPIC_AUTH_TOKEN|ANTHROPIC_BASE_URL|OPSCREW_MCP_TOKEN|OPSCREW_AI_CREDENTIAL/g;
     const mentions = (source: string) => source.match(keys)?.length ?? 0;
     expect(mentions(text(run))).toBeGreaterThan(0);
     expect(mentions(WORKFLOW)).toBe(mentions(text(run)));
@@ -135,7 +172,7 @@ describe("the managed runs' workflow file", () => {
     expect(text(run)).toContain(`codex "\${flags[@]}"`);
   });
 
-  it("runs on the Anthropic key, else on the OpenRouter key through OpenRouter, else Codex on the OpenAI key", () => {
+  it("runs on the Anthropic key, else on the OpenRouter key through OpenRouter, else Codex on the OpenAI key, else on the AI credits", () => {
     const run = text(step("agent", "Run the coding agent"));
     const choice = [
       'if [ -n "$ANTHROPIC_API_KEY" ]; then',
@@ -148,6 +185,8 @@ describe("the managed runs' workflow file", () => {
       'elif [ -n "$OPENAI_API_KEY" ]; then',
       "  provider=openai",
       '  export CODEX_API_KEY="$OPENAI_API_KEY"',
+      'elif [ -n "$OPSCREW_REQUEST" ]; then',
+      "  provider=opscrew",
       "else",
     ]
       .map((line) => `          ${line}`)
@@ -158,8 +197,9 @@ describe("the managed runs' workflow file", () => {
     expect(said).toBeGreaterThan(chosen);
     expect(said).toBeLessThan(run.indexOf(`codex "\${flags[@]}"`));
     expect(said).toBeLessThan(run.indexOf(`claude "\${flags[@]}"`));
-    // The gateway is set in OpenRouter's branch only; the models stay the workflow's own.
-    expect(run.match(/ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN/g)).toHaveLength(2);
+    // A gateway is set through OpenRouter and on the AI credits only; the models stay the
+    // workflow's own, but for the credits' gateway, which answers with its own.
+    expect(run.match(/ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN/g)).toHaveLength(4);
     expect(run).not.toMatch(/ANTHROPIC_\w*MODEL/);
     // Codex runs with the OpenAI key and only then; Claude Code with either of the others.
     const codex = run.indexOf('          if [ "$provider" = openai ]; then\n');
@@ -172,7 +212,7 @@ describe("the managed runs' workflow file", () => {
     expect(WORKFLOW).not.toContain("steps.claude.");
   });
 
-  it("fails no-key with no key, before an agent runs", () => {
+  it("fails no-key with no key and no request from OpsCrew, before an agent runs", () => {
     const run = text(step("agent", "Run the coding agent"));
     const missing = [
       "else",
@@ -184,7 +224,7 @@ describe("the managed runs' workflow file", () => {
       .map((line) => `          ${line}`)
       .join("\n");
     const at = run.indexOf(missing);
-    expect(at).toBeGreaterThan(run.indexOf('elif [ -n "$OPENAI_API_KEY" ]; then'));
+    expect(at).toBeGreaterThan(run.indexOf('elif [ -n "$OPSCREW_REQUEST" ]; then'));
     expect(at).toBeLessThan(run.indexOf(`codex "\${flags[@]}"`));
     expect(at).toBeLessThan(run.indexOf(`claude "\${flags[@]}"`));
     // The patch is built only without a failure, so a run without a key publishes nothing.
@@ -193,16 +233,30 @@ describe("the managed runs' workflow file", () => {
     );
   });
 
-  it("never prints a key, nor traces the script that holds them", () => {
+  it("never prints a key or a token, nor traces the script that holds them", () => {
     const run = text(step("agent", "Run the coding agent"));
     const key =
-      /\$\{?(ANTHROPIC_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CODEX_API_KEY|ANTHROPIC_AUTH_TOKEN|!key)\b/;
+      /\$\{?(ANTHROPIC_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY|CODEX_API_KEY|ANTHROPIC_AUTH_TOKEN|OPSCREW_MCP_TOKEN|OPSCREW_AI_CREDENTIAL|ACTIONS_ID_TOKEN_REQUEST_TOKEN|oidc|token|!key)\b/;
+    // A token is only masked, or written to a file, a pipe or curl's header file: never to the log.
+    const handled = [
+      /^ *echo "::add-mask::\$(oidc|token|OPSCREW_AI_CREDENTIAL)"$/,
+      /^ *(\S+=\$\(|\(umask 077 && )?printf '%s' "\$(oidc|token|OPSCREW_MCP_TOKEN)" (\||> "\$RUNNER_TEMP\/devsync-[a-z-]+")/,
+      /--header @<\(printf 'Authorization: bearer %s\\n' "\$ACTIONS_ID_TOKEN_REQUEST_TOKEN"\) \\$/,
+    ];
+    let masked = 0;
     for (const script of scripts()) {
       for (const line of script.split("\n").filter((l) => /\b(echo|printf)\b/.test(l))) {
-        expect(line).not.toMatch(key);
+        if (!key.test(line)) continue;
+        expect(
+          handled.some((form) => form.test(line)),
+          line,
+        ).toBe(true);
+        if (line.includes("::add-mask::")) masked++;
       }
       expect(script).not.toMatch(/set -[a-z]*x|set -o xtrace/);
     }
+    // The job's OIDC token, the MCP token and the AI credential, each masked once it is had.
+    expect(masked).toBe(3);
     // A key's value is read only where the run chooses, hands over and checks it.
     expect(run.match(/\$ANTHROPIC_API_KEY/g)).toHaveLength(1);
     expect(run.match(/\$OPENROUTER_API_KEY/g)).toHaveLength(2);
@@ -213,10 +267,11 @@ describe("the managed runs' workflow file", () => {
 
   it("starts each agent with only its own key's variable, the shell keeping every key", () => {
     const run = text(step("agent", "Run the coding agent"));
-    // Through OpenRouter the key reaches Claude Code only as ANTHROPIC_AUTH_TOKEN; with the
-    // Anthropic key, Claude Code never sees the OpenRouter or the OpenAI key.
+    // Through OpenRouter the key, and on the credits the credential, reaches Claude Code only as
+    // ANTHROPIC_AUTH_TOKEN; with the Anthropic key, Claude Code never sees the OpenRouter or the
+    // OpenAI key. Its MCP token is in its MCP configuration only.
     expect(run).toContain(
-      `            env -u OPENROUTER_API_KEY -u OPENAI_API_KEY claude "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/claude.json"\n`,
+      `            env -u OPENROUTER_API_KEY -u OPENAI_API_KEY -u OPSCREW_MCP_TOKEN -u OPSCREW_AI_CREDENTIAL "\${limit[@]}" claude "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/claude.json"\n`,
     );
     expect(run.match(/\bclaude "\$\{flags/g)).toHaveLength(1);
     // Codex gets the OpenAI key as CODEX_API_KEY only, chosen when the other two are empty.
@@ -226,20 +281,31 @@ describe("the managed runs' workflow file", () => {
     expect(run.match(/\bcodex "\$\{flags/g)).toHaveLength(1);
     expect(run.match(/CODEX_API_KEY/g)).toHaveLength(2);
     // The shell drops and changes no key the check reads: the Anthropic key is emptied only
-    // through OpenRouter, which is chosen only when that key is empty already.
-    expect(run).not.toMatch(/\bunset\b|export -n|OPENROUTER_API_KEY=|OPENAI_API_KEY=/);
+    // through OpenRouter, which is chosen only when that key is empty already. It unsets only
+    // GitHub's means to ask for OIDC tokens.
+    expect(run.match(/\bunset\b.*/g)).toEqual([
+      "unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    ]);
+    expect(run).not.toMatch(/export -n|OPENROUTER_API_KEY=|OPENAI_API_KEY=/);
     const emptied = run.indexOf("export ANTHROPIC_API_KEY=");
     expect(run.match(/ANTHROPIC_API_KEY=/g)).toHaveLength(1);
     expect(emptied).toBeGreaterThan(run.indexOf('elif [ -n "$OPENROUTER_API_KEY" ]; then'));
     expect(emptied).toBeLessThan(run.indexOf('elif [ -n "$OPENAI_API_KEY" ]; then'));
-    const loop = run.indexOf("for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY; do");
-    expect(loop).toBeGreaterThan(run.indexOf("env -u OPENROUTER_API_KEY -u OPENAI_API_KEY claude"));
+    // The MCP token and the credential are exported, for the check to read them.
+    expect(run).toContain("export OPSCREW_MCP_TOKEN=\n");
+    expect(run).toContain("export OPSCREW_AI_CREDENTIAL=\n");
+    const loop = run.indexOf(
+      "for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPSCREW_MCP_TOKEN OPSCREW_AI_CREDENTIAL; do",
+    );
+    expect(loop).toBeGreaterThan(run.indexOf(`claude "\${flags[@]}"`));
     expect(loop).toBeGreaterThan(run.indexOf("env -u OPENAI_API_KEY codex"));
   });
 
-  it("refuses a change that holds any key, every one that is set, never putting one in argv", () => {
+  it("refuses a change that holds any key or token, every one that is set, never putting one in argv", () => {
     const run = text(step("agent", "Run the coding agent"));
-    const loop = run.indexOf("for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY; do");
+    const loop = run.indexOf(
+      "for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPSCREW_MCP_TOKEN OPSCREW_AI_CREDENTIAL; do",
+    );
     const guard = run.indexOf(`if [ -z "$failure" ] && [ -n "\${!key}" ]; then`);
     const files = run.indexOf('grep -rqsF --exclude-dir=.git -f <(printenv "$key") .');
     const names = run.indexOf(
@@ -288,20 +354,181 @@ describe("the managed runs' workflow file", () => {
 
   it("hands the inputs to scripts only through env", () => {
     const all = scripts();
-    expect(all).toHaveLength(7);
+    expect(all).toHaveLength(8);
     for (const script of all) expect(script).not.toContain("${{");
     const uses = lines.filter((line) => line.includes("inputs."));
     expect(uses.length).toBeGreaterThan(0);
     for (const line of uses) {
       expect(line).toMatch(
-        /^( {10}[A-Z_]+: \$\{\{ inputs\.(run_id|task) \}\}| {2}group: devsync-\$\{\{ inputs\.run_id \}\})$/,
+        /^( {10}[A-Z_]+: \$\{\{ inputs\.(run_id|task|opscrew_origin|opscrew_request) \}\}| {2}group: devsync-\$\{\{ inputs\.run_id \}\}| {8}if: inputs\.opscrew_request != '')$/,
       );
     }
   });
 
+  it("asks OpsCrew for the run's MCP token with the job's OIDC token, only when OpsCrew sent a request", () => {
+    const ask = step("agent", "Ask OpsCrew for the run's MCP token");
+    expect(ask.slice(1, 4).map((line) => line.trim())).toEqual([
+      "if: inputs.opscrew_request != ''",
+      // A refusal or a hang only means no MCP: the run goes on.
+      "continue-on-error: true",
+      "timeout-minutes: 2",
+    ]);
+    expect(text(ask)).not.toMatch(/secrets|API_KEY/);
+    const titles = steps("agent").map((s) => s[0]);
+    expect(titles.indexOf("      - name: Ask OpsCrew for the run's MCP token")).toBe(
+      titles.indexOf("      - name: Run the coding agent") - 1,
+    );
+    const script = text(ask);
+    // The OIDC token, for OpsCrew's origin only, its request token never in curl's arguments.
+    for (const part of [
+      "set +e",
+      `audience=$(jq -rn --arg origin "$OPSCREW_ORIGIN" '$origin | @uri')`,
+      `--header @<(printf 'Authorization: bearer %s\\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN") \\`,
+      `"$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" | jq -r '.value | strings')`,
+      'echo "::add-mask::$oidc"',
+      `(umask 077 && printf '%s' "$oidc" > "$RUNNER_TEMP/devsync-oidc")`,
+      // Exchanged at OpsCrew's /mcp/credential, the token through stdin, never in argv.
+      `token=$(printf '%s' "$oidc" | jq -Rsc --arg request "$OPSCREW_REQUEST" '{token: ., request: $request}' |`,
+      "--data-binary @- \"$OPSCREW_ORIGIN/mcp/credential\" | jq -r '.token | strings')",
+      'echo "::add-mask::$token"',
+      `(umask 077 && printf '%s' "$token" > "$RUNNER_TEMP/devsync-mcp-token")`,
+    ]) {
+      expect(script).toContain(part);
+    }
+    // Each value is masked before it is written anywhere.
+    expect(script.indexOf('echo "::add-mask::$oidc"')).toBeLessThan(
+      script.indexOf(`printf '%s' "$oidc" >`),
+    );
+    expect(script.indexOf('echo "::add-mask::$token"')).toBeLessThan(
+      script.indexOf(`printf '%s' "$token" >`),
+    );
+    for (const warning of [
+      "::warning::GitHub gave this job no OIDC token, so the agent works without OpsCrew's tools or AI credits.",
+      "::warning::OpsCrew refused this run its MCP token, so the agent works without OpsCrew's tools.",
+    ]) {
+      expect(script).toContain(`echo "${warning}"`);
+    }
+    expect(script).not.toMatch(/exit [1-9]/);
+    // Only this step asks GitHub for an OIDC token; the agent step unsets the means to.
+    const asking = lines.filter((line) => line.includes("ACTIONS_ID_TOKEN_REQUEST"));
+    expect(asking).toHaveLength(3);
+    expect(asking.filter((line) => script.includes(line))).toHaveLength(2);
+  });
+
+  it("keeps GitHub's OIDC means from the agents, and the OIDC token too once it is used", () => {
+    const run = text(step("agent", "Run the coding agent"));
+    const unset = run.indexOf("unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN");
+    expect(unset).toBeGreaterThan(run.indexOf("set +e"));
+    expect(unset).toBeLessThan(run.indexOf("if [ -n"));
+    // The step's own env can't blank them: the runner sets them over it.
+    expect(text(step("agent", "Run the coding agent"))).not.toMatch(
+      /ACTIONS_ID_TOKEN_REQUEST_\w+:/,
+    );
+    // The files the step before left are read and removed before anything else.
+    const removed = run.indexOf(
+      'rm -f "$RUNNER_TEMP/devsync-oidc" "$RUNNER_TEMP/devsync-mcp-token"',
+    );
+    expect(removed).toBeGreaterThan(unset);
+    expect(removed).toBeLessThan(run.indexOf('if [ -n "$ANTHROPIC_API_KEY" ]; then'));
+    expect(run).toContain(
+      '[ ! -f "$RUNNER_TEMP/devsync-oidc" ] || oidc=$(< "$RUNNER_TEMP/devsync-oidc")',
+    );
+    expect(run).toContain(
+      '[ ! -f "$RUNNER_TEMP/devsync-mcp-token" ] || OPSCREW_MCP_TOKEN=$(< "$RUNNER_TEMP/devsync-mcp-token")',
+    );
+    // The OIDC token is a shell variable only, never exported to an agent.
+    expect(run).not.toMatch(/export oidc|oidc=.*&&|env [^\n]*oidc/);
+    expect(run).toContain(`trap 'rm -f "$RUNNER_TEMP/devsync-mcp.json"' EXIT`);
+  });
+
+  it("pays with the workspace's AI credits with no key, through OpsCrew's gateway, for 30 minutes at most", () => {
+    const run = text(step("agent", "Run the coding agent"));
+    const credits = run.indexOf('          if [ "$provider" = opscrew ]; then\n');
+    const agents = run.indexOf('          if [ "$provider" = openai ]; then\n');
+    expect(credits).toBeGreaterThan(run.indexOf('echo "provider=$provider" >> "$GITHUB_OUTPUT"'));
+    expect(agents).toBeGreaterThan(credits);
+    const branch = run.slice(credits, agents);
+    for (const part of [
+      'if [ -n "$oidc" ]; then',
+      `OPSCREW_AI_CREDENTIAL=$(printf '%s' "$oidc" | jq -Rsc --arg request "$OPSCREW_REQUEST" '{token: ., request: $request}' |`,
+      "--data-binary @- \"$OPSCREW_ORIGIN/ai/credential\" | jq -r '.token | strings')",
+      'if [ -z "$OPSCREW_AI_CREDENTIAL" ]; then',
+      `echo "::error::OpsCrew didn't let this run use the workspace's AI credits. Buy AI credits on the dashboard's Billing page, or add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization."`,
+      'echo "failure=no-credits" >> "$GITHUB_OUTPUT"',
+      'echo "::add-mask::$OPSCREW_AI_CREDENTIAL"',
+      'export ANTHROPIC_BASE_URL="$OPSCREW_ORIGIN/ai"',
+      'export ANTHROPIC_AUTH_TOKEN="$OPSCREW_AI_CREDENTIAL"',
+    ]) {
+      expect(branch).toContain(part);
+    }
+    // A refused exchange ends the run before an agent starts.
+    expect(branch.slice(branch.indexOf("failure=no-credits"))).toMatch(
+      /^failure=no-credits[^\n]*\n +exit 0\n/,
+    );
+    expect(branch.indexOf("::add-mask::")).toBeGreaterThan(branch.indexOf("failure=no-credits"));
+    expect(branch.indexOf("::add-mask::")).toBeLessThan(
+      branch.indexOf("export ANTHROPIC_BASE_URL"),
+    );
+    // The credits run Claude Code only, on the gateway's model, for the credential's 30 minutes.
+    const claude = run.indexOf("\n          else\n", agents);
+    const model = run.indexOf(
+      '            if [ "$provider" = opscrew ]; then\n              model=claude-haiku-5-5\n              limit=(timeout 30m)\n            fi\n',
+    );
+    expect(model).toBeGreaterThan(claude);
+    expect(run.match(/\/ai\/credential/g)).toHaveLength(1);
+    expect(WORKFLOW.match(/\/ai\/credential/g)).toHaveLength(1);
+    expect(run.match(/claude-haiku-5-5/g)).toHaveLength(1);
+  });
+
+  it("gives each agent OpsCrew's MCP as its one server, with the run's token, when it has one", () => {
+    const run = text(step("agent", "Run the coding agent"));
+    // Claude Code: a configuration only it reads, the server's tools allowed besides the file
+    // tools, and no MCP tool at all without the token.
+    const configured = run.indexOf(
+      '            if [ -n "$OPSCREW_MCP_TOKEN" ]; then\n',
+      run.indexOf("\n          else\n", run.indexOf('if [ "$provider" = openai ]')),
+    );
+    expect(configured).toBeGreaterThan(0);
+    for (const part of [
+      `(umask 077 && printf '%s' "$OPSCREW_MCP_TOKEN" | jq -Rc --arg url "$OPSCREW_ORIGIN/mcp" \\`,
+      `'{mcpServers: {opscrew: {type: "http", url: $url, headers: {Authorization: ("Bearer " + .)}}}}' \\`,
+      '> "$RUNNER_TEMP/devsync-mcp.json")',
+      'mcp=(--mcp-config "$RUNNER_TEMP/devsync-mcp.json" --allowedTools "mcp__opscrew__*")',
+      "denied=Bash,WebFetch,WebSearch\n",
+      `mcp=(--mcp-config '{"mcpServers":{}}')`,
+      "denied='Bash,WebFetch,WebSearch,mcp__*'",
+    ]) {
+      expect(run.slice(configured), part).toContain(part);
+    }
+    expect(run).toContain(`--strict-mcp-config "\${mcp[@]}"`);
+    // Codex: the same server, its token from Codex's environment, which its commands never get.
+    const codex = run.slice(
+      run.indexOf('if [ "$provider" = openai ]'),
+      run.indexOf("\n          else\n", run.indexOf('if [ "$provider" = openai ]')),
+    );
+    expect(codex).toMatch(
+      / {12}if \[ -n "\$OPSCREW_MCP_TOKEN" \]; then\n(?: *#[^\n]*\n)* {14}flags\+=\(\n {16}-c "mcp_servers\.opscrew\.url=\\"\$OPSCREW_ORIGIN\/mcp\\""\n {16}-c 'mcp_servers\.opscrew\.bearer_token_env_var="OPSCREW_MCP_TOKEN"'\n {16}-c 'mcp_servers\.opscrew\.default_tools_approval_mode="approve"'\n {14}\)\n {12}fi\n/,
+    );
+    expect(codex.indexOf("mcp_servers")).toBeLessThan(codex.indexOf(`codex "\${flags[@]}"`));
+  });
+
+  it("reports the agent's turns: Claude Code's count, none from Codex", () => {
+    const run = text(step("agent", "Run the coding agent"));
+    expect(run).toContain(
+      `turns=$(jq -c '.num_turns | if type == "number" and . >= 0 then floor else null end' "$RUNNER_TEMP/claude.json")`,
+    );
+    expect(run).toMatch(/ {12}# Codex reports no count of its turns\.\n {12}turns=null\n/);
+    expect(run).toContain('echo "turns=$turns" >> "$GITHUB_OUTPUT"');
+    expect(job("agent")).toContain(`      turns: ${expression("steps.agent.outputs.turns")}`);
+    const write = text(step("report", "Write the result"));
+    expect(write).toContain(`TURNS: ${expression("needs.agent.outputs.turns")}`);
+    expect(write).toContain('--arg turns "$TURNS"');
+    expect(write).toContain("turns: parsed($turns; null),");
+  });
+
   it("runs a pinned Claude Code headless, with file tools only and nothing from the repository", () => {
     const install = text(step("agent", "Install Claude Code"));
-    const version = /@anthropic-ai\/claude-code@(\d+)\.(\d+)\.(\d+)\n/.exec(install);
+    const version = /@anthropic-ai\/claude-code@(\d+)\.(\d+)\.(\d+)$/.exec(install);
     expect(version).not.toBeNull();
     const [major = 0, minor = 0, patch = 0] = (version ?? []).slice(1).map(Number);
     expect(major).toBe(2);
@@ -310,14 +537,14 @@ describe("the managed runs' workflow file", () => {
     const run = text(step("agent", "Run the coding agent"));
     for (const flag of [
       "--bare -p --output-format json",
-      '--model "$DEVSYNC_MODEL"',
+      '--model "$model"',
       '--max-turns "$DEVSYNC_MAX_TURNS"',
       '--max-budget-usd "$DEVSYNC_MAX_BUDGET_USD"',
       '--tools "Read,Glob,Grep,Edit,Write"',
-      '--disallowedTools "Bash,WebFetch,WebSearch,mcp__*"',
+      '--disallowedTools "$denied"',
       "--permission-mode acceptEdits",
       "--permission-prompts none",
-      `--strict-mcp-config --mcp-config '{"mcpServers":{}}'`,
+      `--strict-mcp-config "\${mcp[@]}"`,
       "--setting-sources user",
       `--settings '{"disableAllHooks":true,"permissions":{"blockReadsOutsideWorkingDirectories":true,"deny":["Read(//proc/**)"]}}'`,
       "--disable-slash-commands",
@@ -329,6 +556,8 @@ describe("the managed runs' workflow file", () => {
     expect(mode).toMatch(/--permission-mode acceptEdits +# .*never .*auto.*bypassPermissions/);
     expect(run).toContain("untrusted data");
     expect(run).toContain('< "$RUNNER_TEMP/task.json"');
+    // The workflow's model, but on the credits, whose gateway answers with its own.
+    expect(run).toContain("            model=$DEVSYNC_MODEL\n");
     expect(under(job("agent"), /^ {4}env:$/).map((line) => line.trim())).toEqual([
       "# The model, the turn cap and the spend cap (US dollars) of every run: edit them here.",
       "DEVSYNC_MODEL: sonnet",
@@ -524,6 +753,7 @@ describe("the managed runs' workflow file", () => {
       "usage:",
       "models:",
       "provider: present($provider)",
+      "turns: parsed($turns; null)",
       "pullRequestUrl:",
       "branch:",
     ]) {

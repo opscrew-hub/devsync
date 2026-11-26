@@ -92,14 +92,20 @@ function Tab() {
   return <ProjectTab selectedTaskId={selected} onSelectTask={select} />;
 }
 
+/** What the server answers for a repository with neither the workflow nor a key. */
+const lacking: RunSetup = { workflow: false, secret: false, missing: [SETUP_WORDS.workflow] };
+const CREDITS =
+  "The repository has no ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY secret, so runs pay with the workspace's AI credits.";
+
 describe("the runs section's setup", () => {
   it("lists what's missing in the server's words, with the workflow file to copy", async () => {
     const user = userEvent.setup();
-    show({ setup: setupMissing });
+    show({ setup: lacking });
     const runs = await section();
 
     expect(within(runs).getByText(SETUP_WORDS.workflow)).toBeTruthy();
-    expect(within(runs).getByText(SETUP_WORDS.secret)).toBeTruthy();
+    expect(within(runs).queryByText(SETUP_WORDS.secret)).toBeNull();
+    expect(within(runs).getByText(new RegExp(`^${CREDITS}`))).toBeTruthy();
     expect(within(runs).getByText(".github/workflows/devsync.yml")).toBeTruthy();
     expect(runs.querySelector("pre")?.textContent).toBe(WORKFLOW);
     expect(
@@ -122,13 +128,19 @@ describe("the runs section's setup", () => {
     expect(reason(ask)).toBe("Add what the setup lists above, then check again.");
   });
 
-  it("shows no workflow file when only the secret is missing", async () => {
-    show({ setup: { workflow: true, secret: false, missing: [SETUP_WORDS.secret] } });
+  it("lets a run be asked for without a key, saying it pays with the AI credits", async () => {
+    show({ setup: { workflow: true, secret: false, missing: [] } });
     const runs = await section();
-    expect(within(runs).getByText(SETUP_WORDS.secret)).toBeTruthy();
+    const credits = within(runs).getByText(new RegExp(`^${CREDITS}`));
+    expect(credits.textContent).toBe(`${CREDITS} Add a key on GitHub`);
+    expect(within(credits).getByRole("link").textContent).toBe("Add a key on GitHub");
+    expect(within(runs).getByText("The repository has the workflow.")).toBeTruthy();
     expect(within(runs).queryByText(SETUP_WORDS.workflow)).toBeNull();
     expect(runs.querySelector("pre")).toBeNull();
     expect(within(runs).queryByRole("link", { name: "Create it on GitHub" })).toBeNull();
+    const ask = button("Ask for a run", runs);
+    expect(ask.disabled).toBe(false);
+    expect(reason(ask)).toBeNull();
   });
 
   it("says when the repository is set up, and lets a Ready task's run be asked for", async () => {
@@ -139,6 +151,7 @@ describe("the runs section's setup", () => {
         "The repository has the workflow and an ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY secret.",
       ),
     ).toBeTruthy();
+    expect(within(runs).queryByText(new RegExp(CREDITS))).toBeNull();
     expect(runs.querySelector("pre")).toBeNull();
     expect(within(runs).getByText("No runs yet.")).toBeTruthy();
     const ask = button("Ask for a run", runs);
@@ -426,8 +439,10 @@ describe("a run waiting for approval", () => {
     expect(dialog.textContent).toContain("revision 2");
     expect(dialog.textContent).toContain("Ben Okafor");
     expect(dialog.textContent).toContain(
-      "paid with its ANTHROPIC_API_KEY secret or, without that, its OPENROUTER_API_KEY. With only its OPENAI_API_KEY, Codex works on it instead.",
+      "paid with its ANTHROPIC_API_KEY secret or, without that, its OPENROUTER_API_KEY. With only its OPENAI_API_KEY, Codex works on it instead. With none of them, the run pays with the workspace's AI credits.",
     );
+    // The repository has a key: nothing says this run uses the credits.
+    expect(within(dialog).queryByText(/^The repository has none of these secrets/)).toBeNull();
     expect(
       within(dialog)
         .getAllByRole("definition")
@@ -440,6 +455,20 @@ describe("a run waiting for approval", () => {
     await userEvent.click(button("Approve the run", dialog));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(posts(sent).map((s) => s.path)).toEqual([`/runs/${waiting.id}/approve`]);
+  });
+
+  it("says before approving that a run in a repository without a key pays with the AI credits", async () => {
+    show({ runs: [run(70)], setup: { workflow: true, secret: false, missing: [] } });
+    const runs = await section();
+    const [item] = items(runs);
+    if (!item) throw new Error("No run listed.");
+    await userEvent.click(button("Approve", item));
+    const dialog = screen.getByRole("dialog", { name: "Approve the run" });
+    expect(
+      within(dialog).getByText(
+        "The repository has none of these secrets, so this run pays with the workspace's AI credits.",
+      ),
+    ).toBeTruthy();
   });
 
   it.each([
@@ -596,6 +625,7 @@ describe("a run's state and result", () => {
             cacheReadInputTokens: 50_000,
             costUsd: 0.4213,
             models: ["claude-sonnet-5-5"],
+            turns: 1_204,
           },
           provider: "openrouter",
           draftPullRequestUrl: "https://github.com/acme/shop/pull/43",
@@ -632,6 +662,7 @@ describe("a run's state and result", () => {
     ).toBeTruthy();
     expect(within(succeeded).getByText("claude-sonnet-5-5")).toBeTruthy();
     expect(within(succeeded).getByText("via OpenRouter")).toBeTruthy();
+    expect(within(succeeded).getByText("Turns").nextElementSibling?.textContent).toBe("1,204");
     const pull = within(succeeded).getByRole("link", { name: "acme/shop/pull/43" });
     expect(pull.getAttribute("href")).toBe("https://github.com/acme/shop/pull/43");
     expect(pull.getAttribute("rel")).toBe("noopener noreferrer");
@@ -655,6 +686,7 @@ describe("a run's state and result", () => {
       cacheReadInputTokens: 0,
       costUsd: 0.05,
       models: ["claude-sonnet-5-5"],
+      turns: null,
     };
     const noKey = {
       code: "no-key" as const,
@@ -691,6 +723,44 @@ describe("a run's state and result", () => {
     expect(within(failed).getByText(noKey.message)).toBeTruthy();
     expect(within(failed).queryByText(/^via /)).toBeNull();
     expect(within(failed).queryByText("Models")).toBeNull();
+    // No agent gave a count of its turns.
+    expect(within(runs).queryByText("Turns")).toBeNull();
+  });
+
+  it("shows a run paid with the workspace's AI credits, its turns and its cost as an estimate", async () => {
+    const ended = { decidedBy: ana, decidedAt: at, startedAt: at, finishedAt: at };
+    const noCredits = {
+      code: "no-credits" as const,
+      message:
+        "OpsCrew didn't let this run use the workspace's AI credits: they are switched off, used up or at their cap. Buy AI credits on the dashboard's Billing page, or add a key of your own as the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret of the repository or its organization, then ask for a new run.",
+    };
+    show({
+      runs: [
+        run(76, {
+          ...ended,
+          status: "SUCCEEDED",
+          usage: {
+            inputTokens: 4_000,
+            outputTokens: 600,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+            costUsd: 0.0071,
+            models: ["claude-haiku-5-5"],
+            turns: 12,
+          },
+          provider: "opscrew",
+        }),
+        run(75, { ...ended, status: "FAILED", failure: noCredits, provider: "opscrew" }),
+      ],
+    });
+    const runs = await section();
+    const [paid, refused] = items(runs);
+    if (!paid || !refused) throw new Error("Two runs should be listed.");
+    expect(within(paid).getByText("claude-haiku-5-5")).toBeTruthy();
+    expect(within(paid).getByText("via AI credits")).toBeTruthy();
+    expect(within(paid).getByText("Turns").nextElementSibling?.textContent).toBe("12");
+    expect(within(paid).getByText("≈ $0.0071, estimated from Anthropic's prices")).toBeTruthy();
+    expect(within(refused).getByText(noCredits.message)).toBeTruthy();
   });
 
   it.each([

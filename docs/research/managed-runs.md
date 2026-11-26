@@ -595,3 +595,65 @@ Notes on the skeleton:
 9. `actions/download-artifact` current major and `needs.<job>.outputs` size limit were not checked.
 10. Cost: `--max-budget-usd` is a client-side estimate and can be overshot; also set
     `timeout-minutes` (done) and the user's Console spend limit as the hard cap.
+
+## The run's MCP and the AI credits
+
+2026-11-26, for P5 (docs/platform.md). Official sources only, plus the local runs of the step
+scripts in `workflow.run.test.ts`.
+
+- **Claude Code's MCP configuration** ([MCP](https://code.claude.com/docs/en/mcp.md)): a remote
+  server is `{ "type": "http", "url", "headers": { "Authorization": "Bearer …" } }`; an entry
+  with a `url` and no `type` is read as a stdio server and skipped. `${VAR}` expansion is
+  documented for `.mcp.json` only, not for `--mcp-config`, and in a remote server's `url` and
+  `headers` Claude Code reads its own credential variables (`ANTHROPIC_AUTH_TOKEN` and the like)
+  as empty. So the workflow writes the token into the configuration file itself, not a reference
+  to a variable. `--strict-mcp-config` loads only the servers passed with `--mcp-config`.
+- **Bare mode** ([headless](https://code.claude.com/docs/en/headless.md)): it skips the
+  auto-discovered MCP servers, and loads "MCP servers: `--mcp-config <file-or-json>`"; only
+  servers supplied on the command line connect. With `-p` and `--mcp-config`, Claude Code waits up
+  to `MCP_TIMEOUT` (30 seconds) for a pending server before the first turn, and a skipped entry is
+  reported only in stream-json's `mcp_server_errors`.
+- **Permission rules for MCP tools**
+  ([permissions](https://code.claude.com/docs/en/permissions.md)): `mcp__<server>__*` allows every
+  tool of one server; an unanchored allow glob (`mcp__*`) approves nothing. Rules are evaluated
+  deny, then ask, then allow, so a deny of `mcp__*` would win over the allow: the deny is dropped
+  when OpsCrew's server is configured, and kept when no server is.
+- **The base URL and the auth variable** ([research/openrouter.md](openrouter.md), from the LLM
+  gateway page and a local check): `ANTHROPIC_AUTH_TOKEN` goes out as `Authorization: Bearer`,
+  `ANTHROPIC_API_KEY` as `x-api-key`, and bare mode honours `ANTHROPIC_BASE_URL` and
+  `ANTHROPIC_AUTH_TOKEN`. The host's gateway takes either header, never two that differ, so the
+  credential goes as `ANTHROPIC_AUTH_TOKEN` with `ANTHROPIC_API_KEY` empty, as through OpenRouter.
+- **GitHub's OIDC token** ([OIDC reference](https://docs.github.com/en/actions/reference/security/oidc);
+  the toolkit's [`oidc-utils.ts`](https://github.com/actions/toolkit/blob/main/packages/core/src/oidc-utils.ts)):
+  `id-token: write`, on the job or the workflow, lets a step use `ACTIONS_ID_TOKEN_REQUEST_URL`
+  and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`: a GET of the URL with `&audience=<URL-encoded audience>`
+  and the request token as a bearer answers `{ "value": "<JWT>" }`. The page states no lifetime.
+- **Whether a step's `env` can blank those two**
+  ([`ActionRunner.cs`](https://github.com/actions/runner/blob/main/src/Runner.Worker/ActionRunner.cs),
+  [`ScriptHandler.cs`](https://github.com/actions/runner/blob/main/src/Runner.Worker/Handlers/ScriptHandler.cs)):
+  no. The step's `env` is put in the handler's environment first, then the script handler sets
+  `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` over it whenever the job
+  may ask for a token. So the agent step unsets them in its shell before any agent starts. The
+  step's own bash still holds them in its initial environment, as it holds the keys: Claude Code
+  can't read `/proc` (its Read deny, no Bash) and Codex's commands get a `/proc` of their own
+  (the Install Codex probe), as for the keys.
+- **Codex's MCP configuration** ([config reference](https://learn.chatgpt.com/docs/config-file/config-reference);
+  [`config/src/mcp_types.rs`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/config/src/mcp_types.rs)
+  and [`core/src/mcp_tool_call.rs`](https://github.com/openai/codex/blob/rust-v0.171.0/codex-rs/core/src/mcp_tool_call.rs)
+  at 0.171.0): a streamable HTTP server is `mcp_servers.<id>.url` with `bearer_token_env_var`,
+  the variable Codex reads the token from. `default_tools_approval_mode` is `auto` (the default),
+  `prompt`, `writes` or `approve`. With `auto` a tool needs an approval unless it is marked
+  read-only, and with `approval_policy = "never"` such a call is refused ("MCP tool call requires
+  approval, but approval policy is never"); `approve` needs none. The workflow sets `approve`,
+  since OpsCrew decides what a run's token may do. Its commands still get no token
+  (`shell_environment_policy`, above).
+
+### To check live
+
+- A run on the credits through the dashboard's gateway: Claude Code 2.1.311 in bare mode against
+  `<origin>/ai` (no other endpoint it calls first), the 30-minute limit, and the credits used
+  against the run's turns and Claude Code's estimate.
+- The run's `/mcp` from Claude Code and from Codex: the tools listed, a call answered, a write
+  refused; that Codex connects with its sandbox's network off (the server is Codex's, not a
+  command's).
+- The OIDC exchange against the dashboard: the audience, the request's checks and a refusal's 403.

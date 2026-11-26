@@ -2,11 +2,13 @@
  * Managed runs (docs/managed-runs.md): a member asks for a run on a Ready task, an Owner, Admin or
  * Approver approves or rejects it, and its requester (or one of them) may cancel it while it waits.
  * The `devsync.runs` queue dispatches an approved run to the project's own `devsync.yml` through
- * `host.github`; when GitHub reports the run completed (a `workflow_run` fact on `devsync.github`),
- * its `devsync-result` artifact is read, checked and kept, and its artifacts deleted. A run is
- * dispatched at most once (`dispatchRun`). The queue's schedule reads a run still in GitHub six
- * hours after its dispatch once more, and ends it without a result. Every change is on the task's
- * timeline (an outbox event) and audited, in its transaction. Every query filters by the project.
+ * `host.github`, with the host's reference for the run's MCP token and AI credits
+ * (`host.ai.allowRun`); when GitHub reports the run completed (a `workflow_run` fact on
+ * `devsync.github`), its `devsync-result` artifact is read, checked and kept, and its artifacts
+ * deleted. A run is dispatched at most once (`dispatchRun`). The queue's schedule reads a run still
+ * in GitHub six hours after its dispatch once more, and ends it without a result. Every change is
+ * on the task's timeline (an outbox event) and audited, in its transaction. Every query filters by
+ * the project.
  */
 import {
   API_KEY_SECRET_NAMES,
@@ -79,7 +81,11 @@ const SWEEP_BATCH = 100;
 /** The largest `result.json` DevSync reads: 1,000 paths of 400 characters fit well within it. */
 const RESULT_MAX_BYTES = 1024 * 1024;
 
-/** What the setup asks the user to add, word for word in the runs section and in a refusal. */
+/**
+ * What the setup asks the user to add, word for word in the runs section and in a refusal. A key
+ * isn't one of them, as runs without one pay with the workspace's AI credits: `secret` is what a
+ * `no-key` run says to do.
+ */
 export const SETUP_STEP = {
   workflow: `Add ${WORKFLOW_PATH} from the runs section to the repository's default branch.`,
   secret: `Add the ${API_KEY_SECRET_NAMES} Actions secret to the repository or its organization.`,
@@ -123,7 +129,8 @@ const SETUP_REFUSAL: Record<GithubFailure, [ErrorCode, string]> = {
 
 /**
  * A failed run's reason in plain English, saying what to do next. `provider` names the agent: Codex
- * with an OpenAI key, else Claude Code (which alone has the workflow's budget and turn limit).
+ * with an OpenAI key, else Claude Code (which alone has the workflow's budget and turn limit), on the
+ * AI credits too.
  */
 export function failureMessage(
   failure: RunFailure,
@@ -134,6 +141,7 @@ export function failureMessage(
   const agent = provider === "openai" ? "Codex" : "Claude Code";
   const messages: Record<RunFailure, string> = {
     "no-key": SETUP_STEP.secret,
+    "no-credits": `OpsCrew didn't let this run use the workspace's AI credits: they are switched off, used up or at their cap. Buy AI credits on the dashboard's Billing page, or add a key of your own as the ${API_KEY_SECRET_NAMES} Actions secret of the repository or its organization, then ask for a new run.`,
     "agent-failed": `${agent} stopped with an error. Open the GitHub run to see why, then ask for a new run.`,
     budget: `Claude Code reached the workflow's budget before it finished. Raise --max-budget-usd in ${WORKFLOW_PATH}, or narrow the task, then ask for a new run.`,
     turns: `Claude Code reached the workflow's turn limit before it finished. Raise --max-turns in ${WORKFLOW_PATH}, or narrow the task, then ask for a new run.`,
@@ -338,7 +346,7 @@ async function recordEnd(
       status: ending.status,
       failure: ending.failure,
       finishedAt: at,
-      tokenUsage: result ? { ...result.usage, models: result.models } : null,
+      tokenUsage: result ? { ...result.usage, models: result.models, turns: result.turns } : null,
       changedFiles: result ? result.changedFiles : null,
       provider: result ? result.provider : null,
       draftPullRequestUrl: pullRequestNumber !== null ? (result?.pullRequestUrl ?? null) : null,
@@ -368,6 +376,7 @@ async function recordEnd(
         cacheCreationInputTokens: result ? result.usage.cacheCreationInputTokens : null,
         cacheReadInputTokens: result ? result.usage.cacheReadInputTokens : null,
         costUsd: result ? result.usage.costUsd : null,
+        turns: result ? result.turns : null,
       },
     },
     at,
@@ -418,7 +427,7 @@ export async function listRuns(
 /**
  * `GET /runs/setup` (read): whether the repository has `devsync.yml` on its default branch and an
  * `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` secret its runs can read, and what
- * to add.
+ * to add: the workflow only, as a run without a key pays with the workspace's AI credits.
  */
 export async function runSetup(host: DevSyncHost, ctx: ProjectContext): Promise<RunSetup> {
   const answer = await host.github.setup(ctx.project.projectId, WORKFLOW_FILE);
@@ -430,14 +439,13 @@ export async function runSetup(host: DevSyncHost, ctx: ProjectContext): Promise<
   const secret = answer.secrets.some((name) => keys.includes(name.toUpperCase()));
   const missing: string[] = [];
   if (!answer.workflow) missing.push(SETUP_STEP.workflow);
-  if (!secret) missing.push(SETUP_STEP.secret);
   return { workflow: answer.workflow, secret, missing };
 }
 
 /**
  * `POST /tasks/:taskId/runs` (`run.request`): a run of the task's current revision, waiting for
  * approval. Refused unless the task is Ready, fits the run's input and has no run that hasn't
- * ended, and while the repository lacks the workflow or the secret (the setup's own words).
+ * ended, and while the repository lacks the workflow (the setup's own words).
  */
 export async function requestRun(
   host: DevSyncHost,
@@ -587,16 +595,50 @@ export async function cancelRun(
 // --- The queue: dispatch, completion, sweep -----------------------------------------------------
 
 /**
+ * The host's reference for a run's MCP token and AI credits (`host.ai.allowRun`): OpsCrew's origin,
+ * https and a host name as the workflow checks it, and the signed request. Both fit beside the
+ * `task` input within GitHub's 65,535 characters.
+ */
+const AllowedRun = z.object({
+  origin: z
+    .string()
+    .max(255)
+    .regex(/^https:\/\/[A-Za-z0-9.-]+(:[0-9]+)?$/),
+  request: z.string().min(1).max(4000),
+});
+
+/**
+ * The host's reference for the run, or null: the host gives none (a read-only project, or DevSync
+ * off), or answered something DevSync can't use, which is logged without it.
+ */
+async function allowedRun(
+  host: DevSyncHost,
+  job: { projectId: string; runId: string },
+): Promise<z.infer<typeof AllowedRun> | null> {
+  const input = { projectId: job.projectId, runRef: job.runId, workflow: WORKFLOW_FILE };
+  const answer = await host.ai.allowRun(input);
+  if (answer === null) return null;
+  const parsed = AllowedRun.safeParse(answer);
+  if (parsed.success) return parsed.data;
+  host.log.error(
+    `The host's AI answered something DevSync can't use for run ${job.runId}, so it starts without OpsCrew's MCP or AI credits.`,
+  );
+  return null;
+}
+
+/**
  * `devsync.runs` for one approved run, dispatched at most once, with no transaction open while
- * GitHub is asked:
+ * the host or GitHub is asked:
  *
- * 1. the run is claimed: its `started_at` set while it is `QUEUED` and has none (one statement);
- * 2. GitHub starts the project's `devsync.yml` with the run's id and the requested revision's
- *    requirements;
- * 3. the run is then in GitHub (`RUNNING`, with GitHub's run id), or `FAILED` with GitHub's
+ * 1. the host gives its reference for the run's MCP token and AI credits (`host.ai.allowRun`), or
+ *    none; a host that fails leaves the run unclaimed, so the job's retry dispatches it;
+ * 2. the run is claimed: its `started_at` set while it is `QUEUED` and has none (one statement);
+ * 3. GitHub starts the project's `devsync.yml` with the run's id, the requested revision's
+ *    requirements and the host's reference (`opscrew_origin`, `opscrew_request`);
+ * 4. the run is then in GitHub (`RUNNING`, with GitHub's run id), or `FAILED` with GitHub's
  *    refusal, saying what to do.
  *
- * A claimed run is never dispatched again: one whose dispatch broke off before step 3 is ended by
+ * A claimed run is never dispatched again: one whose dispatch broke off before step 4 is ended by
  * the sweep (`sweepRuns`), as GitHub may have started it.
  */
 export async function dispatchRun(
@@ -618,8 +660,17 @@ export async function dispatchRun(
         eq(taskRevision.number, run.revision),
       ),
     )
-    .where(and(eq(run.id, job.runId), eq(run.projectId, job.projectId)));
+    .where(
+      and(
+        eq(run.id, job.runId),
+        eq(run.projectId, job.projectId),
+        eq(run.status, "QUEUED"),
+        isNull(run.startedAt),
+      ),
+    );
   if (!requested) return;
+
+  const opscrew = await allowedRun(host, job);
 
   const [claimed] = await host.db
     .update(run)
@@ -638,6 +689,7 @@ export async function dispatchRun(
   const answer = await host.github.dispatch(claimed.projectId, WORKFLOW_FILE, {
     run_id: claimed.id,
     task: taskInput(requested),
+    ...(opscrew ? { opscrew_origin: opscrew.origin, opscrew_request: opscrew.request } : {}),
   });
 
   const at = host.clock.now();

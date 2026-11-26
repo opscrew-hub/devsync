@@ -1,10 +1,11 @@
 # Managed runs
 
 How DevSync runs a coding agent on a task in the project's own GitHub Actions (story 4, R-8):
-Claude Code, or Codex with an OpenAI key. The research behind it is in
+Claude Code, or Codex with an OpenAI key, paid with a key of the workspace's own or, without one,
+with the workspace's AI credits. The research behind it is in
 [research/managed-runs.md](research/managed-runs.md), [research/openrouter.md](research/openrouter.md)
-and [research/openai.md](research/openai.md); the host's side is `ModuleHost.github` (see
-[host.md](host.md), "Managed runs").
+and [research/openai.md](research/openai.md); the host's side is `ModuleHost.github` and
+`ModuleHost.ai` (see [host.md](host.md), "Managed runs").
 
 ## The flow
 
@@ -14,15 +15,17 @@ and [research/openai.md](research/openai.md); the host's side is `ModuleHost.git
    while it is `REQUESTED`. Approving is refused when the task's requirements changed since the
    request, or the task is no longer Ready: "The task changed since this run was asked for. Cancel
    it and ask for a new run."
-3. Approved, it is `QUEUED`, and the `devsync.runs` job dispatches the project's `devsync.yml`
-   through `host.github.dispatch` with two inputs: `run_id` (the run's id) and `task` (the
-   requested revision's title, description and acceptance criteria as JSON). The run is then
+3. Approved, it is `QUEUED`, and the `devsync.runs` job asks the host for its reference for the run
+   (`host.ai.allowRun`), then dispatches the project's `devsync.yml` through
+   `host.github.dispatch` with `run_id` (the run's id), `task` (the requested revision's title,
+   description and acceptance criteria as JSON) and, when the host gave a reference,
+   `opscrew_origin` and `opscrew_request` ("The run's MCP and the AI credits"). The run is then
    `RUNNING`, with GitHub's run id. A refusal ends it `FAILED` with what to do.
 4. The workflow (the file the user adds, `WORKFLOW_FILE` in `@devsync/schemas`) runs three jobs: an
    `agent` job with Contents read only, the only one given a key (`ANTHROPIC_API_KEY`,
-   `OPENROUTER_API_KEY` or `OPENAI_API_KEY`), which runs Claude Code headless with file tools
-   only (or Codex in its sandbox, with only the OpenAI key) and uploads the change as a patch; a
-   `publish` job with
+   `OPENROUTER_API_KEY` or `OPENAI_API_KEY`) or an OIDC token, which runs Claude Code headless
+   with file tools only (or Codex in its sandbox, with only the OpenAI key) and uploads the change
+   as a patch; a `publish` job with
    Contents and Pull requests write and no key, which applies the patch (refusing one that touches
    `.github/`), pushes `devsync/<run id>` and opens a draft pull request; and a `report` job, always
    run, which uploads the `devsync-result` artifact.
@@ -34,10 +37,13 @@ and [research/openai.md](research/openai.md); the host's side is `ModuleHost.git
 
 ## The workflow's contract
 
-Inputs (both strings): `run_id`, a uuid; `task`, JSON `{ "title", "description",
+Inputs (all strings): `run_id`, a uuid; `task`, JSON `{ "title", "description",
 "acceptanceCriteria" }` of the approved revision, at most 60,000 characters (GitHub takes 65,535 for
-all inputs); a longer task is refused when the run is asked for. Anyone who can see the
-repository's Actions runs can read the inputs.
+all inputs); a longer task is refused when the run is asked for. Optional, from the host's
+`ai.allowRun`: `opscrew_origin`, the dashboard's https origin (at most 255 characters), and
+`opscrew_request`, its signed reference for the run (at most 4,000), both empty without one. Anyone
+who can see the repository's Actions runs can read the inputs: the reference is of no use without
+the run's own OIDC token.
 
 `devsync-result` holds `result.json`:
 
@@ -52,6 +58,7 @@ repository's Actions runs can read the inputs.
              "cacheReadInputTokens": 0, "costUsd": 0 },
   "models": ["claude-sonnet-5-5"],
   "provider": "anthropic",
+  "turns": 12,
   "pullRequestUrl": "https://github.com/<owner>/<repo>/pull/<number>",
   "branch": "devsync/<run id>"
 }
@@ -59,12 +66,15 @@ repository's Actions runs can read the inputs.
 
 DevSync accepts it only when `runId` is the run's, `pullRequestUrl` is a pull request of the
 project's own repository, `changedFiles` has at most 1,000 paths of at most 400 characters each,
-every figure is a non-negative number, and `provider` is `anthropic`, `openrouter` or `openai`
-(null only on a failed run); otherwise the run fails `bad-result`. `failure` is one of `no-key`,
-`agent-failed`, `budget`, `turns`, `no-changes`, `patch-did-not-apply`,
+every figure is a non-negative number, `provider` is `anthropic`, `openrouter`, `openai` or
+`opscrew` (the AI credits; null only on a failed run), and `turns`, the agent's turn count, is a
+non-negative whole number or null (Claude Code's `num_turns`; Codex reports none; a result without
+the field counts as null); otherwise the run fails `bad-result`. `failure` is one of `no-key`,
+`no-credits`, `agent-failed`, `budget`, `turns`, `no-changes`, `patch-did-not-apply`,
 `patch-touches-workflows`, `push-failed`, `pull-request-not-allowed`, each shown with what to do
 (`pull-request-not-allowed`: "Turn on Settings > Actions > General > Allow GitHub Actions to create
-and approve pull requests, or open the pull request from the `devsync/<run id>` branch").
+and approve pull requests, or open the pull request from the `devsync/<run id>` branch"). The run
+shows its turns beside its tokens.
 
 The models, turn cap and budget cap are in the workflow file, which the user may edit: Claude
 Code's model, turn cap and budget cap, and Codex's model with its prices.
@@ -72,10 +82,11 @@ Code's model, turn cap and budget cap, and Codex's model with its prices.
 ## Setup
 
 The task panel's runs section asks the host's `github.setup` for `devsync.yml` and the secrets'
-names, and shows what is missing: the workflow file (shown in full, to copy), a key (the
-`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` secret, repository or
-organization), and the pull-request setting. Asking for a
-run while the file or the secret is missing answers 409 with the same words.
+names, and shows what is missing: the workflow file (shown in full, to copy) and the pull-request
+setting. A key (the `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` secret,
+repository or organization) is no longer required: without one the section says runs pay with the
+workspace's AI credits and links to where a key is added, and the approve dialog says so too.
+Asking for a run while the file is missing answers 409 with the same words.
 
 ## Paying through OpenRouter
 
@@ -87,9 +98,10 @@ A run can use an OpenRouter API key instead of an Anthropic one (research:
 - The `agent` job gets the secrets. Without an Anthropic key, it runs Claude Code with
   `ANTHROPIC_BASE_URL=https://openrouter.ai/api`, `ANTHROPIC_AUTH_TOKEN` set to the OpenRouter
   key and `ANTHROPIC_API_KEY` empty; the models stay Claude's. Without either, it takes the OpenAI
-  key ("Paying through OpenAI"). With no key at all, the run fails `no-key`: "Add the
-  ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its
-  organization."
+  key ("Paying through OpenAI"). Without any key, it pays with the workspace's AI credits ("The
+  run's MCP and the AI credits"); with no key and no reference from the host, the run fails
+  `no-key`: "Add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the
+  repository or its organization."
 - The backstop refuses a change that contains any key, and no other job gets one. It fails
   closed: a check that errors (a `grep` that answers neither "found" nor "nothing found", or a
   `find` that fails) fails the run `agent-failed` too, and the change isn't published. It never
@@ -161,6 +173,69 @@ CLI.
   change.
   - But `publish` pushes the branch and opens the draft pull request before anyone reviews it.
   - In a public repository, anything a command copied into the change is public at once.
+
+## The run's MCP and the AI credits
+
+The dashboard gives every managed run its own token to OpsCrew's MCP (`/mcp`) and, when the
+repository has no key of the workspace's own, pays for it with the workspace's AI credits. Research:
+[research/managed-runs.md](research/managed-runs.md), "The run's MCP and the AI credits".
+
+- **The reference.** Before the dispatch, outside any transaction and before the run is claimed,
+  the `devsync.runs` job asks `host.ai.allowRun({ projectId, runRef: <run id>, workflow:
+  "devsync.yml" })`. Its answer, an https origin and a signed request, parsed with zod, becomes the
+  inputs `opscrew_origin` and `opscrew_request`. With null (a read-only project, or DevSync off)
+  the run is dispatched with its two inputs only, and has neither `/mcp` nor the credits. An
+  answer that doesn't parse is logged, without it, and treated as null. A host that fails leaves
+  the run unclaimed, so the job's retry dispatches it.
+- **The OIDC token.** The `agent` job alone has `id-token: write`. The step "Ask OpsCrew for the
+  run's MCP token" runs only with a request, right before the agent step:
+  - it asks GitHub for the job's OIDC token, with the origin as its audience; GitHub's request
+    token reaches curl in a header file, never in its arguments;
+  - it exchanges that token, through stdin, at `POST <origin>/mcp/credential { token, request }`
+    for the run's MCP token, which works at `<origin>/mcp` until the run ends;
+  - it masks both, and leaves them for the agent step in two files of `RUNNER_TEMP` only the
+    runner's user can read;
+  - a refusal (one plain 403), no OIDC token or a hang only means no `/mcp`: the step warns, and
+    the run goes on (`continue-on-error`, a 2-minute limit).
+- **The agent step never sees GitHub's means to ask for OIDC tokens.** The runner sets
+  `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` in every step of a job that
+  may ask for one, over the step's own `env`, so the step can't blank them there. Its shell unsets
+  both first thing, so neither agent's process gets them. It reads the two files and removes them
+  before anything else; the OIDC token stays a shell variable, never exported.
+- **Paying with the AI credits.** The key order stays `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`,
+  `OPENAI_API_KEY`. With none of them and a request, the agent step exchanges the same OIDC token,
+  through stdin, at `POST <origin>/ai/credential { token, request }` for a gateway credential that
+  lasts 30 minutes, and masks it.
+  - Claude Code then runs with `ANTHROPIC_BASE_URL=<origin>/ai` and the credential as
+    `ANTHROPIC_AUTH_TOKEN`, sent as `Authorization: Bearer`; `ANTHROPIC_API_KEY` is empty.
+  - Its model is `claude-haiku-5-5`, which the gateway sets whatever is asked, and it runs under
+    `timeout 30m`, the credential's life. A run stopped there fails `agent-failed`, its log saying
+    why. The turn and budget caps are the workflow's, as with a key.
+  - `provider` is `opscrew`, shown as "via AI credits". Its cost is Claude Code's estimate from
+    Anthropic's prices, as with a key.
+  - A refused exchange (credits off, used up or at their cap, or any other refusal), or no OIDC
+    token, ends the run `no-credits` before an agent starts: "OpsCrew didn't let this run use the
+    workspace's AI credits: they are switched off, used up or at their cap. Buy AI credits on the
+    dashboard's Billing page, or add a key of your own as the … Actions secret of the repository
+    or its organization, then ask for a new run."
+  - The credits never run Codex: the gateway speaks Anthropic's API only. With only an OpenAI key,
+    Codex runs on it.
+- **The run's `/mcp`.** With the MCP token, each agent gets `<origin>/mcp` as its one MCP server,
+  named `opscrew`:
+  - Claude Code reads it from a configuration file in `RUNNER_TEMP` (readable by the runner's user
+    only, removed when the step ends), with the token as a bearer header. It keeps
+    `--strict-mcp-config`, gets `--allowedTools "mcp__opscrew__*"` besides the file tools, and
+    still has Bash, WebFetch and WebSearch refused. Without the token, its MCP configuration is
+    empty and `mcp__*` is refused too.
+  - Codex gets it through `-c mcp_servers.opscrew.*`: the URL, `bearer_token_env_var =
+    "OPSCREW_MCP_TOKEN"` and `default_tools_approval_mode = "approve"`. With `approval_policy =
+    never`, Codex refuses an MCP call that needs an approval, so OpsCrew's calls are approved here:
+    OpsCrew decides what the run's token may do. Its sandboxed commands never get the token.
+  - Neither agent gets the AI credential's or the MCP token's own variable: Claude Code has the
+    credential as its auth token and the MCP token in its configuration only; Codex has the MCP
+    token in its environment.
+- **The backstop** checks the change for the MCP token and the gateway credential as it does for
+  the keys, every one that is set, failing closed.
 
 ## Not in the first version
 
