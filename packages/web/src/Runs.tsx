@@ -35,12 +35,16 @@ const STATUS: Record<RunStatus, [string, string, DevSyncIcon]> = {
   CANCELLED: ["Cancelled", "s-muted", "trash"],
 };
 
-/** Whose key a run used, as its result says. */
+/** Who paid for a run, as its result says. */
 const PROVIDER: Record<RunProvider, string> = {
   anthropic: "Anthropic",
   openrouter: "OpenRouter",
   openai: "OpenAI",
+  opscrew: "AI credits",
 };
+
+/** What the setup says when the repository has no key: runs pay with the AI credits. */
+const CREDITS = `The repository has no ${API_KEY_SECRET_NAMES} secret, so runs pay with the workspace's AI credits.`;
 
 const COUNT = new Intl.NumberFormat("en");
 const USD = new Intl.NumberFormat("en", {
@@ -153,7 +157,9 @@ export function Runs({ task, repository }: { task: TaskDetail; repository?: Repo
         </ul>
       )}
       {open?.kind === "ask" && <Ask task={task} onClose={close} />}
-      {open?.kind === "approve" && <Approve task={task} run={open.run} onClose={close} />}
+      {open?.kind === "approve" && (
+        <Approve task={task} run={open.run} setup={setup.data} onClose={close} />
+      )}
     </section>
   );
 }
@@ -275,18 +281,26 @@ function Setup({
           </ul>
         </>
       )}
-      {data && pages && !data.secret && (
-        <p>
-          <a className="cream" href={pages.secrets} target="_blank" rel="noreferrer">
-            Add a key on GitHub
-          </a>
+      {data && !data.secret && (
+        <p className="sub">
+          {CREDITS}
+          {pages && (
+            <>
+              {" "}
+              <a className="cream" href={pages.secrets} target="_blank" rel="noreferrer">
+                Add a key on GitHub
+              </a>
+            </>
+          )}
         </p>
       )}
       {data && !data.workflow && <WorkflowFile create={pages?.workflow ?? null} />}
       {data && data.missing.length === 0 && (
         <p className={`status s-good ${styles.problem}`}>
           <Icon name="check-circle" className="i-sm" />
-          The repository has the workflow and an {API_KEY_SECRET_NAMES} secret.
+          {data.secret
+            ? `The repository has the workflow and an ${API_KEY_SECRET_NAMES} secret.`
+            : "The repository has the workflow."}
         </p>
       )}
       {data && (
@@ -371,9 +385,9 @@ function RunFacts({ run }: { run: Run }) {
 }
 
 /**
- * What a run left: why it failed, the files it changed, its usage, its cost (an estimate: Claude
- * Code's from Anthropic's prices, or with Codex the workflow's from OpenAI's), the models and whose
- * key it used, and its links.
+ * What a run left: why it failed, the files it changed, its usage and turns, its cost (an estimate:
+ * Claude Code's from Anthropic's prices, on the AI credits too, or with Codex the workflow's from
+ * OpenAI's), the models and who paid for it, and its links.
  */
 function RunResult({ run }: { run: Run }) {
   const { Icon } = useDevSync().ui;
@@ -393,6 +407,12 @@ function RunResult({ run }: { run: Run }) {
             <>
               <dt>Tokens</dt>
               <dd>{tokens(usage)}</dd>
+              {usage.turns !== null && (
+                <>
+                  <dt>Turns</dt>
+                  <dd>{COUNT.format(usage.turns)}</dd>
+                </>
+              )}
               <dt>Cost</dt>
               <dd>{`≈ ${USD.format(usage.costUsd)}, estimated from ${provider === "openai" ? "OpenAI" : "Anthropic"}'s prices`}</dd>
               {(usage.models.length > 0 || provider) && (
@@ -519,10 +539,21 @@ function Ask({ task, onClose }: { task: TaskDetail; onClose: () => void }) {
 
 /**
  * Approves a run after showing the text it is sent: the task's current revision, which is the
- * run's. Once the task changes (an edit arriving while the dialog is open too), the server would
- * refuse, so the dialog says so in its words and can't be submitted.
+ * run's, and who pays for it (the workspace's AI credits when the setup found no key). Once the task
+ * changes (an edit arriving while the dialog is open too), the server would refuse, so the dialog
+ * says so in its words and can't be submitted.
  */
-function Approve({ task, run, onClose }: { task: TaskDetail; run: Run; onClose: () => void }) {
+function Approve({
+  task,
+  run,
+  setup,
+  onClose,
+}: {
+  task: TaskDetail;
+  run: Run;
+  setup: RunSetup | undefined;
+  onClose: () => void;
+}) {
   const { Dialog, Icon } = useDevSync().ui;
   const approve = useRunAction("approve");
   const changed = taskChanged(task, run);
@@ -539,8 +570,15 @@ function Approve({ task, run, onClose }: { task: TaskDetail; run: Run; onClose: 
         Claude Code then works on revision {run.revision} of this task, as{" "}
         {authorName(run.requestedBy)} asked for it, in the repository's Actions, paid with its
         ANTHROPIC_API_KEY secret or, without that, its OPENROUTER_API_KEY. With only its
-        OPENAI_API_KEY, Codex works on it instead.
+        OPENAI_API_KEY, Codex works on it instead. With none of them, the run pays with the
+        workspace's AI credits.
       </p>
+      {setup && !setup.secret && (
+        <p className="sub">
+          The repository has none of these secrets, so this run pays with the workspace's AI
+          credits.
+        </p>
+      )}
       {changed ? (
         <p className={`status s-warning ${styles.problem}`}>
           <Icon name="warning" className="i-sm" />

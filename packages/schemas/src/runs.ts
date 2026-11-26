@@ -31,6 +31,7 @@ export const RUN_TASK_CHANGED =
 /** Why the workflow says a run failed: `result.json`'s `failure`. */
 const WORKFLOW_FAILURES = [
   "no-key",
+  "no-credits",
   "agent-failed",
   "budget",
   "turns",
@@ -77,16 +78,23 @@ const TokenUsage = z.object({
   costUsd: z.number().nonnegative(),
 });
 
-/** A run's token use and cost, and the models it used: what the task panel shows. */
-export const RunUsage = TokenUsage.extend({ models: z.array(z.string()) });
+/**
+ * How many turns the agent took: Claude Code's count (`num_turns`). Null when the agent gave
+ * none (Codex reports no count of its own), and when a schema version 1 result leaves it out.
+ */
+const Turns = z.number().int().nonnegative().nullable().default(null);
+
+/** A run's token use and cost, the models it used and its turns: what the task panel shows. */
+export const RunUsage = TokenUsage.extend({ models: z.array(z.string()), turns: Turns });
 export type RunUsage = z.infer<typeof RunUsage>;
 
 /**
- * Whose key a run used: the `ANTHROPIC_API_KEY` secret's, or the `OPENROUTER_API_KEY` secret's
- * through OpenRouter, both with Claude Code and its estimate from Anthropic's prices; or the
- * `OPENAI_API_KEY` secret's, with Codex, priced by the workflow at OpenAI's prices.
+ * Who paid for a run: the `ANTHROPIC_API_KEY` secret's key, or the `OPENROUTER_API_KEY` secret's
+ * through OpenRouter, both with Claude Code and its estimate from Anthropic's prices; the
+ * `OPENAI_API_KEY` secret's, with Codex, priced by the workflow at OpenAI's prices; or, with none
+ * of them, the workspace's AI credits (`opscrew`), with Claude Code through OpsCrew's gateway.
  */
-export const RunProvider = z.enum(["anthropic", "openrouter", "openai"]);
+export const RunProvider = z.enum(["anthropic", "openrouter", "openai", "opscrew"]);
 export type RunProvider = z.infer<typeof RunProvider>;
 
 /** A run, as `GET /tasks/:taskId/runs` and every change to a run answer it. */
@@ -108,7 +116,7 @@ export const Run = z.object({
   failure: z.object({ code: RunFailure, message: z.string() }).nullable(),
   changedFiles: z.array(z.string()).nullable(),
   usage: RunUsage.nullable(),
-  /** Whose key it used; null until its result is kept, or when it failed before choosing one. */
+  /** Who paid for it; null until its result is kept, or when it failed before choosing. */
   provider: RunProvider.nullable(),
   draftPullRequestUrl: z.url().nullable(),
   /** The run in the repository's Actions, once GitHub started it. */
@@ -126,7 +134,8 @@ export const RunSetup = z.object({
   workflow: z.boolean(),
   /**
    * Runs can read the `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY` Actions
-   * secret (the repository's or its organization's).
+   * secret (the repository's or its organization's). Without one, runs pay with the workspace's
+   * AI credits: a key is never missing.
    */
   secret: z.boolean(),
   /** What to add before asking for a run, each in plain English; empty when nothing is missing. */
@@ -162,8 +171,9 @@ export const RunResult = z
     changedFiles: z.array(storable(RESULT_LIMITS.path)).max(RESULT_LIMITS.changedFiles),
     usage: TokenUsage,
     models: z.array(storable(RESULT_LIMITS.model)).max(RESULT_LIMITS.models),
-    /** Null when the run failed before choosing a key (`no-key`, or an earlier step). */
+    /** Null when the run failed before choosing who pays (`no-key`, or an earlier step). */
     provider: RunProvider.nullable(),
+    turns: Turns,
     pullRequestUrl: z.string().max(2048).nullable(),
     branch: z.string().max(255).nullable(),
   })

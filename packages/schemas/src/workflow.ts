@@ -34,14 +34,17 @@ export const API_KEY_SECRET_NAMES = `${API_KEY_SECRETS.slice(0, -1).join(", ")} 
 
 /**
  * The file's text, shown in full for the user to copy. Three jobs: `agent` (Contents read, the
- * only one given the keys) runs Claude Code with file tools only, on the Anthropic key or else
- * through OpenRouter, or else Codex in its sandbox on the OpenAI key, and uploads the change as a
- * patch; `publish` (Contents and Pull requests write, no key) pushes `devsync/<run id>` and opens a
- * draft pull request; `report` (always) uploads `result.json`.
+ * only one given the keys and an OIDC token) runs Claude Code with file tools only, on the
+ * Anthropic key or else through OpenRouter, or else Codex in its sandbox on the OpenAI key, or else
+ * Claude Code on the workspace's AI credits, each with OpsCrew's MCP when OpsCrew gives the run a
+ * token, and uploads the change as a patch; `publish` (Contents and Pull requests write, no key)
+ * pushes `devsync/<run id>` and opens a draft pull request; `report` (always) uploads
+ * `result.json`.
  */
 export const WORKFLOW = `# DevSync's managed runs. DevSync starts this workflow for a run approved in its dashboard:
 # Claude Code (or Codex, with only an OpenAI key) makes the task's change in the checkout, the
-# change is opened as a draft pull request, and the result is left for DevSync to read.
+# change is opened as a draft pull request, and the result is left for DevSync to read. With no
+# key of your own, the run pays with the workspace's AI credits.
 name: DevSync run
 
 on:
@@ -55,6 +58,16 @@ on:
         description: The task as JSON (title, description, acceptance criteria)
         required: true
         type: string
+      opscrew_origin:
+        description: OpsCrew's dashboard, which gives the run its MCP token and AI credits
+        required: false
+        type: string
+        default: ""
+      opscrew_request:
+        description: OpsCrew's signed reference for this run, of no use without its OIDC token
+        required: false
+        type: string
+        default: ""
 
 # Nothing by default: each job asks for what it needs.
 permissions: {}
@@ -67,8 +80,10 @@ jobs:
   agent:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # An OIDC token only to ask OpsCrew, its audience, for this run's MCP token and AI credits.
     permissions:
       contents: read
+      id-token: write
     env:
       # The model, the turn cap and the spend cap (US dollars) of every run: edit them here.
       DEVSYNC_MODEL: sonnet
@@ -89,6 +104,7 @@ jobs:
       usage: \${{ steps.agent.outputs.usage }}
       models: \${{ steps.agent.outputs.models }}
       provider: \${{ steps.agent.outputs.provider }}
+      turns: \${{ steps.agent.outputs.turns }}
     steps:
       # The branch DevSync dispatched on, with no git credentials left behind.
       - name: Check out the repository
@@ -100,10 +116,19 @@ jobs:
         env:
           RUN_ID: \${{ inputs.run_id }}
           TASK: \${{ inputs.task }}
+          OPSCREW_ORIGIN: \${{ inputs.opscrew_origin }}
+          OPSCREW_REQUEST: \${{ inputs.opscrew_request }}
         run: |
           uuid='^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$'
           if ! [[ $RUN_ID =~ $uuid ]]; then
             echo "::error::The run_id input is not a DevSync run id."
+            exit 1
+          fi
+          # OpsCrew's origin goes into addresses and the agents' configuration: https and a host
+          # name, nothing more.
+          origin='^https://[A-Za-z0-9.-]+(:[0-9]+)?$'
+          if [ -n "$OPSCREW_REQUEST" ] && ! [[ $OPSCREW_ORIGIN =~ $origin ]]; then
+            echo "::error::The opscrew_origin input is not the address DevSync sends."
             exit 1
           fi
           if ! printf '%s' "$TASK" | jq -ce '{title, description, acceptanceCriteria}
@@ -170,17 +195,66 @@ jobs:
             fi
           fi
 
+      # With OpsCrew's request for this run: this job's OIDC token, for OpsCrew's origin only, is
+      # exchanged for the run's own token to OpsCrew's MCP. A refusal only means the agent works
+      # without OpsCrew's tools. The OIDC token is left for the agent step, which may exchange it
+      # for the AI credits too, and which never gets GitHub's means to ask for another.
+      - name: Ask OpsCrew for the run's MCP token
+        if: inputs.opscrew_request != ''
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          OPSCREW_ORIGIN: \${{ inputs.opscrew_origin }}
+          OPSCREW_REQUEST: \${{ inputs.opscrew_request }}
+        run: |
+          set +e
+          # GitHub's request token reaches curl in a header file, never in its arguments.
+          audience=$(jq -rn --arg origin "$OPSCREW_ORIGIN" '$origin | @uri')
+          oidc=$(curl --silent --show-error --fail --max-time 30 \\
+            --header @<(printf 'Authorization: bearer %s\\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN") \\
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$audience" | jq -r '.value | strings')
+          if [ -z "$oidc" ]; then
+            echo "::warning::GitHub gave this job no OIDC token, so the agent works without OpsCrew's tools or AI credits."
+            exit 0
+          fi
+          echo "::add-mask::$oidc"
+          (umask 077 && printf '%s' "$oidc" > "$RUNNER_TEMP/devsync-oidc")
+          # The OIDC token reaches OpsCrew through stdin, never in a command's arguments.
+          token=$(printf '%s' "$oidc" | jq -Rsc --arg request "$OPSCREW_REQUEST" '{token: ., request: $request}' |
+            curl --silent --show-error --fail --max-time 30 --header 'Content-Type: application/json' \\
+              --data-binary @- "$OPSCREW_ORIGIN/mcp/credential" | jq -r '.token | strings')
+          if [ -z "$token" ]; then
+            echo "::warning::OpsCrew refused this run its MCP token, so the agent works without OpsCrew's tools."
+            exit 0
+          fi
+          echo "::add-mask::$token"
+          (umask 077 && printf '%s' "$token" > "$RUNNER_TEMP/devsync-mcp-token")
+
       - name: Run the coding agent
         id: agent
         env:
           ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
           OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
           OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
+          OPSCREW_ORIGIN: \${{ inputs.opscrew_origin }}
+          OPSCREW_REQUEST: \${{ inputs.opscrew_request }}
         run: |
           set +e
+          # GitHub gives every step of this job the means to ask for OIDC tokens, over the step's
+          # own env: no agent gets them. What the step before left, the job's OIDC token for
+          # OpsCrew and the run's MCP token, is read and removed before anything else, and the MCP
+          # configuration written below goes when the step ends.
+          unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          trap 'rm -f "$RUNNER_TEMP/devsync-mcp.json"' EXIT
+          oidc=
+          [ ! -f "$RUNNER_TEMP/devsync-oidc" ] || oidc=$(< "$RUNNER_TEMP/devsync-oidc")
+          export OPSCREW_MCP_TOKEN=
+          [ ! -f "$RUNNER_TEMP/devsync-mcp-token" ] || OPSCREW_MCP_TOKEN=$(< "$RUNNER_TEMP/devsync-mcp-token")
+          rm -f "$RUNNER_TEMP/devsync-oidc" "$RUNNER_TEMP/devsync-mcp-token"
           # The Anthropic key when there is one, else the OpenRouter key through OpenRouter, with
           # the same Claude models, else the OpenAI key, with which Codex runs instead of Claude
-          # Code. No key is ever printed.
+          # Code, else, when OpsCrew sent a request, the workspace's AI credits. No key or token is
+          # ever printed.
           if [ -n "$ANTHROPIC_API_KEY" ]; then
             provider=anthropic
           elif [ -n "$OPENROUTER_API_KEY" ]; then
@@ -191,12 +265,33 @@ jobs:
           elif [ -n "$OPENAI_API_KEY" ]; then
             provider=openai
             export CODEX_API_KEY="$OPENAI_API_KEY"
+          elif [ -n "$OPSCREW_REQUEST" ]; then
+            provider=opscrew
           else
             echo "::error::Add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization."
             echo "failure=no-key" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "provider=$provider" >> "$GITHUB_OUTPUT"
+          export OPSCREW_AI_CREDENTIAL=
+          if [ "$provider" = opscrew ]; then
+            # The same OIDC token, through stdin, for a gateway credential that lasts 30 minutes:
+            # Claude Code reaches the model through OpsCrew's gateway, as a bearer token. A refusal,
+            # whatever its cause (OpsCrew answers each one alike), ends the run here.
+            if [ -n "$oidc" ]; then
+              OPSCREW_AI_CREDENTIAL=$(printf '%s' "$oidc" | jq -Rsc --arg request "$OPSCREW_REQUEST" '{token: ., request: $request}' |
+                curl --silent --show-error --fail --max-time 30 --header 'Content-Type: application/json' \\
+                  --data-binary @- "$OPSCREW_ORIGIN/ai/credential" | jq -r '.token | strings')
+            fi
+            if [ -z "$OPSCREW_AI_CREDENTIAL" ]; then
+              echo "::error::OpsCrew didn't let this run use the workspace's AI credits (they may be switched off, used up or at their cap). Buy AI credits on the dashboard's Billing page, or add the ANTHROPIC_API_KEY, OPENROUTER_API_KEY or OPENAI_API_KEY Actions secret to the repository or its organization."
+              echo "failure=no-credits" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::add-mask::$OPSCREW_AI_CREDENTIAL"
+            export ANTHROPIC_BASE_URL="$OPSCREW_ORIGIN/ai"
+            export ANTHROPIC_AUTH_TOKEN="$OPSCREW_AI_CREDENTIAL"
+          fi
           prompt='You are working in a checkout of a software repository.
           Make the change that the task asks for, so that its acceptance criteria are met, and
           edit files only inside the checkout. The task is the JSON object that comes with this
@@ -217,6 +312,15 @@ jobs:
               -c history.persistence=none
               --ignore-user-config --ignore-rules
             )
+            if [ -n "$OPSCREW_MCP_TOKEN" ]; then
+              # OpsCrew's MCP, with the run's own token from Codex's environment (its commands get
+              # no token). Its calls need no approval here: OpsCrew decides what the token may do.
+              flags+=(
+                -c "mcp_servers.opscrew.url=\\"$OPSCREW_ORIGIN/mcp\\""
+                -c 'mcp_servers.opscrew.bearer_token_env_var="OPSCREW_MCP_TOKEN"'
+                -c 'mcp_servers.opscrew.default_tools_approval_mode="approve"'
+              )
+            fi
             : > "$RUNNER_TEMP/codex.jsonl"
             # Codex's sandbox is set up and checked only on GitHub's own runners (Install Codex),
             # which leaves the sandbox's profile only when the check passed.
@@ -262,30 +366,57 @@ jobs:
             )
             usage=$(jq -cRn "\${prices[@]}" "$totals" "$RUNNER_TEMP/codex.jsonl")
             models=$(jq -cn --arg model "$DEVSYNC_OPENAI_MODEL" '[$model]')
+            # Codex reports no count of its turns.
+            turns=null
           else
+            if [ -n "$OPSCREW_MCP_TOKEN" ]; then
+              # OpsCrew's MCP, Claude Code's one MCP server, with the run's own token: in a file only
+              # Claude Code reads (its tools read nothing outside the checkout), removed when the
+              # step ends. Only that server's tools are allowed besides the file tools.
+              (umask 077 && printf '%s' "$OPSCREW_MCP_TOKEN" | jq -Rc --arg url "$OPSCREW_ORIGIN/mcp" \\
+                '{mcpServers: {opscrew: {type: "http", url: $url, headers: {Authorization: ("Bearer " + .)}}}}' \\
+                > "$RUNNER_TEMP/devsync-mcp.json")
+              mcp=(--mcp-config "$RUNNER_TEMP/devsync-mcp.json" --allowedTools "mcp__opscrew__*")
+              denied=Bash,WebFetch,WebSearch
+            else
+              mcp=(--mcp-config '{"mcpServers":{}}')
+              denied='Bash,WebFetch,WebSearch,mcp__*'
+            fi
+            model=$DEVSYNC_MODEL
+            limit=()
+            # On the AI credits, OpsCrew's gateway sets the model itself, whatever is asked: this
+            # name only feeds Claude Code's cost estimate. The gateway's credential lasts 30 minutes.
+            if [ "$provider" = opscrew ]; then
+              model=claude-haiku-5-5
+              limit=(timeout 30m)
+            fi
             flags=(
               --bare -p --output-format json
-              --model "$DEVSYNC_MODEL"
+              --model "$model"
               --max-turns "$DEVSYNC_MAX_TURNS"
               --max-budget-usd "$DEVSYNC_MAX_BUDGET_USD"
               --tools "Read,Glob,Grep,Edit,Write"
-              --disallowedTools "Bash,WebFetch,WebSearch,mcp__*"
+              --disallowedTools "$denied"
               --permission-mode acceptEdits  # never auto or bypassPermissions: protected .git/config keeps the git steps safe
               --permission-prompts none
-              --strict-mcp-config --mcp-config '{"mcpServers":{}}'
+              --strict-mcp-config "\${mcp[@]}"
               --setting-sources user
               --settings '{"disableAllHooks":true,"permissions":{"blockReadsOutsideWorkingDirectories":true,"deny":["Read(//proc/**)"]}}'
               --disable-slash-commands
               --no-session-persistence
             )
             # The task reaches Claude Code on stdin, as data. Claude Code never gets the OpenRouter
-            # or OpenAI key's own variable: through OpenRouter the key reaches it as the auth token
-            # only. The shell keeps every key for the check below.
-            env -u OPENROUTER_API_KEY -u OPENAI_API_KEY claude "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/claude.json"
+            # or OpenAI key's own variable, the MCP token's or the credential's: through OpenRouter
+            # the key, and on the credits the credential, reach it as the auth token only. The
+            # shell keeps every key and token for the check below.
+            env -u OPENROUTER_API_KEY -u OPENAI_API_KEY -u OPSCREW_MCP_TOKEN -u OPSCREW_AI_CREDENTIAL "\${limit[@]}" claude "\${flags[@]}" -- "$prompt" < "$RUNNER_TEMP/task.json" > "$RUNNER_TEMP/claude.json"
             code=$?
             subtype=$(jq -r '.subtype // ""' "$RUNNER_TEMP/claude.json")
             is_error=$(jq -r '.is_error' "$RUNNER_TEMP/claude.json")
             echo "Claude Code exited with $code ($subtype)."
+            if [ "$provider" = opscrew ] && [ "$code" = 124 ]; then
+              echo "::error::Claude Code ran for the 30 minutes the AI credits' credential lasts, so it was stopped."
+            fi
             if [ "$code" = 0 ] && [ "$subtype" = success ] && [ "$is_error" = false ]; then
               failure=
             elif [ "$subtype" = error_max_budget_usd ]; then
@@ -302,12 +433,13 @@ jobs:
                costUsd: (.total_cost_usd // 0)}'
             usage=$(jq -c "$totals" "$RUNNER_TEMP/claude.json")
             models=$(jq -c '.modelUsage // {} | keys' "$RUNNER_TEMP/claude.json")
+            turns=$(jq -c '.num_turns | if type == "number" and . >= 0 then floor else null end' "$RUNNER_TEMP/claude.json")
           fi
-          # No key leaves in the change: not in a file's content, not in a path's name. Each key
-          # that is set is checked, every one when several are. Only grep's 1 says it found
-          # nothing: any other answer, an error included, keeps the change from being published.
-          # Neither prints a file name.
-          for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY; do
+          # No key or token leaves in the change: not in a file's content, not in a path's name.
+          # Each one that is set is checked, every one when several are. Only grep's 1 says it
+          # found nothing: any other answer, an error included, keeps the change from being
+          # published. Neither prints a file name.
+          for key in ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY OPSCREW_MCP_TOKEN OPSCREW_AI_CREDENTIAL; do
             if [ -z "$failure" ] && [ -n "\${!key}" ]; then
               grep -rqsF --exclude-dir=.git -f <(printenv "$key") .
               contents=$?
@@ -325,6 +457,7 @@ jobs:
           echo "failure=$failure" >> "$GITHUB_OUTPUT"
           echo "usage=$usage" >> "$GITHUB_OUTPUT"
           echo "models=$models" >> "$GITHUB_OUTPUT"
+          echo "turns=$turns" >> "$GITHUB_OUTPUT"
           exit 0
 
       - name: Build the patch
@@ -429,6 +562,7 @@ jobs:
           USAGE: \${{ needs.agent.outputs.usage }}
           MODELS: \${{ needs.agent.outputs.models }}
           PROVIDER: \${{ needs.agent.outputs.provider }}
+          TURNS: \${{ needs.agent.outputs.turns }}
           PUBLISH_FAILURE: \${{ needs.publish.outputs.failure }}
           BRANCH: \${{ needs.publish.outputs.branch }}
           PULL_REQUEST_URL: \${{ needs.publish.outputs.pull_request_url }}
@@ -450,8 +584,8 @@ jobs:
           [ -f "$files" ] || echo '[]' > "$files"
           args=(
             --arg runId "$RUN_ID" --arg failure "$failure" --arg usage "$USAGE"
-            --arg models "$MODELS" --arg provider "$PROVIDER" --arg url "$PULL_REQUEST_URL"
-            --arg branch "$BRANCH" --slurpfile files "$files"
+            --arg models "$MODELS" --arg provider "$PROVIDER" --arg turns "$TURNS"
+            --arg url "$PULL_REQUEST_URL" --arg branch "$BRANCH" --slurpfile files "$files"
           )
           jq -n "\${args[@]}" '
             def parsed(text; fallback): (text | try fromjson catch fallback) // fallback;
@@ -466,6 +600,7 @@ jobs:
                 cacheReadInputTokens: 0, costUsd: 0}),
               models: parsed($models; []),
               provider: present($provider),
+              turns: parsed($turns; null),
               pullRequestUrl: present($url),
               branch: present($branch)
             }' > "$RUNNER_TEMP/devsync-result/result.json"

@@ -375,8 +375,8 @@ names (the host's sprite must have them, Phosphor regular): `kanban`, `plus`, `r
 
 A member asks for a run on a Ready task; an Owner, Admin or Approver approves it; the host starts
 DevSync's workflow in the project's own GitHub Actions, which runs Claude Code on an Anthropic or
-OpenRouter key of the workspace's own (or Codex on an OpenAI key) and opens a draft pull request
-itself. The design is
+OpenRouter key of the workspace's own (or Codex on an OpenAI key), or, without a key, on the
+workspace's AI credits, and opens a draft pull request itself. The design is
 [managed-runs.md](managed-runs.md); this is what DevSync asks of the host.
 
 `serverModule` declares `workflows: ["devsync.yml"]` (with `github: true`), so the host lets DevSync
@@ -386,10 +386,27 @@ throw GitHub's errors:
 
 | Call | When | What DevSync does with the answer |
 |---|---|---|
-| `setup(projectId, "devsync.yml")` | `GET /runs/setup`, and before a run is asked for | `workflow`, and whether `secrets` holds `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, give `RunSetup`; asking for a run while either is missing answers 409 with `missing`'s words |
-| `dispatch(projectId, "devsync.yml", { run_id, task })` | `devsync.runs`, at most once per approved run | `run_id` is the run's id; `task` is `{ "title", "description", "acceptanceCriteria" }` of the requested revision as JSON, at most 60,000 characters (a longer task is refused when the run is asked for). The run is then `RUNNING` with `githubRunId`; a failure ends it `FAILED` with that failure as its reason |
-| `artifact(projectId, githubRunId, "devsync-result")` | a `workflow_run` fact, and the six-hour sweep | `result.json` (schema version 1, `RunResult` in `@devsync/schemas`) is checked (the run's own id, a pull request of the project's own repository, at most 1,000 changed paths of at most 400 characters with no NUL or lone surrogate, every figure non-negative, a known `provider`, which a succeeded run must have) and kept; a result that fails a check ends the run `bad-result`, none `no-result`. A failure fails the fact's job, so the host retries it |
+| `setup(projectId, "devsync.yml")` | `GET /runs/setup`, and before a run is asked for | `workflow`, and whether `secrets` holds `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, give `RunSetup`; asking for a run while the workflow is missing answers 409 with `missing`'s words. A key is never missing: without one, the run pays with the workspace's AI credits |
+| `dispatch(projectId, "devsync.yml", { run_id, task, opscrew_origin?, opscrew_request? })` | `devsync.runs`, at most once per approved run | `run_id` is the run's id; `task` is `{ "title", "description", "acceptanceCriteria" }` of the requested revision as JSON, at most 60,000 characters (a longer task is refused when the run is asked for); `opscrew_origin` and `opscrew_request` are `ai.allowRun`'s answer, when it gave one (below). The run is then `RUNNING` with `githubRunId`; a failure ends it `FAILED` with that failure as its reason |
+| `artifact(projectId, githubRunId, "devsync-result")` | a `workflow_run` fact, and the six-hour sweep | `result.json` (schema version 1, `RunResult` in `@devsync/schemas`) is checked (the run's own id, a pull request of the project's own repository, at most 1,000 changed paths of at most 400 characters with no NUL or lone surrogate, every figure non-negative, a known `provider` (`opscrew` for the AI credits), which a succeeded run must have, and `turns` a non-negative whole number or null) and kept, its `turns` with its usage (`Run.usage.turns`); a result that fails a check ends the run `bad-result`, none `no-result`. A failure fails the fact's job, so the host retries it |
 | `deleteArtifact(projectId, githubRunId, name)` | once the run has ended | both `devsync-result` and `devsync-patch`; a failure is logged, and GitHub removes them when they expire |
+
+Before each dispatch, outside any transaction and before the run is claimed, `devsync.runs` calls
+`host.ai.allowRun({ projectId, runRef: <the run's id>, workflow: "devsync.yml" })`, the contract's
+`ModuleHost.ai`:
+
+- An answer `{ origin, request }` (an https origin of at most 255 characters, and a request of 1
+  to 4,000, checked with zod) is passed on as the inputs `opscrew_origin` and `opscrew_request`.
+  The workflow's `agent` job (`id-token: write`) then asks GitHub for an OIDC token with the
+  origin as its audience and exchanges it, with the request, at `POST <origin>/mcp/credential` for
+  the run's token to `<origin>/mcp`, and, when the repository has no key of the workspace's own, at
+  `POST <origin>/ai/credential` for a 30-minute credential to `<origin>/ai`, the host's gateway.
+  Each exchange answers `{ token }` or one plain 403; a refused `/ai/credential` ends the run
+  `no-credits`.
+- Null (a read-only project, or DevSync off), or an answer that doesn't parse (logged without its
+  values), dispatches the run with `run_id` and `task` only: it has neither `/mcp` nor the
+  credits.
+- A call that throws fails the job before the run is claimed, so the host's retry dispatches it.
 
 A dispatch never holds a transaction open while GitHub is asked. It first claims the run, setting
 its `started_at` while it is `QUEUED` and has none, in one statement that commits on its own; only a
@@ -401,10 +418,11 @@ user to look for it in the repository's Actions) instead of dispatching it again
 A run whose `workflow_run` conclusion is `cancelled` ends `FAILED` (`cancelled`), whatever its
 result says. A succeeded run's draft pull request is linked to the task when the task has none
 (audited as `devsync.task.pull_request_linked`, by the host). The `failure` codes are the workflow's
-(`agent-failed`, `budget`, `turns`, `no-changes`, `patch-did-not-apply`, `patch-touches-workflows`,
-`push-failed`, `pull-request-not-allowed`), the host's `GithubFailure` when it couldn't start the run
-(`not-found`, `unavailable`, `workflow-missing`, `workflow-disabled`, `forbidden`), and DevSync's own
-(`bad-result`, `no-result`, `cancelled`); each `Run` shows its plain-English message.
+(`no-key`, `no-credits`, `agent-failed`, `budget`, `turns`, `no-changes`, `patch-did-not-apply`,
+`patch-touches-workflows`, `push-failed`, `pull-request-not-allowed`), the host's `GithubFailure`
+when it couldn't start the run (`not-found`, `unavailable`, `workflow-missing`, `workflow-disabled`,
+`forbidden`), and DevSync's own (`bad-result`, `no-result`, `cancelled`); each `Run` shows its
+plain-English message.
 
 Each change is a timeline event of the task (`run.requested`, `run.approved`, `run.rejected`,
 `run.cancelled`, `run.started`, `run.finished`) and, but for the start, an audit entry

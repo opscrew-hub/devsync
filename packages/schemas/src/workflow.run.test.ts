@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -41,31 +42,82 @@ const RECORDED = [
   '{"type":"turn.completed","usage":{"input_tokens":3000,"cached_input_tokens":1200,"cache_write_input_tokens":600,"output_tokens":600,"reasoning_output_tokens":150}}',
 ];
 
-/** Stands in for Codex: records what it was given, changes a file and prints `FAKE/events`. */
+/**
+ * Stands in for Codex: records what it was given, changes a file (leaking the variable
+ * `FAKE_LEAK` names into one) and prints `FAKE/events`.
+ */
 const FAKE_CODEX = `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$FAKE/args"
 env | cut -d= -f1 > "$FAKE/env-names"
 printenv CODEX_API_KEY > "$FAKE/codex-api-key"
+printenv OPSCREW_MCP_TOKEN > "$FAKE/mcp-token"
 cat > "$FAKE/stdin"
-[ -z "\${FAKE_LEAK:-}" ] || printenv CODEX_API_KEY > leaked.txt
+[ -z "\${FAKE_LEAK:-}" ] || printenv "$FAKE_LEAK" > leaked.txt
 printf 'changed\\n' > change.txt
 cat "$FAKE/events"
 exit "\${FAKE_EXIT:-0}"
 `;
 
-/** Stands in for Claude Code: changes a file and prints `FAKE/claude.json`. */
+/**
+ * Stands in for Claude Code: records what it was given (its MCP configuration's content too),
+ * changes a file (leaking the variable `FAKE_LEAK` names into one) and prints `FAKE/claude.json`.
+ */
 const FAKE_CLAUDE = `#!/usr/bin/env bash
 printf '%s\\n' "$@" > "$FAKE/args"
+env | cut -d= -f1 > "$FAKE/env-names"
+printenv ANTHROPIC_BASE_URL > "$FAKE/base-url"
+printenv ANTHROPIC_AUTH_TOKEN > "$FAKE/auth-token"
+previous=
+for arg in "$@"; do
+  [ "$previous" != --mcp-config ] || [ ! -f "$arg" ] || cat "$arg" > "$FAKE/mcp-config"
+  previous=$arg
+done
 cat > "$FAKE/stdin"
-[ -z "\${FAKE_LEAK:-}" ] || printenv ANTHROPIC_API_KEY > leaked.txt
+[ -z "\${FAKE_LEAK:-}" ] || printenv "$FAKE_LEAK" > leaked.txt
 printf 'changed\\n' > change.txt
 cat "$FAKE/claude.json"
 `;
+
+/** Records the limit it was given, then runs the command. */
+const FAKE_TIMEOUT = `#!/usr/bin/env bash
+printf '%s\\n' "$1" > "$FAKE/timeout"
+shift
+exec "$@"
+`;
+
+/**
+ * Stands in for curl: GitHub's OIDC address (its header file kept), or OpsCrew's `/mcp/credential`
+ * or `/ai/credential` (the body it was sent kept). Answers `FAKE/<kind>-answer`, or as a refusal
+ * (curl's 22) without one.
+ */
+const FAKE_CURL = `#!/usr/bin/env bash
+printf '%s\\n' "$@" >> "$FAKE/curl-args"
+url=\${!#}
+case "$url" in
+  */ai/credential) kind=ai ;;
+  */mcp/credential) kind=mcp ;;
+  *) kind=oidc ;;
+esac
+if [ "$kind" = oidc ]; then
+  for arg in "$@"; do
+    case "$arg" in @*) cat "\${arg#@}" > "$FAKE/oidc-header" ;; esac
+  done
+else
+  cat > "$FAKE/$kind-body"
+fi
+[ -f "$FAKE/$kind-answer" ] || exit 22
+cat "$FAKE/$kind-answer"
+`;
+
+/** OpsCrew's origin and its request for the run, as the dispatch gives them. */
+const ORIGIN = "https://host.example";
+const REQUEST = "fake-run-request";
 
 const CLAUDE_RESULT = JSON.stringify({
   type: "result",
   subtype: "success",
   is_error: false,
+  num_turns: 6,
   total_cost_usd: 0.05,
   modelUsage: {
     "claude-sonnet-5-5": {
@@ -132,26 +184,42 @@ interface Run {
   temp: string;
   home: string;
   key: string;
+  /** The tokens the step before left for this one, and the AI credential OpsCrew answers. */
+  oidc: string;
+  mcpToken: string;
+  credential: string;
 }
 
+/** A file the fakes wrote under `fake`, or null. */
+const written = (fake: string, name: string) =>
+  existsSync(join(fake, name)) ? readFileSync(join(fake, name), "utf8") : null;
+
 /**
- * Runs the agent step as a runner would, with only an OpenAI key (Codex being `FAKE_CODEX`) or with
- * only an Anthropic key (Claude Code being `FAKE_CLAUDE`); then, as the job does when the step
- * reports no failure, the patch step.
+ * Runs the agent step as a runner would, with only an OpenAI key (Codex being `FAKE_CODEX`), with
+ * only an Anthropic key (Claude Code being `FAKE_CLAUDE`), or with none; then, as the job does when
+ * the step reports no failure, the patch step. With `request`, OpsCrew sent its request; with
+ * `oidc` and `mcp`, the step before left the job's OIDC token and the run's MCP token; with
+ * `credits`, OpsCrew grants the AI credits.
  */
 function runStep(
   options: {
-    provider?: "openai" | "anthropic";
+    provider?: "openai" | "anthropic" | "none";
     environment?: string;
     checked?: boolean;
     events?: string[];
     exit?: number;
-    leak?: boolean;
+    /** The variable the agent copies into the change. */
+    leak?: string;
     key?: boolean;
     grep?: "all" | "contents" | "names";
     find?: boolean;
     emptyProfile?: boolean;
-    /** The runner's RUNNER_TEMP and HOME as the Install Codex step left them, its profile in. */
+    request?: boolean;
+    oidc?: boolean;
+    mcp?: boolean;
+    credits?: boolean;
+    claudeResult?: string;
+    /** The runner's RUNNER_TEMP and HOME as an earlier step left them. */
     after?: { temp: string; home: string };
   } = {},
 ): Run {
@@ -169,6 +237,8 @@ function runStep(
   const fakes: [string, string][] = [
     ["codex", FAKE_CODEX],
     ["claude", FAKE_CLAUDE],
+    ["timeout", FAKE_TIMEOUT],
+    ["curl", FAKE_CURL],
   ];
   if (options.grep) fakes.push(["grep", FAKE_GREP]);
   if (options.find) fakes.push(["find", FAKE_FIND]);
@@ -177,11 +247,18 @@ function runStep(
     chmodSync(join(bin, name), 0o755);
   }
   writeFileSync(join(fake, "events"), `${(options.events ?? RECORDED).join("\n")}\n`);
-  writeFileSync(join(fake, "claude.json"), CLAUDE_RESULT);
+  writeFileSync(join(fake, "claude.json"), options.claudeResult ?? CLAUDE_RESULT);
   writeFileSync(
     join(temp, "task.json"),
     '{"title":"T","description":"D","acceptanceCriteria":"C"}',
   );
+  const [oidc, mcpToken, credential] = ["oidc", "mcp", "credential"].map(
+    (kind) => `test-${kind}-${randomUUID()}`,
+  ) as [string, string, string];
+  if (options.oidc) writeFileSync(join(temp, "devsync-oidc"), oidc);
+  if (options.mcp) writeFileSync(join(temp, "devsync-mcp-token"), mcpToken);
+  if (options.credits)
+    writeFileSync(join(fake, "ai-answer"), JSON.stringify({ token: credential }));
   if (options.emptyProfile) writeFileSync(join(temp, "devsync-codex-sandbox-checked"), "");
   if (!options.after && (options.checked ?? true)) {
     writeFileSync(
@@ -196,7 +273,7 @@ function runStep(
   git("add", "--all");
   git("commit", "-qm", "base");
   const key = `test-${randomUUID()}`;
-  const anthropic = options.provider === "anthropic";
+  const provider = options.provider ?? "openai";
   const given = options.key === false ? "" : key;
   const env: Record<string, string> = {
     PATH: `${bin}:${process.env.PATH ?? ""}`,
@@ -204,6 +281,11 @@ function runStep(
     RUNNER_TEMP: temp,
     RUNNER_ENVIRONMENT: options.environment ?? "github-hosted",
     GITHUB_OUTPUT: join(root, "output"),
+    // As GitHub sets them in every step of a job that may ask for OIDC tokens.
+    ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.example/idtoken?api-version=2.0",
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN: `test-request-${randomUUID()}`,
+    OPSCREW_ORIGIN: options.request ? ORIGIN : "",
+    OPSCREW_REQUEST: options.request ? REQUEST : "",
     FAKE: fake,
     DEVSYNC_MODEL: "sonnet",
     DEVSYNC_MAX_TURNS: "40",
@@ -213,13 +295,13 @@ function runStep(
     DEVSYNC_OPENAI_CACHED_INPUT_USD: "0.10",
     DEVSYNC_OPENAI_CACHE_WRITE_USD: "2.50",
     DEVSYNC_OPENAI_OUTPUT_USD: "10.00",
-    ANTHROPIC_API_KEY: anthropic ? given : "",
+    ANTHROPIC_API_KEY: provider === "anthropic" ? given : "",
     OPENROUTER_API_KEY: "",
-    OPENAI_API_KEY: anthropic ? "" : given,
+    OPENAI_API_KEY: provider === "openai" ? given : "",
     FAKE_EXIT: String(options.exit ?? 0),
     REAL_GREP: real("grep"),
     REAL_FIND: real("find"),
-    ...(options.leak ? { FAKE_LEAK: "1" } : {}),
+    ...(options.leak ? { FAKE_LEAK: options.leak } : {}),
     ...(options.grep ? { FAKE_GREP: options.grep } : {}),
   };
   const step = spawnSync("bash", ["-e", "-c", script("Run the coding agent")], {
@@ -249,6 +331,9 @@ function runStep(
     temp,
     home,
     key,
+    oidc,
+    mcpToken,
+    credential,
   };
 }
 
@@ -367,10 +452,10 @@ describe.skipIf(!tools)("the agent step, run (needs bash and jq)", () => {
   });
 
   it.each([
-    ["openai", "OPENAI_API_KEY"],
-    ["anthropic", "ANTHROPIC_API_KEY"],
-  ] as const)("refuses a change that holds the key, with %s's", (provider, secret) => {
-    const run = runStep({ provider, leak: true });
+    ["openai", "OPENAI_API_KEY", "CODEX_API_KEY"],
+    ["anthropic", "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"],
+  ] as const)("refuses a change that holds the key, with %s's", (provider, secret, leak) => {
+    const run = runStep({ provider, leak });
     expect(run.outputs.get("provider")).toBe(provider);
     expect(run.outputs.get("failure")).toBe("agent-failed");
     expect(run.published).toBe(false);
@@ -408,15 +493,272 @@ describe.skipIf(!tools)("the agent step, run (needs bash and jq)", () => {
     expect(run.outputs.get("failure")).toBe("");
     expect(run.published).toBe(true);
     expect(usageOf(run)).toMatchObject({ inputTokens: 900, outputTokens: 100, costUsd: 0.05 });
+    expect(run.outputs.get("turns")).toBe("6");
+    // The workflow's model, with no limit but the job's, and no MCP tool at all.
+    const args = readFileSync(join(run.fake, "args"), "utf8").split("\n");
+    expect(args[args.indexOf("--model") + 1]).toBe("sonnet");
+    expect(written(run.fake, "timeout")).toBeNull();
+    expect(args[args.indexOf("--disallowedTools") + 1]).toBe("Bash,WebFetch,WebSearch,mcp__*");
+    expect(args[args.indexOf("--mcp-config") + 1]).toBe('{"mcpServers":{}}');
+    expect(args).not.toContain("--allowedTools");
   });
 
-  it("fails no-key without any key, running nothing", () => {
+  it("reads no turns from a Claude Code result without them, nor from Codex", () => {
+    const { num_turns: _, ...counted } = JSON.parse(CLAUDE_RESULT);
+    const claude = runStep({ provider: "anthropic", claudeResult: JSON.stringify(counted) });
+    expect(claude.outputs.get("turns")).toBe("null");
+    expect(runStep().outputs.get("turns")).toBe("null");
+  });
+
+  it("fails no-key with neither a key nor OpsCrew's request, running nothing", () => {
     const run = runStep({ key: false });
     expect(run.ran).toBe(false);
     expect(run.outputs.get("failure")).toBe("no-key");
     expect(run.outputs.has("provider")).toBe(false);
   });
+
+  it("gives no agent GitHub's means to ask for OIDC tokens", () => {
+    for (const run of [runStep(), runStep({ provider: "anthropic" })]) {
+      const names = readFileSync(join(run.fake, "env-names"), "utf8").split("\n");
+      expect(names.filter((name) => name.startsWith("ACTIONS_ID_TOKEN"))).toEqual([]);
+    }
+  });
+
+  it("pays with the workspace's AI credits without a key: Claude Code through OpsCrew's gateway", () => {
+    const run = runStep({ provider: "none", request: true, oidc: true, credits: true });
+    expect(run.outputs.get("provider")).toBe("opscrew");
+    expect(run.outputs.get("failure")).toBe("");
+    expect(run.published).toBe(true);
+    // The same OIDC token, exchanged through stdin for the gateway's credential.
+    expect(JSON.parse(written(run.fake, "ai-body") ?? "null")).toEqual({
+      token: run.oidc,
+      request: REQUEST,
+    });
+    const curl = written(run.fake, "curl-args") ?? "";
+    expect(curl.split("\n")).toContain(`${ORIGIN}/ai/credential`);
+    expect(curl).not.toContain(run.oidc);
+    // Claude Code reaches the model through the gateway, the credential its bearer token only.
+    expect(written(run.fake, "base-url")?.trim()).toBe(`${ORIGIN}/ai`);
+    expect(written(run.fake, "auth-token")?.trim()).toBe(run.credential);
+    const names = readFileSync(join(run.fake, "env-names"), "utf8").split("\n");
+    expect(names).not.toContain("OPSCREW_AI_CREDENTIAL");
+    expect(names).not.toContain("OPSCREW_MCP_TOKEN");
+    const args = readFileSync(join(run.fake, "args"), "utf8").split("\n");
+    expect(args[args.indexOf("--model") + 1]).toBe("claude-haiku-5-5");
+    expect(written(run.fake, "timeout")?.trim()).toBe("30m");
+    // The credential is masked, and shows nowhere else; the OIDC token's file is gone.
+    expect(run.log.split(run.credential)).toHaveLength(2);
+    expect(run.log).toContain(`::add-mask::${run.credential}`);
+    expect(run.log).not.toContain(run.oidc);
+    expect(existsSync(join(run.temp, "devsync-oidc"))).toBe(false);
+  });
+
+  it.each([
+    ["OpsCrew refuses the credits", { oidc: true }],
+    ["GitHub gave no OIDC token", { oidc: false, credits: true }],
+  ])("fails no-credits when %s, running nothing", (_, options) => {
+    const run = runStep({ provider: "none", request: true, ...options });
+    expect(run.ran).toBe(false);
+    expect(run.published).toBe(false);
+    expect(run.outputs.get("provider")).toBe("opscrew");
+    expect(run.outputs.get("failure")).toBe("no-credits");
+    expect(run.log).toContain(
+      "::error::OpsCrew didn't let this run use the workspace's AI credits (they may be switched off, used up or at their cap). Buy AI credits on the dashboard's Billing page,",
+    );
+    expect(existsSync(join(run.temp, "devsync-oidc"))).toBe(false);
+  });
+
+  it("never pays with the AI credits while there is a key", () => {
+    for (const provider of ["anthropic", "openai"] as const) {
+      const run = runStep({ provider, request: true, oidc: true, credits: true });
+      expect(run.outputs.get("provider")).toBe(provider);
+      expect(written(run.fake, "ai-body")).toBeNull();
+    }
+  });
+
+  it("gives Claude Code OpsCrew's MCP as its one server, with the run's token, in a file it alone reads", () => {
+    const run = runStep({ provider: "anthropic", request: true, mcp: true });
+    expect(run.outputs.get("failure")).toBe("");
+    expect(JSON.parse(written(run.fake, "mcp-config") ?? "null")).toEqual({
+      mcpServers: {
+        opscrew: {
+          type: "http",
+          url: `${ORIGIN}/mcp`,
+          headers: { Authorization: `Bearer ${run.mcpToken}` },
+        },
+      },
+    });
+    const args = readFileSync(join(run.fake, "args"), "utf8").split("\n");
+    expect(args[args.indexOf("--allowedTools") + 1]).toBe("mcp__opscrew__*");
+    expect(args[args.indexOf("--disallowedTools") + 1]).toBe("Bash,WebFetch,WebSearch");
+    expect(args).toContain("--strict-mcp-config");
+    expect(args.join("\n")).not.toContain(run.mcpToken);
+    const names = readFileSync(join(run.fake, "env-names"), "utf8").split("\n");
+    expect(names).not.toContain("OPSCREW_MCP_TOKEN");
+    // Neither the token's file nor the configuration outlives the step.
+    expect(existsSync(join(run.temp, "devsync-mcp-token"))).toBe(false);
+    expect(existsSync(join(run.temp, "devsync-mcp.json"))).toBe(false);
+    expect(run.log).not.toContain(run.mcpToken);
+  });
+
+  it("gives Codex OpsCrew's MCP, the token in its environment only", () => {
+    const run = runStep({ request: true, mcp: true });
+    expect(run.outputs.get("failure")).toBe("");
+    const args = readFileSync(join(run.fake, "args"), "utf8").split("\n");
+    for (const setting of [
+      `mcp_servers.opscrew.url="${ORIGIN}/mcp"`,
+      'mcp_servers.opscrew.bearer_token_env_var="OPSCREW_MCP_TOKEN"',
+      'mcp_servers.opscrew.default_tools_approval_mode="approve"',
+    ]) {
+      expect(args[args.indexOf(setting) - 1]).toBe("-c");
+    }
+    expect(args.join("\n")).not.toContain(run.mcpToken);
+    expect(written(run.fake, "mcp-token")?.trim()).toBe(run.mcpToken);
+    // Without a token, no server.
+    const without = runStep();
+    expect(readFileSync(join(without.fake, "args"), "utf8")).not.toContain("mcp_servers");
+  });
+
+  it.each([
+    ["Codex", "the MCP token", { mcp: true, leak: "OPSCREW_MCP_TOKEN" }, "OPSCREW_MCP_TOKEN"],
+    [
+      "Claude Code",
+      "the AI credential",
+      { provider: "none" as const, oidc: true, credits: true, leak: "ANTHROPIC_AUTH_TOKEN" },
+      "OPSCREW_AI_CREDENTIAL",
+    ],
+  ])("refuses a change in which %s left %s", (_, __, options, secret) => {
+    const run = runStep({ request: true, ...options });
+    expect(run.ran).toBe(true);
+    expect(run.outputs.get("failure")).toBe("agent-failed");
+    expect(run.published).toBe(false);
+    expect(run.log).toContain(
+      `::error::The change holds the ${secret} secret, so it is not published.`,
+    );
+  });
 });
+
+/** Runs the step that asks OpsCrew for the run's MCP token, with `FAKE_CURL` first on PATH. */
+function askForToken(options: { oidc?: boolean; mcp?: boolean } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "devsync-ask-"));
+  folders.push(root);
+  const [bin, fake, temp] = ["bin", "fake", "temp"].map((name) => {
+    const folder = join(root, name);
+    mkdirSync(folder);
+    return folder;
+  }) as [string, string, string];
+  writeFileSync(join(bin, "curl"), FAKE_CURL);
+  chmodSync(join(bin, "curl"), 0o755);
+  const [oidc, token, requestToken] = ["oidc", "mcp", "request"].map(
+    (kind) => `test-${kind}-${randomUUID()}`,
+  ) as [string, string, string];
+  if (options.oidc ?? true)
+    writeFileSync(join(fake, "oidc-answer"), JSON.stringify({ value: oidc }));
+  if (options.mcp ?? true) writeFileSync(join(fake, "mcp-answer"), JSON.stringify({ token }));
+  const step = spawnSync("bash", ["-e", "-c", script("Ask OpsCrew for the run's MCP token")], {
+    cwd: root,
+    env: {
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      HOME: root,
+      RUNNER_TEMP: temp,
+      ACTIONS_ID_TOKEN_REQUEST_URL: "https://token.example/idtoken?api-version=2.0",
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: requestToken,
+      OPSCREW_ORIGIN: ORIGIN,
+      OPSCREW_REQUEST: REQUEST,
+      FAKE: fake,
+    },
+    encoding: "utf8",
+  });
+  return {
+    status: step.status,
+    log: `${step.stdout}${step.stderr}`,
+    fake,
+    temp,
+    home: root,
+    oidc,
+    token,
+    requestToken,
+  };
+}
+
+/** A file's permission bits. */
+const modeOf = (file: string) => statSync(file).mode & 0o777;
+
+describe.skipIf(!tools)(
+  "the step that asks OpsCrew for the run's MCP token, run (needs bash and jq)",
+  () => {
+    it("gets the job's OIDC token for OpsCrew's origin, and exchanges it for the run's MCP token", () => {
+      const asked = askForToken();
+      expect(asked.status).toBe(0);
+      const curl = (written(asked.fake, "curl-args") ?? "").split("\n");
+      // The audience is OpsCrew's origin; GitHub's request token is in a header file, not argv.
+      expect(curl).toContain(
+        "https://token.example/idtoken?api-version=2.0&audience=https%3A%2F%2Fhost.example",
+      );
+      expect(written(asked.fake, "oidc-header")).toBe(
+        `Authorization: bearer ${asked.requestToken}\n`,
+      );
+      expect(curl.join("\n")).not.toContain(asked.requestToken);
+      expect(curl.join("\n")).not.toContain(asked.oidc);
+      expect(curl).toContain(`${ORIGIN}/mcp/credential`);
+      expect(JSON.parse(written(asked.fake, "mcp-body") ?? "null")).toEqual({
+        token: asked.oidc,
+        request: REQUEST,
+      });
+      // Both are masked, and left for the agent step only to read.
+      for (const [name, value] of [
+        ["devsync-oidc", asked.oidc],
+        ["devsync-mcp-token", asked.token],
+      ] as const) {
+        expect(readFileSync(join(asked.temp, name), "utf8")).toBe(value);
+        expect(modeOf(join(asked.temp, name))).toBe(0o600);
+        expect(asked.log).toContain(`::add-mask::${value}`);
+        expect(asked.log.split(value)).toHaveLength(2);
+      }
+    });
+
+    it("goes on without the MCP token when OpsCrew refuses it, leaving the OIDC token", () => {
+      const asked = askForToken({ mcp: false });
+      expect(asked.status).toBe(0);
+      expect(asked.log).toContain(
+        "::warning::OpsCrew refused this run its MCP token, so the agent works without OpsCrew's tools.",
+      );
+      expect(existsSync(join(asked.temp, "devsync-oidc"))).toBe(true);
+      expect(existsSync(join(asked.temp, "devsync-mcp-token"))).toBe(false);
+    });
+
+    it("goes on without either when GitHub gives no OIDC token", () => {
+      const asked = askForToken({ oidc: false });
+      expect(asked.status).toBe(0);
+      expect(asked.log).toContain(
+        "::warning::GitHub gave this job no OIDC token, so the agent works without OpsCrew's tools or AI credits.",
+      );
+      expect(existsSync(join(asked.temp, "devsync-oidc"))).toBe(false);
+      expect(written(asked.fake, "mcp-body")).toBeNull();
+    });
+
+    it("hands the agent step what it needs: the credits paid with the same OIDC token, and the MCP", () => {
+      const asked = askForToken();
+      const run = runStep({
+        provider: "none",
+        request: true,
+        credits: true,
+        after: { temp: asked.temp, home: asked.home },
+      });
+      expect(run.outputs.get("provider")).toBe("opscrew");
+      expect(run.outputs.get("failure")).toBe("");
+      expect(JSON.parse(written(run.fake, "ai-body") ?? "null")).toEqual({
+        token: asked.oidc,
+        request: REQUEST,
+      });
+      expect(JSON.parse(written(run.fake, "mcp-config") ?? "null")).toMatchObject({
+        mcpServers: { opscrew: { headers: { Authorization: `Bearer ${asked.token}` } } },
+      });
+      expect(existsSync(join(asked.temp, "devsync-oidc"))).toBe(false);
+      expect(existsSync(join(asked.temp, "devsync-mcp-token"))).toBe(false);
+    });
+  },
+);
 
 /** Stand-ins for the Install Codex step's tools, each recording its arguments under `$FAKE`. */
 const INSTALL_FAKES: [string, string][] = [
